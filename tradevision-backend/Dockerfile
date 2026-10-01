@@ -11,7 +11,7 @@
 # (run from the repo root — see SETUP.md).
 
 # ── Stage 0: Frontend build ──────────────────────────────────
-FROM node:20-alpine AS frontend-build
+FROM node:26-alpine AS frontend-build
 WORKDIR /frontend
 COPY trading-analyst/package.json trading-analyst/package-lock.json ./
 RUN npm ci

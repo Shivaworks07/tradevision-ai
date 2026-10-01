@@ -1,0 +1,234 @@
+<div class="adm-wrap">
+
+  <!-- Header -->
+  <div class="adm-header">
+    <div>
+      <h2>Admin Dashboard</h2>
+      <p>Platform health · Auto-refreshes every 60 seconds</p>
+    </div>
+    <div class="adm-meta" *ngIf="lastRefresh">
+      <span class="pulse-dot"></span>
+      <span>Updated {{lastRefresh}}</span>
+    </div>
+  </div>
+
+  <!-- Error / access denied -->
+  <div class="adm-error" *ngIf="error">
+    <div class="ae-icon">🔐</div>
+    <div class="ae-title">{{error}}</div>
+    <div class="ae-desc" *ngIf="error.includes('Admin')">
+      Your account doesn't have admin access.<br>
+      Contact your platform administrator to request it.
+    </div>
+  </div>
+
+  <!-- Loading -->
+  <div class="adm-loading" *ngIf="loading && !error">
+    <div class="ld-spin"></div>
+    <span>Loading platform metrics…</span>
+  </div>
+
+  <div *ngIf="dashboard && !loading">
+
+    <!-- ROW 1: KPI Cards -->
+    <div class="kpi-grid">
+      <!-- Users -->
+      <div class="kpi-card">
+        <div class="kpi-icon">👥</div>
+        <div class="kpi-val">{{users.total | number}}</div>
+        <div class="kpi-label">Total Users</div>
+        <div class="kpi-sub">+{{users.newThisMonth}} this month</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon">🟢</div>
+        <div class="kpi-val" style="color:#00FF88">{{users.activeToday | number}}</div>
+        <div class="kpi-label">Active Today</div>
+        <div class="kpi-sub">{{users.activeWeek}} this week</div>
+      </div>
+
+      <!-- Signals -->
+      <div class="kpi-card">
+        <div class="kpi-icon">📊</div>
+        <div class="kpi-val">{{signals.total | number}}</div>
+        <div class="kpi-label">Total Signals</div>
+        <div class="kpi-sub">{{signals.today}} today · {{signals.thisWeek}} this week</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon">🎯</div>
+        <div class="kpi-val" [style.color]="wrColor">{{signals.overallWinRate}}%</div>
+        <div class="kpi-label">Overall Win Rate</div>
+        <div class="kpi-sub">{{signals.wins}} wins · {{signals.losses}} losses</div>
+      </div>
+
+      <!-- API -->
+      <div class="kpi-card">
+        <div class="kpi-icon">⚡</div>
+        <div class="kpi-val" [style.color]="latencyColor">{{apiMetrics.avgLatencyMs}}ms</div>
+        <div class="kpi-label">Avg Response Time</div>
+        <div class="kpi-sub">P95: {{apiMetrics.p95LatencyMs}}ms</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon">🚨</div>
+        <div class="kpi-val" [style.color]="errorRateColor">{{apiMetrics.errorRatePct}}%</div>
+        <div class="kpi-label">Error Rate (24h)</div>
+        <div class="kpi-sub">{{apiMetrics.errors24h}} errors / {{apiMetrics.requests24h}} req</div>
+      </div>
+    </div>
+
+    <!-- ROW 2: Accuracy by Market + Top Symbols -->
+    <div class="mid-grid">
+
+      <!-- Accuracy by market -->
+      <div class="dash-card">
+        <div class="dc-title">Signal Accuracy by Market</div>
+        <div class="accuracy-list">
+          <div class="acc-row" *ngFor="let m of ['CRYPTO','STOCK','FOREX']">
+            <div class="acr-market">
+              <span class="acr-icon">{{m==='CRYPTO'?'₿':m==='STOCK'?'🇮🇳':'💱'}}</span>
+              <span class="acr-name">{{m}}</span>
+            </div>
+            <div class="acr-bar-wrap">
+              <div class="acr-bar" [style.width.%]="accuracyOf(m).winRate" [style.background]="accuracyOf(m).winRate>=60?'#00FF88':accuracyOf(m).winRate>=50?'#FFB800':'#FF3B5C'"></div>
+            </div>
+            <div class="acr-right">
+              <span class="acr-wr" [style.color]="accuracyOf(m).winRate>=60?'#00FF88':accuracyOf(m).winRate>=50?'#FFB800':'#FF3B5C'">{{accuracyOf(m).winRate}}%</span>
+              <span class="acr-n">{{accuracyOf(m).total}} signals</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Top symbols (30 days) -->
+      <div class="dash-card">
+        <div class="dc-title">Most Viewed Symbols (30 days)</div>
+        <div class="symbol-list">
+          <div class="sym-row" *ngFor="let s of topSymbols; let i=index">
+            <span class="sym-rank">{{i+1}}</span>
+            <span class="sym-name">{{s.symbol}}</span>
+            <div class="sym-bar-wrap">
+              <div class="sym-bar" [style.width.%]="topSymbols[0]?.calls ? s.calls/topSymbols[0].calls*100 : 0"></div>
+            </div>
+            <span class="sym-count">{{s.calls}}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ROW 3: Hourly signal volume chart -->
+    <div class="dash-card">
+      <div class="dc-title">Signal Volume — Last 24 Hours (by hour UTC)</div>
+      <div class="hourly-chart">
+        <div class="hc-bars">
+          <div class="hcb-col" *ngFor="let b of hourlyBars">
+            <div class="hcb-bar" [style.height.%]="b.pct || 2" [title]="b.count + ' signals at ' + b.hour + ':00'"></div>
+            <div class="hcb-label" *ngIf="b.hour%4===0">{{b.hour}}h</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ROW 4: API endpoints + market split -->
+    <div class="bot-grid">
+
+      <!-- Top endpoints -->
+      <div class="dash-card">
+        <div class="dc-title">Top API Endpoints (24h)</div>
+        <div class="endpoint-list">
+          <div class="ep-row" *ngFor="let e of topEndpoints">
+            <span class="ep-name">{{fmtEndpoint(e.endpoint)}}</span>
+            <div class="ep-bar-wrap">
+              <div class="ep-bar" [style.width.%]="topEndpoints[0]?.calls ? e.calls/topEndpoints[0].calls*100 : 0"></div>
+            </div>
+            <span class="ep-count">{{e.calls}}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Market split -->
+      <div class="dash-card">
+        <div class="dc-title">Signals by Market (30 days)</div>
+        <div class="market-split">
+          <div class="ms-row" *ngFor="let m of ['CRYPTO','STOCK','FOREX']">
+            <div class="msr-left">
+              <span>{{m==='CRYPTO'?'₿ Crypto':m==='STOCK'?'🇮🇳 Stocks':'💱 Forex'}}</span>
+            </div>
+            <div class="msr-bar-wrap">
+              <div class="msr-bar" [style.width.%]="(byMarket[m] || 0) / (byMarket['CRYPTO']||1 + byMarket['STOCK']||1 + byMarket['FOREX']||1) * 100"></div>
+            </div>
+            <span class="msr-count">{{byMarket[m] || 0}}</span>
+          </div>
+        </div>
+
+        <!-- System info -->
+        <div class="sys-info">
+          <div class="si-row"><span>Admin Users</span><strong>{{users.admins}}</strong></div>
+          <div class="si-row"><span>Platform</span><strong>TradeVision AI</strong></div>
+          <div class="si-row"><span>Backend</span><strong>Spring Boot 3.2</strong></div>
+          <div class="si-row"><span>Database</span><strong>MongoDB Atlas</strong></div>
+        </div>
+      </div>
+    </div>
+
+  
+    <!-- FEEDBACK PANEL -->
+    <div class="dash-card feedback-panel" *ngIf="feedbackStats">
+      <div class="dc-title-row">
+        <div class="dc-title">User Feedback & Bug Reports</div>
+        <div class="fb-stat-pills">
+          <span class="fsp open"   (click)="loadFeedback('OPEN')"      [class.active]="feedbackFilter==='OPEN'">Open {{feedbackStats.open || 0}}</span>
+          <span class="fsp review" (click)="loadFeedback('IN_REVIEW')" [class.active]="feedbackFilter==='IN_REVIEW'">In Review {{feedbackStats.inReview || 0}}</span>
+          <span class="fsp done"   (click)="loadFeedback('RESOLVED')"  [class.active]="feedbackFilter==='RESOLVED'">Resolved {{feedbackStats.resolved || 0}}</span>
+          <span class="fsp bug"    (click)="loadFeedback('','BUG')"    [class.active]="feedbackTypeFilter==='BUG'">🐛 Bugs {{feedbackStats.bugs || 0}}</span>
+          <span class="fsp sug"    (click)="loadFeedback('','SUGGESTION')" [class.active]="feedbackTypeFilter==='SUGGESTION'">💡 Ideas {{feedbackStats.suggestions || 0}}</span>
+          <span class="fsp all"    (click)="loadFeedback()">All</span>
+        </div>
+      </div>
+
+      <div class="fb-loading" *ngIf="loadingFeedback"><div class="ld-spin"></div> Loading…</div>
+      <div class="fb-empty" *ngIf="!loadingFeedback && feedbackItems.length===0">No feedback yet.</div>
+
+      <div class="fb-list" *ngIf="!loadingFeedback && feedbackItems.length>0">
+        <div class="fb-item" *ngFor="let f of feedbackItems" (click)="selectedFeedback = selectedFeedback?.id===f.id ? null : f">
+          <div class="fbi-top">
+            <span class="fbi-type" [class]="f.type.toLowerCase().replace('_','-')">{{f.type.replace('_',' ')}}</span>
+            <span class="fbi-title">{{f.title}}</span>
+            <span class="fbi-status" [class]="f.status.toLowerCase().replace('_','-')">{{f.status.replace('_',' ')}}</span>
+            <span class="fbi-date">{{f.createdAt | date:'dd MMM HH:mm'}}</span>
+            <button class="fbi-del" (click)="$event.stopPropagation(); deleteFeedback(f.id)">✕</button>
+          </div>
+          <div class="fbi-desc" *ngIf="f.description">{{f.description}}</div>
+          <div class="fbi-meta" *ngIf="f.mobile || f.page">
+            <span *ngIf="f.mobile">📱 {{f.mobile}}</span>
+            <span *ngIf="f.page">📄 {{f.page}}</span>
+          </div>
+
+          <!-- Expanded detail -->
+          <div class="fbi-detail" *ngIf="selectedFeedback?.id===f.id">
+            <!-- Screenshot -->
+            <div class="fbi-screenshot" *ngIf="f.screenshotBase64">
+              <img [src]="'data:' + f.screenshotMime + ';base64,' + f.screenshotBase64" alt="Screenshot">
+            </div>
+            <div class="fbi-actions">
+              <select (change)="updateFeedback(f.id, {status: $any($event.target).value})" [value]="f.status">
+                <option value="OPEN">Open</option>
+                <option value="IN_REVIEW">In Review</option>
+                <option value="RESOLVED">Resolved</option>
+                <option value="CLOSED">Closed</option>
+              </select>
+              <select (change)="updateFeedback(f.id, {priority: $any($event.target).value})" [value]="f.priority">
+                <option value="LOW">Low</option>
+                <option value="MEDIUM">Medium</option>
+                <option value="HIGH">High</option>
+                <option value="CRITICAL">Critical</option>
+              </select>
+              <input #noteInput [value]="adminNote" (input)="adminNote=$any($event.target).value" placeholder="Add note…" (keyup.enter)="updateFeedback(f.id,{adminNote:adminNote})">
+              <button (click)="updateFeedback(f.id,{adminNote:adminNote})">Save Note</button>
+            </div>
+            <div class="fbi-note" *ngIf="f.adminNote">📝 {{f.adminNote}}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /dashboard -->
+</div>

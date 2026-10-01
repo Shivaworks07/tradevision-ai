@@ -1,0 +1,52 @@
+# P1-21 fix ("Unsupported framework versions on a money system" -- external review, full context
+# in tradevision-backend/SETUP.md's own "P1-21" section and dependency-scan.yml's own header
+# comment in this same directory): this repo had ZERO automated dependency-update or
+# vulnerability-scanning mechanism before this pass -- no Dependabot config, no CI workflow of
+# any kind (only a Dockerfile, which builds an image but never scans or updates anything). That
+# is the concrete, disclosed-scope fix this pass actually ships for P1-21: this app now gets
+# notified of new releases and known-vulnerable dependencies automatically, on both ecosystems it
+# uses, going forward -- see SETUP.md for why the audit's own suggested MAJOR version bump itself
+# (Spring Boot 3.2.5 -> a current supported line, Angular 17.3 -> a current LTS) was not performed
+# in this same pass.
+version: 2
+updates:
+  # Backend: Maven dependencies (Spring Boot, Testcontainers, jjwt, etc.)
+  - package-ecosystem: "maven"
+    directory: "/tradevision-backend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "backend"
+    # Security updates always allowed; version-bump PRs grouped so a routine Spring Boot patch
+    # release doesn't open a dozen near-duplicate PRs for its own transitive bumps.
+    groups:
+      spring-boot:
+        patterns:
+          - "org.springframework.boot:*"
+          - "org.springframework:*"
+
+  # Frontend: npm dependencies (Angular, TypeScript, Testcontainers-equivalent tooling, etc.)
+  - package-ecosystem: "npm"
+    directory: "/trading-analyst"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "frontend"
+    groups:
+      angular:
+        patterns:
+          - "@angular/*"
+
+  # This workflow/config directory itself, and the Dockerfile's own base images (maven:..., node:...).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "docker"
+    directory: "/tradevision-backend"
+    schedule:
+      interval: "weekly"

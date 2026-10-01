@@ -1,0 +1,95 @@
+{
+  "/forex-api": {
+    "target": "https://api.frankfurter.dev",
+    "secure": true,
+    "changeOrigin": true,
+    "pathRewrite": {
+      "^/forex-api": "/v1"
+    },
+    "logLevel": "warn"
+  },
+  "/yf-api": {
+    "target": "https://query1.finance.yahoo.com",
+    "secure": true,
+    "changeOrigin": true,
+    "pathRewrite": {
+      "^/yf-api": ""
+    },
+    "headers": {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      "Accept": "application/json, text/plain, */*",
+      "Accept-Language": "en-US,en;q=0.9",
+      "Origin": "https://finance.yahoo.com",
+      "Referer": "https://finance.yahoo.com/",
+      "Accept-Encoding": "gzip, deflate, br"
+    },
+    "logLevel": "warn"
+  },
+  "/binance-spot": {
+    "target": "https://api.binance.com",
+    "secure": true,
+    "changeOrigin": true,
+    "pathRewrite": {
+      "^/binance-spot": ""
+    },
+    "logLevel": "warn"
+  },
+  "/binance-futures": {
+    "target": "https://fapi.binance.com",
+    "secure": true,
+    "changeOrigin": true,
+    "pathRewrite": {
+      "^/binance-futures": ""
+    },
+    "logLevel": "warn"
+  },
+  "/binance-fdata": {
+    "target": "https://fapi.binance.com",
+    "secure": true,
+    "changeOrigin": true,
+    "pathRewrite": {
+      "^/binance-fdata": "/futures/data"
+    },
+    "logLevel": "warn"
+  },
+  "/fng-api": {
+    "target": "https://api.alternative.me",
+    "secure": true,
+    "changeOrigin": true,
+    "pathRewrite": {
+      "^/fng-api": ""
+    },
+    "logLevel": "warn"
+  },
+  "/nse-api": {
+    "target": "https://www.nseindia.com",
+    "secure": true,
+    "changeOrigin": true,
+    "pathRewrite": {
+      "^/nse-api": ""
+    },
+    "headers": {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      "Accept": "application/json, text/plain, */*",
+      "Accept-Language": "en-US,en;q=0.9",
+      "Referer": "https://www.nseindia.com/",
+      "Cookie": ""
+    },
+    "logLevel": "warn"
+  },
+  "/coingecko-api": {
+    "target": "https://api.coingecko.com",
+    "secure": true,
+    "changeOrigin": true,
+    "pathRewrite": {
+      "^/coingecko-api": ""
+    },
+    "logLevel": "warn"
+  },
+  "/api": {
+    "target": "http://localhost:8080",
+    "secure": false,
+    "changeOrigin": true,
+    "logLevel": "warn"
+  }
+}

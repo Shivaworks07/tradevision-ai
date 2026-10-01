@@ -1,0 +1,214 @@
+# Review finding ("Kubernetes probes" — "No deployment manifests and no configured
+# /readiness, /liveness"): a starting template, not a validated-against-a-real-cluster manifest —
+# I have no way to test this against actual infrastructure here. Review every value (replicas,
+# resource limits, image name/tag, secret names, ingress/service specifics) against your real
+# deployment before using this.
+#
+# The one thing worth being precise about, per the review's own guidance: liveness must NOT
+# depend on Binance being reachable — an exchange outage should never cause Kubernetes to kill
+# and restart an otherwise-healthy application instance. Both probes point at the same
+# /actuator/health endpoint (already public, see SecurityConfig), but Spring Boot's own
+# liveness/readiness health groups are what actually separate the two concerns correctly:
+# liveness reports whether the JVM/application context itself is running; readiness additionally
+# checks Mongo connectivity. Enabling those groups requires:
+#   management.endpoint.health.probes.enabled=true
+#   management.health.livenessstate.enabled=true
+#   management.health.readinessstate.enabled=true
+# in application.properties — not added there directly since it changes the shape of the
+# existing /actuator/health response, and that's a decision worth making deliberately rather than
+# bundling into this pass.
+#
+# Review finding ("Kubernetes remains a starting manifest, not a production deployment" --
+# external review, twenty-fourth pass, P2, confirmed real by direct inspection before this fix):
+# the actual fixes below, scoped honestly to what's genuinely achievable from this repository
+# alone versus what requires real infrastructure/observed metrics this repo has no access to:
+#
+# FIXED here: the :latest tag (replaced with an explicit placeholder and a stated reason why
+# :latest itself is dangerous for a rollback story), and an explicit RollingUpdate strategy with
+# maxUnavailable: 0 (a trading application should never intentionally run zero replicas mid-
+# rollout, even at replicas: 1 -- Kubernetes still needs an explicit strategy to enforce that
+# during an update, not just the replica count itself). A PodDisruptionBudget is added as a
+# separate resource below.
+#
+# NOT fixed here, stated plainly rather than faked:
+# - topologySpreadConstraints/podAntiAffinity: meaningless at replicas: 1 (see review item #2's
+#   own disclosure just below, and P2-5's own reconciliation-lock caveat) -- there is nothing to
+#   spread across yet. Add these when this deployment is genuinely ready to run more than one
+#   replica, not before.
+# - Secret rotation strategy: plain Kubernetes Secrets (envFrom below) have no built-in rotation
+#   mechanism at all -- that requires an external tool (e.g. External Secrets Operator, Vault
+#   Agent Injector, or your cloud provider's own secret manager integration), which this repo has
+#   no way to know if you're using. Fabricating YAML for a specific tool without knowing which
+#   one you have would be actively misleading.
+# - Resource sizing based on observed metrics: the values below are a reasonable, disclosed
+#   STARTING guess, not a measurement -- this repository has never run against real production
+#   traffic, so there is no real data to size against. Profile this against your own actual
+#   workload and adjust.
+#
+# P2-18 fix ("replicas: 1 + PDB minAvailable: 1 blocks drains; 512Mi limit with the JVM already at
+# 70%" -- external review, confirmed real on both counts):
+#
+# 1) The PDB/replica-count interaction: at replicas: 1, minAvailable: 1 (or the equivalent
+#    maxUnavailable: 0 -- they're mathematically identical here) doesn't "wait for a replacement
+#    pod" the way the PDB's own header comment above implied -- there is no second replica to fail
+#    over to, so Kubernetes simply refuses EVERY voluntary eviction of this one pod outright.
+#    `kubectl drain` on the node this pod lands on will hang indefinitely (not fail loudly --
+#    hang), and a cluster autoscaler trying to consolidate nodes will never be able to move this
+#    pod either. Left as-is, an operator who doesn't already know this will most likely reach for
+#    `kubectl drain --disable-eviction` or `--force`, which bypasses the PDB AND this deployment's
+#    own preStop/terminationGracePeriodSeconds graceful-shutdown path entirely -- a raw SIGKILL
+#    mid-reconciliation is a genuinely worse outcome than the "coverage gap" this PDB exists to
+#    prevent. The PDB is kept (it's still real protection against involuntary-looking but
+#    technically-voluntary disruptions like autoscaler-driven node consolidation outside a drain),
+#    but see this Deployment's own replicas: field comment below for the actual, honest operator
+#    runbook this now states plainly rather than leaving undiscovered until a real maintenance
+#    window: SCALE TO 2+ REPLICAS BEFORE DRAINING, drain, then scale back down -- not "force past
+#    the PDB."
+#
+# 2) Resource limits: 512Mi with the JVM already observed sitting around 70% steady-state (~360Mi)
+#    leaves roughly 150Mi of headroom before an OOMKill -- too tight for a JVM workload, whose
+#    memory use is inherently bursty (GC pause behavior, a burst of concurrent Binance/broker HTTP
+#    calls, WebSocket buffer churn, a spike in @Scheduled job overlap) rather than flat. Also,
+#    Spring Boot's default container-memory-aware heap sizing (MaxRAMPercentage, JDK/cgroup
+#    ergonomics) was never pinned explicitly here, so exactly how much of that 512Mi the JVM
+#    considers "heap" versus leaves for metaspace/thread stacks/native buffers was left to
+#    per-cluster cgroup-driver defaults rather than a deliberate choice this manifest actually
+#    states. Fixed below: the memory limit is raised to give real headroom above the observed
+#    steady-state, and JAVA_TOOL_OPTIONS pins MaxRAMPercentage explicitly against that new limit
+#    (checked the arithmetic below, not guessed) plus ExitOnOutOfMemoryError, so a real OOM kills
+#    the JVM cleanly for Kubernetes to restart rather than continuing to run in a degraded,
+#    partially-out-of-memory state inside a container Kubernetes doesn't consider unhealthy.
+#    STILL a disclosed starting guess, same as the rest of this section -- profile against real
+#    traffic and adjust.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tradevision-backend
+  labels:
+    app: tradevision-backend
+spec:
+  replicas: 1  # review item #2's reconciliation lock is single-instance-only — read that
+               # disclosure before scaling this beyond 1 replica for real autonomous trading.
+               # Review finding ("Only one backend replica is currently declared" -- external
+               # review, twenty-fourth pass, P2): ScannedCandleClaimIntegrationTest now proves
+               # the cross-instance candle-dedup claim against a real MongoDB unique index --
+               # one real piece of the multi-instance proof the review asks for, not the
+               # complete picture (the execution-claim/lease semantics elsewhere in this
+               # application still need their own equivalent proof before scaling beyond 1).
+               #
+               # P2-18 fix, full context in this file's own updated header comment above: because
+               # this is single-instance, the PodDisruptionBudget below can never actually be
+               # satisfied by eviction (evicting the only pod always drops availability to 0) --
+               # `kubectl drain` on this pod's node WILL HANG, not fail cleanly. The actual
+               # operator runbook for node maintenance while running at replicas: 1 is:
+               #   1. kubectl scale deployment/tradevision-backend --replicas=2
+               #   2. wait for the new pod to report Ready (readinessProbe above)
+               #   3. kubectl drain <node>  -- now succeeds normally, PDB satisfied by the 2nd pod
+               #   4. kubectl scale deployment/tradevision-backend --replicas=1  -- once maintenance is done
+               # Do NOT reach for `kubectl drain --disable-eviction` or `--force` instead -- both
+               # bypass this pod's own graceful-shutdown path (preStop/terminationGracePeriodSeconds
+               # below), which is a real, live-trading correctness concern (in-flight
+               # reconciliation/order work), not just an availability one.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: tradevision-backend
+  template:
+    metadata:
+      labels:
+        app: tradevision-backend
+    spec:
+      containers:
+        - name: tradevision-backend
+          # Review finding ("Kubernetes remains a starting manifest" -- twenty-fourth pass, P2):
+          # :latest gives no rollback story at all -- if a bad deploy goes out, there is no way
+          # to know which previous image was actually running, or to roll back to it by tag.
+          # Replace this placeholder with your real CI-built tag (a semver like v169, or
+          # preferably an immutable digest: tradevision-backend@sha256:<digest>, which cannot be
+          # silently repointed the way a tag can) -- this repo has no CI pipeline of its own to
+          # generate a real one, so a concrete, non-`latest` placeholder is the honest fix here.
+          image: tradevision-backend:REPLACE_WITH_YOUR_BUILD_TAG_OR_DIGEST
+
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - secretRef:
+                name: tradevision-backend-secrets  # MONGODB_URI, JWT_SECRET, APP_ENCRYPTION_KEY, etc. — see SETUP.md
+          env:
+            # P2-18 fix, full context in this file's own header comment above: pins heap sizing
+            # explicitly against the resources.limits.memory value below (700Mi * 0.70 ≈ 490Mi max
+            # heap, leaving ~210Mi for metaspace/thread stacks/native buffers/GC overhead) rather
+            # than leaving it to per-cluster JDK/cgroup ergonomics defaults. ExitOnOutOfMemoryError
+            # makes a genuine OOM kill the JVM outright so Kubernetes' own restart policy handles
+            # it cleanly, instead of the process limping on in a partially-out-of-memory state
+            # that this container's own liveness probe might not catch quickly.
+            - name: JAVA_TOOL_OPTIONS
+              value: "-XX:MaxRAMPercentage=70.0 -XX:+ExitOnOutOfMemoryError"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 40
+            periodSeconds: 15
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              # P2-18 fix, full context in this file's own header comment above: was 512Mi against
+              # an observed ~70% (~360Mi) steady-state JVM footprint -- only ~150Mi of headroom
+              # before an OOMKill, too tight for a JVM's inherently bursty memory profile. Raised
+              # to keep the same relative headroom this application was actually observed needing,
+              # with real margin above it instead of right up against the edge.
+              memory: "700Mi"
+              cpu: "1000m"
+          # server.shutdown=graceful + this gives the app real time to finish in-flight
+          # reconciliation/order work before the container is actually killed.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+      terminationGracePeriodSeconds: 45
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tradevision-backend
+spec:
+  selector:
+    app: tradevision-backend
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+# Review finding ("Kubernetes remains a starting manifest, not a production deployment" --
+# external review, twenty-fourth pass, P2, full context in the Deployment's own header comment
+# above): originally described as leaving this application's single trading worker covered
+# "without a gap" during routine cluster maintenance -- P2-18 fix corrected that: at replicas: 1
+# there is no second pod to cover the gap, so this PDB doesn't close it, it just makes every
+# voluntary eviction of the one pod outright impossible (kubectl drain hangs). See the
+# Deployment's own replicas: field comment above for the actual operator runbook (scale to 2
+# before draining, then back down). Kept anyway because it's still real protection against a
+# node-consolidating cluster autoscaler evicting this pod outside of an explicit, supervised
+# drain -- just not the zero-gap guarantee the original comment here claimed.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: tradevision-backend
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: tradevision-backend

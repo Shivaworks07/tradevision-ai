@@ -1,0 +1,149 @@
+// Review finding ("UI has no real Position/Execution dashboard"): deliberately reuses the exact
+// design tokens already established in broker-settings.component.scss — same background, card,
+// border, and accent colors, same font — rather than inventing a new visual language for one
+// more internal dashboard page in an app that already has a consistent one.
+
+.bs-wrap {
+  background: #080C18;
+  min-height: 100vh;
+  color: #E8EDF5;
+  font-family: 'Space Grotesk', sans-serif;
+  padding: 32px 28px;
+}
+
+.bs-header {
+  max-width: 860px;
+  margin: 0 auto 20px;
+  h2 { font-size: 22px; font-weight: 800; margin: 0 0 4px; }
+  p  { font-size: 12px; color: #4A5568; margin: 0; max-width: 560px; line-height: 1.6; }
+}
+
+.incident-badge {
+  color: #FF3B5C !important;
+  font-weight: 700 !important;
+  margin-top: 8px !important;
+}
+
+.bs-toast {
+  max-width: 860px;
+  margin: 0 auto 16px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  background: rgba(0,255,136,0.1);
+  border: 1px solid rgba(0,255,136,0.3);
+  color: #00FF88;
+  &.err { background: rgba(255,59,92,0.1); border-color: rgba(255,59,92,0.3); color: #FF3B5C; }
+}
+
+.bs-body { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+
+.bs-section {
+  background: #0F1525;
+  border: 1px solid #1E2D4A;
+  border-radius: 14px;
+  padding: 22px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  .ss-desc { font-size: 12px; color: #4A5568; line-height: 1.6; }
+}
+
+.bs-form-row {
+  display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+  select {
+    flex: 1; min-width: 140px;
+    background: #080C18; border: 1px solid #1E2D4A; border-radius: 8px;
+    padding: 10px 12px; color: #E8EDF5; font-family: inherit; font-size: 13px;
+  }
+}
+
+.btn-danger {
+  padding: 10px 20px; border-radius: 9px; border: 1px solid #FF3B5C;
+  background: rgba(255,59,92,0.1);
+  color: #FF3B5C; font-family: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
+  &:hover { background: rgba(255,59,92,0.2); }
+  &:disabled { opacity: 0.5; cursor: not-allowed; }
+}
+
+.btn-ghost-sm {
+  padding: 7px 14px; border-radius: 7px; border: 1px solid #1E2D4A;
+  background: transparent; color: #8895B3; font-family: inherit; font-size: 12px; cursor: pointer;
+  &:hover { border-color: #4A5568; color: #E8EDF5; }
+  &:disabled { opacity: 0.5; cursor: not-allowed; }
+}
+
+.bc-mode {
+  font-size: 10px; padding: 2px 8px; border-radius: 6px;
+  background: rgba(0,255,136,0.15); color: #00FF88; margin-left: 8px; font-weight: 700;
+  &.live { background: rgba(255,59,92,0.15); color: #FF3B5C; }
+}
+
+// ── Position cards ──────────────────────────────────────────
+.pos-card {
+  max-width: 860px;
+  margin: 0 auto;
+  background: #0F1525;
+  border: 1px solid #1E2D4A;
+  border-radius: 14px;
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  &.pos-halted { opacity: 0.75; }
+}
+
+.pos-card-head {
+  display: flex; align-items: center; justify-content: space-between;
+}
+
+.pos-symbol {
+  font-size: 16px; font-weight: 800; display: flex; align-items: center;
+}
+
+.pos-badge {
+  font-size: 10px; font-weight: 700; padding: 3px 10px; border-radius: 6px;
+  background: rgba(136,149,179,0.15); color: #8895B3;
+  &.open   { background: rgba(0,212,255,0.15); color: #00D4FF; }
+  &.closed { background: rgba(0,255,136,0.15); color: #00FF88; }
+  &.warn   { background: rgba(255,184,0,0.15); color: #FFB800; }
+}
+
+.pos-warn-row {
+  font-size: 12px; color: #FFB800; background: rgba(255,184,0,0.08);
+  border: 1px solid rgba(255,184,0,0.25); border-radius: 8px; padding: 8px 12px;
+}
+
+.pos-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px;
+}
+
+.pos-field {
+  display: flex; flex-direction: column; gap: 4px;
+  .pf-label { font-size: 11px; color: #4A5568; }
+  .pf-value { font-size: 14px; font-weight: 700; color: #E8EDF5; }
+}
+
+.pnl-pos { color: #00FF88 !important; }
+.pnl-neg { color: #FF3B5C !important; }
+
+.pos-protection {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.prot-detail {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.prot-badge {
+  font-size: 12px; font-weight: 700; padding: 6px 12px; border-radius: 8px;
+  align-self: flex-start;
+  &.safe   { background: rgba(0,255,136,0.1); color: #00FF88; border: 1px solid rgba(0,255,136,0.3); }
+  &.warn   { background: rgba(255,184,0,0.1); color: #FFB800; border: 1px solid rgba(255,184,0,0.3); }
+  &.danger { background: rgba(255,59,92,0.1); color: #FF3B5C; border: 1px solid rgba(255,59,92,0.3); }
+}
+
+.pos-footer { display: flex; justify-content: flex-end; }
+.pos-footer-info { font-size: 11px; color: #4A5568; text-align: right; }

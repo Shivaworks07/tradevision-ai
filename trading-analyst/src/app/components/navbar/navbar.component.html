@@ -1,0 +1,28 @@
+<nav [class.scrolled]="scrolled">
+  <div class="nav-inner">
+    <div class="nav-brand">
+      <span class="brand-icon">⚡</span>
+      <span class="brand-name">TradeVision <span class="brand-ai">AI</span></span>
+    </div>
+    <div class="nav-links">
+      <button (click)="scrollTo('indian-market')">🇮🇳 NSE/BSE</button>
+      <button (click)="scrollTo('forex')">💱 Forex</button>
+      <button (click)="scrollTo('crypto')">₿ Crypto</button>
+      <button (click)="scrollTo('ipo')">🚀 IPO</button>
+      <button class="nav-backtest" (click)="scrollTo('backtest')">📊 Backtest</button>
+    </div>
+    <div class="nav-right">
+      <button class="currency-toggle" (click)="currency.toggle()">
+        <span [class.active]="currency.currency()==='USD'">$ USD</span>
+        <span class="sep">|</span>
+        <span [class.active]="currency.currency()==='INR'">₹ INR</span>
+      </button>
+      <div class="nav-user" *ngIf="auth.currentUser()">
+        <span class="user-avatar">{{auth.currentUser()?.firstName?.[0]?.toUpperCase()}}</span>
+        <span class="user-name">{{auth.currentUser()?.firstName}}</span>
+      </div>
+      <button class="logout-btn" (click)="logout()" title="Logout">⎋</button>
+      <div class="nav-live"><span class="live-dot"></span>LIVE</div>
+    </div>
+  </div>
+</nav>

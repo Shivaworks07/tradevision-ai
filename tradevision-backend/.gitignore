@@ -1,0 +1,50 @@
+# See https://docs.github.com/get-started/getting-started-with-git/ignoring-files for more about ignoring files.
+
+# Maven build output
+target/
+*.class
+
+# IDEs and editors
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.project
+.classpath
+.settings/
+.factorypath
+
+# Logs
+*.log
+logs/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Local environment overrides — application-local.properties itself IS committed on purpose
+# (see its own header comment: every value in it is a fake, dev-only placeholder). This is only
+# for a personal override file layered on top of it, e.g. if you point at your own Atlas dev
+# cluster instead of local MongoDB — never commit real secrets, even dev ones, in a file matching
+# this pattern.
+application-local-override.properties
+.env
+.env.local
+
+# Real secrets should never live in this repo at all — this pattern is a safety net in case one
+# ever gets created locally by mistake, not an expectation that it will be.
+*.pem
+*.key
+
+# Review finding ("P0 #2" — investigating the admin-secret leak turned up a stale, vulnerable
+# compiled Angular bundle committed here, weeks out of date with the actual source): the Angular
+# production build is a generated artifact, never something to commit — the Dockerfile now
+# builds it fresh every time. A stale committed build can silently ship old bugs (including
+# actual security leaks) regardless of how many times the real source gets fixed afterward.
+src/main/resources/static/*
+!src/main/resources/static/.gitkeep

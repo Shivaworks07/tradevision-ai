@@ -1,0 +1,47 @@
+package com.tradevision.model;
+
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import org.springframework.data.annotation.Id;
+import org.springframework.data.mongodb.core.mapping.Document;
+
+import java.time.Instant;
+
+/**
+ * P2-5 fix ("BrokerCredentialService.pendingLiveConnects -- in-memory map, no eviction, lost on
+ * restart, breaks with >1 replica" -- external review, confirmed real by direct inspection
+ * before this fix: BrokerCredentialService.pendingLiveConnects was a plain
+ * ConcurrentHashMap<String, PendingLiveConnect>, field-local to one JVM instance): the actual
+ * durable replacement. This is now the ONLY record of a pending LIVE-connect confirmation --
+ * @Id token means requestLiveConnect/confirmLiveConnect route through this document rather than
+ * an instance-local map, so the token issued by whichever replica served requestLiveConnect can
+ * be confirmed by ANY replica behind a load balancer, closing the exact "breaks with >1 replica"
+ * gap this finding names. The two-step LIVE-connect ceremony's own confirmation window (see
+ * BrokerCredentialService.LIVE_CONNECT_CONFIRM_WINDOW) is unchanged -- this is a durability and
+ * cross-replica fix, not a behavior change to the ceremony itself. Holds the credential ALREADY
+ * encrypted, not plaintext, exactly like the in-memory version it replaces -- encryption happens
+ * before this document is ever created, not after.
+ *
+ * "No eviction" from this same finding is fixed by the TTL index registered in IndexInitializer
+ * on expiresAt (Duration.ZERO -- MongoDB's own documented "expire at this document's own absolute
+ * timestamp" behavior, the same mechanism already used for ReconciliationLock): an unconfirmed
+ * token is no longer left to accumulate forever the way the old map's entries were (nothing ever
+ * swept an expired-but-never-confirmed entry out of it before this fix) -- it is durably removed
+ * by MongoDB itself once its own confirmation window has passed, with no new sweeper code needed.
+ */
+@Data @NoArgsConstructor
+@Document(collection = "pending_live_connects")
+public class PendingLiveConnect {
+    @Id
+    private String token;
+    private String userId;
+    private BrokerType broker;
+    private String encryptedApiKey;
+    private String encryptedApiSecret;
+    private String keyHint;
+    private String accountUid;
+    // A real, absolute point in time (not a relative duration from creation) -- backed by a TTL
+    // index created via IndexInitializer.ensureTtlIndex(PendingLiveConnect.class, "expiresAt",
+    // Duration.ZERO), the same convention ReconciliationLock's own identical field already uses.
+    private Instant expiresAt;
+}

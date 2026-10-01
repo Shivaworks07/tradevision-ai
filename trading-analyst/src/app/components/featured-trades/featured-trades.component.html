@@ -1,0 +1,109 @@
+<div class="ft-wrap">
+
+  <!-- Header -->
+  <div class="ft-header">
+    <div class="ft-title-row">
+      <div>
+        <h3>🎯 Featured Trades</h3>
+        <p>Top {{market === 'CRYPTO' ? 'crypto pairs' : 'NSE stocks'}} · AI-analyzed · Best for scalp &amp; intraday</p>
+      </div>
+      <div class="ft-refresh" *ngIf="loadingCount > 0">
+        <span class="ft-spinner"></span>
+        <span>Analyzing {{loadingCount}} {{market === 'CRYPTO' ? 'coins' : 'stocks'}}…</span>
+      </div>
+    </div>
+
+    <!-- TF selector -->
+    <div class="ft-tfs">
+      <span class="ft-tf-label">Timeframe:</span>
+      <button *ngFor="let tf of tfs"
+              [class.active]="selectedTf === tf"
+              (click)="setTf(tf)">{{tf}}</button>
+    </div>
+
+    <!-- Summary pills -->
+    <div class="ft-summary" *ngIf="loadingCount === 0">
+      <div class="fts-pill long"><span>▲ LONG</span><strong>{{longTrades.length}}</strong></div>
+      <div class="fts-pill short"><span>▼ SHORT</span><strong>{{shortTrades.length}}</strong></div>
+      <div class="fts-pill wait"><span>⏸ WAIT</span><strong>{{waitTrades.length}}</strong></div>
+      <div class="fts-sentiment" *ngIf="loadingCount === 0">
+        <span *ngIf="longTrades.length > shortTrades.length + 2" style="color:#00FF88">📈 Market leaning Bullish</span>
+        <span *ngIf="shortTrades.length > longTrades.length + 2" style="color:#FF3B5C">📉 Market leaning Bearish</span>
+        <span *ngIf="waitTrades.length > longTrades.length && waitTrades.length > shortTrades.length" style="color:#FFB800">⚖️ Market sideways — wait for clear signals</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Trades grid -->
+  <div class="ft-grid">
+    <div class="ft-card" *ngFor="let t of trades" [class.loading]="t.loading">
+
+      <!-- Loading skeleton -->
+      <div class="ftc-skeleton" *ngIf="t.loading">
+        <div class="sk-head"></div>
+        <div class="sk-body"></div>
+        <div class="sk-foot"></div>
+      </div>
+
+      <!-- Loaded card -->
+      <div class="ftc-content" *ngIf="!t.loading">
+        <!-- Top: symbol + price -->
+        <div class="ftc-top">
+          <div class="ftc-sym">
+            <span class="ftcs-name">{{t.market === 'CRYPTO' ? t.symbol.replace('USDT','') : t.symbol}}</span>
+            <span class="ftcs-full">{{t.name}}</span>
+          </div>
+          <div class="ftc-price">{{priceStr(t)}}</div>
+        </div>
+
+        <!-- Direction badge -->
+        <div class="ftc-dir" [class]="dirClass(t)">
+          <span class="ftcd-label">{{dirLabel(t)}}</span>
+          <span class="ftcd-sig" *ngIf="t.call?.signal">{{t.call!.signal}}</span>
+          <span class="ftcd-conf" *ngIf="t.call?.confidence" [style.color]="confColor(t.call!.confidence)">
+            {{t.call!.confidence}}%
+          </span>
+        </div>
+
+        <!-- Sideways message -->
+        <div class="ftc-sideways" *ngIf="t.sidewaysMsg">
+          <span>💤</span> {{t.sidewaysMsg}}
+        </div>
+
+        <!-- Trade levels (only for directional) -->
+        <div class="ftc-levels" *ngIf="t.call && t.call.direction !== 'WAIT'">
+          <div class="ftcl-row"><span class="ftcl-k entry">Entry</span><span class="ftcl-v">{{priceStr(t)}}</span></div>
+          <div class="ftcl-row"><span class="ftcl-k sl">SL</span>
+            <span class="ftcl-v red" *ngIf="t.call.stopLoss">
+              {{t.market === 'CRYPTO' ? fmtPrice(t.call.stopLoss) : fmtStockPrice(t.call.stopLoss)}}
+            </span>
+          </div>
+          <div class="ftcl-row"><span class="ftcl-k t1">T1</span>
+            <span class="ftcl-v green" *ngIf="t.call.target1">
+              {{t.market === 'CRYPTO' ? fmtPrice(t.call.target1) : fmtStockPrice(t.call.target1)}}
+            </span>
+          </div>
+          <div class="ftcl-row"><span class="ftcl-k t2">T2</span>
+            <span class="ftcl-v green" *ngIf="t.call.target2">
+              {{t.market === 'CRYPTO' ? fmtPrice(t.call.target2) : fmtStockPrice(t.call.target2)}}
+            </span>
+          </div>
+          <div class="ftcl-row"><span class="ftcl-k rr">R:R</span>
+            <span class="ftcl-v purple">{{t.call.rrRatio || '1:3'}}</span>
+          </div>
+        </div>
+
+        <!-- Top reasons -->
+        <div class="ftc-reasons" *ngIf="t.call && t.call.direction !== 'WAIT'">
+          <div *ngFor="let r of (t.call.direction === 'LONG' ? t.call.bullReasons : t.call.bearReasons)?.slice(0,2)"
+               class="ftcr-item" [class.bull]="t.call.direction==='LONG'" [class.bear]="t.call.direction==='SHORT'">
+            {{t.call.direction === 'LONG' ? '✓' : '✗'}} {{r}}
+          </div>
+        </div>
+
+        <!-- Timeframe badge -->
+        <div class="ftc-tf">{{selectedTf}} · {{t.market === 'CRYPTO' ? 'Binance' : 'NSE'}}</div>
+      </div>
+    </div>
+  </div>
+</div>

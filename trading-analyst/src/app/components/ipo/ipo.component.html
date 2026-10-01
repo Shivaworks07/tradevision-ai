@@ -1,0 +1,190 @@
+<div class="section-container">
+  <div class="section-header">
+    <div class="section-icon" style="background:rgba(123,97,255,0.12);">🚀</div>
+    <div class="section-title">
+      <h2>Indian IPO Tracker</h2>
+      <p>All IPOs — Open · Upcoming · Closed · Recently Listed · GMP · Subscription</p>
+    </div>
+    <div class="hdr-right">
+      <span class="refresh-chip">🔄 {{autoRefreshCountdown}}s</span>
+      <span class="section-badge" style="background:rgba(123,97,255,0.12);color:#7B61FF;border:1px solid rgba(123,97,255,0.2)">NSE/BSE</span>
+    </div>
+  </div>
+
+  <!-- Data freshness / source honesty banner -->
+  <div class="ipo-stale-banner" *ngIf="!loading && isStale">
+    ⚠️ Live IPO data could not be refreshed recently — showing the last successful fetch.
+    <span *ngIf="fetchWarning"> ({{fetchWarning}})</span>
+  </div>
+  <div class="ipo-gmp-note" *ngIf="!loading && gmpDisclaimer">
+    ℹ️ {{gmpDisclaimer}}
+  </div>
+
+  <!-- Stats Row -->
+  <div class="ipo-stats" *ngIf="!loading">
+    <div class="stat-pill total">
+      <span class="sp-val">{{allIPOs.length}}</span>
+      <span class="sp-lbl">Total IPOs</span>
+    </div>
+    <div class="stat-pill open">
+      <span class="sp-val">{{totalOpen}}</span>
+      <span class="sp-lbl">Open Now</span>
+    </div>
+    <div class="stat-pill sub">
+      <span class="sp-val">{{totalSubscribe}}</span>
+      <span class="sp-lbl">Subscribe</span>
+    </div>
+    <div class="stat-pill avoid">
+      <span class="sp-val">{{totalAvoid}}</span>
+      <span class="sp-lbl">Avoid</span>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="ipo-controls">
+    <div class="filter-pills">
+      <button *ngFor="let f of filters" [class.active]="filter===f" (click)="setFilter(f)">
+        <span *ngIf="f==='OPEN'" class="open-dot"></span>{{f}}
+        <span class="f-count" *ngIf="f!=='All'">
+          ({{allIPOs | ipoCount:f}})
+        </span>
+      </button>
+    </div>
+    <div class="search-bar-wrap" style="margin-bottom:0;flex:1;max-width:320px;">
+      <span class="search-icon">🔍</span>
+      <input [(ngModel)]="search" (ngModelChange)="applyFilter()"
+             placeholder="Search company, symbol, category…">
+    </div>
+  </div>
+
+  <div class="loading-state" *ngIf="loading">
+    <div class="spinner"></div><p>Loading IPO data…</p>
+  </div>
+
+  <!-- IPO Grid -->
+  <div class="ipo-grid" *ngIf="!loading">
+    <div class="ipo-card" (click)="openDetail(ipo)" style="cursor:pointer" [class]="getRecoClass(verdictFor(ipo))" *ngFor="let ipo of filtered">
+
+      <div class="ipo-top">
+        <span class="status-badge" [class]="getStatusClass(ipo.status)">
+          <span class="sd"></span>{{ipo.status}}
+        </span>
+        <span class="ipo-cat">{{ipo.category}}</span>
+      </div>
+
+      <div class="ipo-co">{{ipo.company}}</div>
+      <div class="ipo-sym">{{ipo.symbol}} · {{ipo.exchange}}</div>
+
+      <!-- GMP Badge — real value from live source, or honest "not available" -->
+      <div class="gmp-bar" *ngIf="ipo.gmp !== null && ipo.gmpPct !== null">
+        <span class="gmp-label">GMP</span>
+        <span class="gmp-val" [style.color]="gmpColor(ipo.gmpPct)">
+          {{ipo.gmp! >= 0 ? '+' : ''}}₹{{ipo.gmp}}
+          ({{ipo.gmpPct! >= 0 ? '+' : ''}}{{ipo.gmpPct}}%)
+        </span>
+      </div>
+      <div class="gmp-na" *ngIf="ipo.gmp === null || ipo.gmpPct === null">GMP: Not available</div>
+
+      <div class="ipo-details">
+        <div class="ipo-d" *ngIf="ipo.priceMin > 0">
+          <span>Price Band</span>
+          <b>{{formatPrice(ipo.priceMin)}} – {{formatPrice(ipo.priceMax)}}</b>
+        </div>
+        <div class="ipo-d" *ngIf="ipo.priceMin === 0">
+          <span>Price Band</span><b>TBD</b>
+        </div>
+        <div class="ipo-d" *ngIf="ipo.lotSize > 0">
+          <span>Lot Size</span><b>{{ipo.lotSize}} shares</b>
+        </div>
+        <div class="ipo-d">
+          <span>Issue Size</span><b>{{ipo.issueSize}}</b>
+        </div>
+
+        <div class="ipo-d">
+          <span>Open</span><b>{{ipo.openDate}}</b>
+        </div>
+        <div class="ipo-d">
+          <span>Close</span><b>{{ipo.closeDate}}</b>
+        </div>
+        <div class="ipo-d">
+          <span>Listing</span><b>{{ipo.listingDate}}</b>
+        </div>
+      </div>
+
+      <div class="ipo-reco" [class]="getRecoClass(verdictFor(ipo))">
+        <span>{{verdictFor(ipo).includes('SUBSCRIBE')?'✅ '+(verdictFor(ipo)==='STRONG_SUBSCRIBE'?'STRONG SUBSCRIBE':'SUBSCRIBE'):verdictFor(ipo).includes('AVOID')?'❌ '+(verdictFor(ipo)==='STRONG_AVOID'?'STRONG AVOID':'AVOID'):'⚖️ NEUTRAL'}}</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="ipo-disclaimer" *ngIf="!loading">
+    ⚠️ GMP = Grey Market Premium (indicative only). Subscription figures from public sources.
+    Recommendations based on issue fundamentals, GMP & market conditions.
+    Always read the DRHP before investing. Last updated: {{lastUpdated}}.
+    Showing {{filtered.length}} of {{allIPOs.length}} IPOs.
+  </div>
+
+<!-- IPO Detail Modal -->
+<div class="ipo-modal-bg" *ngIf="selectedIpo" (click)="closeDetail()">
+  <div class="ipo-modal" (click)="$event.stopPropagation()">
+    <div class="im-header">
+      <div class="im-company">
+        <div class="im-name">{{selectedIpo.company}}</div>
+        <div class="im-meta">{{selectedIpo.symbol}} · {{selectedIpo.exchange}} · {{selectedIpo.category}}</div>
+      </div>
+      <button class="im-close" (click)="closeDetail()">✕</button>
+    </div>
+
+    <!-- Price + Dates -->
+    <div class="im-grid">
+      <div class="im-stat"><div class="ims-l">Price Band</div><div class="ims-v">₹{{selectedIpo.priceMin}} – ₹{{selectedIpo.priceMax}}</div></div>
+      <div class="im-stat"><div class="ims-l">Lot Size</div><div class="ims-v">{{selectedIpo.lotSize}} shares</div></div>
+      <div class="im-stat"><div class="ims-l">Min Investment</div><div class="ims-v">₹{{(selectedIpo.priceMax * selectedIpo.lotSize) | number:'1.0-0'}}</div></div>
+      <div class="im-stat"><div class="ims-l">Issue Size</div><div class="ims-v">₹{{selectedIpo.issueSize}}</div></div>
+      <div class="im-stat" *ngIf="selectedIpo.gmp !== null"><div class="ims-l">GMP</div><div class="ims-v" [style.color]="gmpColor(selectedIpo.gmpPct)">{{selectedIpo.gmp! >= 0 ? '+' : ''}}₹{{selectedIpo.gmp}} ({{selectedIpo.gmpPct}}%)</div></div>
+      <div class="im-stat" *ngIf="selectedIpo.gmp === null"><div class="ims-l">GMP</div><div class="ims-v" style="color:#4A5568">Not available</div></div>
+
+      <div class="im-stat"><div class="ims-l">Open</div><div class="ims-v">{{selectedIpo.openDate}}</div></div>
+      <div class="im-stat"><div class="ims-l">Close</div><div class="ims-v">{{selectedIpo.closeDate}}</div></div>
+      <div class="im-stat"><div class="ims-l">Listing</div><div class="ims-v">{{selectedIpo.listingDate || 'TBA'}}</div></div>
+      <div class="im-stat"><div class="ims-l">Status</div><div class="ims-v" [style.color]="selectedIpo.status==='OPEN'?'#00FF88':selectedIpo.status==='UPCOMING'?'#00D4FF':selectedIpo.status==='UNKNOWN'?'#FFB800':'#8895B3'">{{selectedIpo.status}}</div></div>
+    </div>
+
+    <!-- AI Analysis -->
+    <div class="im-analysis" *ngIf="ipoAnalysis">
+      <!-- Verdict -->
+      <div class="ima-verdict" [class]="verdictClass(ipoAnalysis.verdict)">
+        <div class="imav-score">{{ipoAnalysis.score}}</div>
+        <div class="imav-info">
+          <div class="imav-verdict">{{fmt(ipoAnalysis.verdict)}}</div>
+          <div class="imav-text">{{ipoAnalysis.verdictText}}</div>
+        </div>
+      </div>
+
+      <!-- Reasons -->
+      <div class="ima-reasons">
+        <div class="ima-col" *ngIf="ipoAnalysis.bullPoints.length">
+          <div class="imac-title bull">Reasons to Subscribe</div>
+          <div class="imac-row" *ngFor="let p of ipoAnalysis.bullPoints">
+            <span class="imac-dot bull">✓</span>
+            <span>{{p}}</span>
+          </div>
+        </div>
+        <div class="ima-col" *ngIf="ipoAnalysis.bearPoints.length">
+          <div class="imac-title bear">Risks / Reasons to Avoid</div>
+          <div class="imac-row" *ngFor="let p of ipoAnalysis.bearPoints">
+            <span class="imac-dot bear">✗</span>
+            <span>{{p}}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Disclaimer -->
+      <div class="ima-disclaimer">
+        AI analysis based on GMP, subscription data, sector, and exchange. Not financial advice — do your own research before investing.
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>

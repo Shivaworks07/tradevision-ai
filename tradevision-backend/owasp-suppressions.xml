@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  P1-21 fix ("Unsupported framework versions on a money system"; full context in this module's
+  own SETUP.md, "P1-21" section, and .github/workflows/dependency-scan.yml's own header comment
+  at the repo root): empty on purpose. This file exists so dependency-scan.yml's own
+  `-DsuppressionFile=owasp-suppressions.xml` argument has a real, valid (if currently empty) XML
+  document to load: OWASP Dependency-Check requires the referenced file to exist and parse, even
+  with zero suppress entries. Add a suppress entry here ONLY for a specific CVE that has been
+  reviewed and determined to be a false positive or genuinely not exploitable in this
+  application's own usage of the flagged dependency; never as a way to silence a real,
+  unaddressed finding. See https://jeremylong.github.io/DependencyCheck/general/suppression.html
+  for the suppression-file schema.
+-->
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+</suppressions>

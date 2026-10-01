@@ -1,0 +1,490 @@
+<div class="terminal">
+  <!-- Header -->
+  <div class="th">
+    <div class="th-brand"><span>Live Terminal</span><span class="th-src">Binance OHLCV</span></div>
+    <div class="th-right">
+      <span class="cur-ind" [class.inr]="currency.currency()==='INR'">{{currency.currency()==='INR'?'₹ INR':'$ USD'}}</span>
+      <span class="live-badge"><span class="ld"></span>LIVE</span>
+      <span class="upd" *ngIf="lastUpdated">{{lastUpdated}}</span>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="ctrl-bar">
+    <!-- Coin Search -->
+    <div class="ctrl-g coin-g">
+      <label>Coin — Search any coin worldwide</label>
+      <div class="coin-wrap">
+        <span class="cs-icon">🔍</span>
+        <input class="coin-inp" [(ngModel)]="coinSearch" (ngModelChange)="onCoinSearch()"
+               (focus)="onCoinSearch()" (blur)="showCoinDrop=false"
+               placeholder="Search BTC, ETH, PEPE, any coin…">
+        <span class="cs-badge">{{selectedSymbol}}</span>
+        <span class="cs-spin" *ngIf="searching">⟳</span>
+        <div class="coin-drop" *ngIf="showCoinDrop && coinResults.length">
+          <div class="cd-item" *ngFor="let c of coinResults" (mousedown)="selectCoin(c)">
+            <img *ngIf="c.thumb" [src]="c.thumb" class="cd-thumb" onerror="this.style.display='none'">
+            <span class="cd-sym">{{c.symbol}}</span>
+            <span class="cd-name">{{c.name}}</span>
+            <span class="cd-rank" *ngIf="c.market_cap_rank">#{{c.market_cap_rank}}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Timeframe with tooltip -->
+    <div class="ctrl-g">
+      <label>Timeframe <span class="tf-hint">(hover for guide)</span></label>
+      <div class="tf-pills" (mouseleave)="hideTfInfo()">
+        <button *ngFor="let iv of INTERVALS"
+                [class.active]="selectedInterval===iv"
+                (mouseenter)="showTfInfo(iv)"
+                (click)="selectTf(iv)">{{iv}}</button>
+      </div>
+    </div>
+
+    <!-- Indicators -->
+    <div class="ctrl-g">
+      <label>Indicators</label>
+      <div class="ind-chips">
+        <button *ngFor="let ind of indicators" class="ind-chip" [class.active]="ind.active"
+                [style.--ic]="ind.color" (click)="toggleIndicator(ind)" [title]="ind.desc">
+          <span class="id-dot" [style.background]="ind.active?ind.color:'#4A5568'"></span>
+          {{ind.label}}
+        </button>
+      </div>
+    </div>
+
+    <!-- Currency -->
+    <div class="ctrl-g">
+      <label>Currency</label>
+      <button class="cur-btn" (click)="currency.toggle()">
+        <span [class.active]="currency.currency()==='USD'">$ USD</span>
+        <span class="sep">|</span>
+        <span [class.active]="currency.currency()==='INR'">₹ INR</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Timeframe Tooltip Popup -->
+  <div class="tf-tooltip" *ngIf="showTfTooltip && tfTooltipData">
+    <div class="tft-type">{{tfTooltipData.type}}</div>
+    <div class="tft-label">{{tfTooltipData.label}}</div>
+    <div class="tft-desc">{{tfTooltipData.desc}}</div>
+    <div class="tft-best">👤 Best for: {{tfTooltipData.best}}</div>
+  </div>
+
+  <!-- Price Strip -->
+  <div class="price-strip" *ngIf="candles.length">
+    <div class="ps-left">
+      <span class="ps-name">{{selectedName}}</span>
+      <span class="ps-sym">{{selectedSymbol}}/USDT · Binance</span>
+    </div>
+    <div class="ps-price">{{formatPrice(currentTickerUSD)}}</div>
+    <div class="ps-rate" *ngIf="currency.currency()==='INR'">1 USD = ₹{{currency.usdToInr().toFixed(2)}}</div>
+    <div class="ps-tf">{{selectedInterval}} · {{candles.length}} Candles</div>
+  </div>
+
+  <div class="chart-loading" *ngIf="loading"><div class="cs"></div><p>Loading {{selectedName}} from Binance…</p></div>
+  <div class="chart-error" *ngIf="error&&!loading">⚠️ {{error}} <button (click)="loadCandles()">Retry</button></div>
+
+  <!-- Main Chart -->
+  <div class="chart-wrap" [style.display]="loading?'none':'block'">
+    <div class="chart-label">
+      <span class="cl-sym">{{selectedSymbol}}/USDT</span>
+      <span class="cl-tf">{{selectedInterval}} · {{currency.currency()==='INR'?'₹ INR':'$ USD'}}</span>
+    </div>
+    <div class="legend">
+      <span class="le ema9"  *ngIf="showEMA">EMA9</span>
+      <span class="le ema20" *ngIf="showEMA">EMA20</span>
+      <span class="le ema50" *ngIf="showEMA">EMA50</span>
+      <span class="le ema200"*ngIf="showEMA">EMA200</span>
+      <span class="le bb"    *ngIf="showBB">BB</span>
+      <span class="le vwap"  *ngIf="showVWAP">VWAP</span>
+    </div>
+    <div #chartContainer class="chart-container"></div>
+  </div>
+
+  <!-- RSI Sub-chart -->
+  <div class="sub-wrap" *ngIf="showRSI && !loading">
+    <div class="sub-label">RSI (14) <span class="sub-ref"><span class="ob">70 Overbought</span> · <span class="os">30 Oversold</span></span></div>
+    <div #rsiContainer class="sub-container"></div>
+  </div>
+
+  <!-- MACD Sub-chart -->
+  <div class="sub-wrap" *ngIf="showMACD && !loading">
+    <div class="sub-label">MACD (12,26,9) <span class="sub-ref"><span style="color:#00D4FF">MACD</span> · <span style="color:#FF9900">Signal</span> · <span style="color:#00FF88">Histogram</span></span></div>
+    <div #macdContainer class="sub-container"></div>
+  </div>
+
+  <!-- Signal Summary -->
+  <div class="signal-wrap" *ngIf="tradeCall && !loading">
+    <div class="sig-hero">
+      <div class="sig-dir" [class]="tradeCall.direction.toLowerCase()">
+        {{tradeCall.direction==='LONG'?'📈 LONG':tradeCall.direction==='SHORT'?'📉 SHORT':'⏸ WAIT'}}
+      </div>
+      <div class="sig-mode" [title]="TF_INFO[selectedInterval]?.desc">
+        {{TF_INFO[selectedInterval]?.type || selectedInterval}} · {{selectedInterval}}
+      </div>
+      <div class="sig-sig" [class]="tradeCall.signal.includes('BUY')?'buy':tradeCall.signal.includes('SELL')?'sell':'neutral'">{{tradeCall.signal}}</div>
+      <div class="sig-conf">
+        <div class="sc-lbl">Confidence</div>
+        <div class="sc-bar"><div class="sc-fill" [style.width.%]="tradeCall.confidence" [class]="tradeCall.direction.toLowerCase()"></div></div>
+        <div class="sc-val">{{tradeCall.confidence}}%</div>
+      </div>
+      <div class="sig-risk" [class]="tradeCall.risk.toLowerCase()">{{tradeCall.risk}} RISK</div>
+      <div class="sig-rr">R:R = {{tradeCall.rrRatio}}</div>
+      <button class="full-btn" (click)="modalVisible=true">📋 Full Analysis</button>
+    </div>
+
+    <div class="ql-grid">
+      <div class="ql entry"><span>Entry</span><strong>{{formatPrice(tradeCall.entry)}}</strong></div>
+      <div class="ql sl"><span>Stop Loss</span><strong>{{formatPrice(tradeCall.stopLoss)}}</strong></div>
+      <div class="ql t1"><span>Target 1 <em>1.5R</em></span><strong>{{formatPrice(tradeCall.target1)}}</strong></div>
+      <div class="ql t2"><span>Target 2 <em>2.8R</em></span><strong>{{formatPrice(tradeCall.target2)}}</strong></div>
+      <div class="ql t3"><span>Target 3 <em>4.5R</em></span><strong>{{formatPrice(tradeCall.target3)}}</strong></div>
+      <div class="ql atr"><span>ATR</span><strong>{{formatPrice(tradeCall.atr)}}</strong></div>
+    </div>
+
+    <!-- Inline AI Explanation - no need to click "Full Analysis" -->
+    <div class="ai-explanation" *ngIf="tradeCall.direction !== 'WAIT'">
+      <div class="aie-header">
+        <span class="aie-title">AI Explanation</span>
+        <span class="aie-strength" *ngIf="tradeCall.signalStrength"
+              [class]="'str-'+tradeCall.signalStrength.toLowerCase().replace(' ','-')">
+          {{tradeCall.signalStrength}}
+        </span>
+      </div>
+      <div class="aie-reasons">
+        <div class="aie-col bull" *ngIf="tradeCall.bullReasons?.length">
+          <div class="aie-item" *ngFor="let r of tradeCall.bullReasons.slice(0,5)">
+            <span class="aie-check">✓</span><span>{{r}}</span>
+          </div>
+        </div>
+        <div class="aie-col bear" *ngIf="tradeCall.bearReasons?.length">
+          <div class="aie-risk-title">Risks</div>
+          <div class="aie-item risk" *ngFor="let r of tradeCall.bearReasons.slice(0,3)">
+            <span class="aie-check">⚠</span><span>{{r}}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="ind-strip">
+      <div class="is-item" [class.bull]="tradeCall.rsi<50" [class.bear]="tradeCall.rsi>50">
+        <span class="is-n">RSI</span><span class="is-v">{{tradeCall.rsi}}</span><span class="is-z">{{tradeCall.rsiZone}}</span>
+      </div>
+      <div class="is-item" [class.bull]="tradeCall.macdBull" [class.bear]="!tradeCall.macdBull">
+        <span class="is-n">MACD</span><span class="is-v">{{tradeCall.macdBull?'▲ Bull':'▼ Bear'}}</span>
+      </div>
+      <div class="is-item"><span class="is-n">ADX</span><span class="is-v">{{tradeCall.adx}}</span><span class="is-z">{{tradeCall.adxTrend}}</span></div>
+      <div class="is-item"><span class="is-n">Williams %R</span><span class="is-v">{{tradeCall.williamsR}}</span><span class="is-z">{{tradeCall.williamsZone}}</span></div>
+      <div class="is-item"><span class="is-n">OBV</span><span class="is-v">{{tradeCall.obvSignal}}</span></div>
+      <div class="is-item"><span class="is-n">EMA Trend</span><span class="is-v">{{tradeCall.trendEMA}}</span></div>
+      <div class="is-item"><span class="is-n">BB</span><span class="is-v">{{tradeCall.bbSignal}}</span></div>
+      <div class="is-item"><span class="is-n">VWAP</span><span class="is-v">{{tradeCall.vwapSignal}}</span></div>
+    </div>
+
+    <div class="patterns-row">
+      <span class="pr-label">🕯️ Patterns:</span>
+      <span class="pc" *ngFor="let p of tradeCall.patterns">{{p}}</span>
+    </div>
+    <div class="sr-row">
+      <div class="sr-col"><span class="sr-l">🟢 Support</span><span class="sr-v" *ngFor="let s of tradeCall.supports">{{formatPrice(s)}}</span></div>
+      <div class="sr-col"><span class="sr-l">🔴 Resistance</span><span class="sr-v" *ngFor="let r of tradeCall.resistances">{{formatPrice(r)}}</span></div>
+    </div>
+    <div class="summary-box">{{tradeCall.summary}}</div>
+    <div class="disclaimer">⚠️ Real Binance data · RSI · MACD · ADX · Williams %R · OBV · BB · VWAP. Educational only. Not financial advice.</div>
+  </div>
+
+  <!-- Phase 1: SMC + Order Flow + Volume Profile Panels -->
+  <div class="phase1-panels" *ngIf="!loading">
+
+    <!-- SMC Panel -->
+    <div class="p1-panel smc-panel" *ngIf="smcAnalysis">
+      <div class="p1-header">
+        <span class="p1-title">⚡ Smart Money (SMC)</span>
+        <span class="p1-badge" [class.bull]="smcAnalysis.bias==='BULLISH'" [class.bear]="smcAnalysis.bias==='BEARISH'" [class.neut]="smcAnalysis.bias==='NEUTRAL'">
+          {{smcAnalysis.bias}} {{smcAnalysis.biasStrength}}%
+        </span>
+      </div>
+
+      <!-- Structure Breaks -->
+      <div class="p1-section" *ngIf="smcAnalysis.structureBreaks?.length">
+        <div class="p1-label">Structure</div>
+        <div class="smc-breaks">
+          <div class="smc-break" *ngFor="let b of smcAnalysis.structureBreaks.slice(-3)"
+               [class.bull]="b.direction==='BULL'" [class.bear]="b.direction==='BEAR'">
+            <span class="sb-type">{{b.type}}</span>
+            <span class="sb-dir">{{b.direction==='BULL'?'📈':'📉'}}</span>
+            <span class="sb-sig">{{b.significance}}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Order Blocks -->
+      <div class="p1-section" *ngIf="smcAnalysis.orderBlocks?.length">
+        <div class="p1-label">Order Blocks</div>
+        <div class="ob-list">
+          <div class="ob-item" *ngFor="let ob of smcAnalysis.orderBlocks.slice(0,3)"
+               [class.bull]="ob.direction==='BULL'" [class.bear]="ob.direction==='BEAR'">
+            <span class="ob-dir">{{ob.direction==='BULL'?'🟢 Bull OB':'🔴 Bear OB'}}</span>
+            <span class="ob-range">{{ob.bottom | number:'1.2-4'}} – {{ob.top | number:'1.2-4'}}</span>
+            <span class="ob-str" *ngFor="let s of range(ob.strength)">⭐</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- FVGs -->
+      <div class="p1-section" *ngIf="smcAnalysis.fairValueGaps?.length">
+        <div class="p1-label">Fair Value Gaps</div>
+        <div class="fvg-list">
+          <div class="fvg-item" *ngFor="let f of smcAnalysis.fairValueGaps.slice(0,3)"
+               [class.bull]="f.direction==='BULL'" [class.bear]="f.direction==='BEAR'">
+            <span>{{f.direction==='BULL'?'🟢':'🔴'}} FVG {{f.size}}%</span>
+            <span class="fvg-range">{{f.bottom | number:'1.2-4'}} – {{f.top | number:'1.2-4'}}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Premium/Discount -->
+      <div class="p1-section" *ngIf="smcAnalysis.premiumDiscount">
+        <div class="p1-label">P/D Zone</div>
+        <div class="pd-zone" [class.premium]="smcAnalysis.premiumDiscount.currentZone==='PREMIUM'"
+             [class.discount]="smcAnalysis.premiumDiscount.currentZone==='DISCOUNT'"
+             [class.equil]="smcAnalysis.premiumDiscount.currentZone==='EQUILIBRIUM'">
+          {{smcAnalysis.premiumDiscount.currentZone}} ({{(smcAnalysis.premiumDiscount.fibLevel*100).toFixed(0)}}% of range)
+        </div>
+      </div>
+
+      <!-- Entry Setup -->
+      <div class="p1-setup" *ngIf="smcAnalysis.entrySetup">
+        {{smcAnalysis.entrySetup}}
+      </div>
+    </div>
+
+    <!-- Order Flow Panel -->
+    <div class="p1-panel of-panel">
+      <div class="p1-header">
+        <span class="p1-title">📊 Order Flow</span>
+        <span class="p1-badge" *ngIf="ofAnalysis?.isLoaded"
+              [class.bull]="ofAnalysis?.overallBias?.includes('BULL')"
+              [class.bear]="ofAnalysis?.overallBias?.includes('BEAR')"
+              [class.neut]="ofAnalysis?.overallBias==='NEUTRAL'">
+          {{ofAnalysis?.overallBias}} ({{ofAnalysis?.score! >= 0 ? '+' : ''}}{{ofAnalysis?.score}})
+        </span>
+        <span class="p1-loading" *ngIf="loadingPhase1">⟳ Loading…</span>
+        <span class="p1-badge neut" *ngIf="!ofAnalysis?.isLoaded && !loadingPhase1">N/A (spot)</span>
+      </div>
+      <!-- Review finding ("Spot-only/long-only isn't made explicit against a codebase that still
+           models SHORT/futures/funding/OI concepts" -- P1): confirmed real and fixed. Funding
+           rate, open interest, and CVD below are all sourced from Binance FUTURES data (this
+           panel's own funding-rate row, open-interest row, etc.) -- context, not a signal of what
+           this application can actually trade. The autonomous engine is spot, long-only,
+           BUY-then-SELL-to-close, full stop (AutoTradeService's own "not supported (spot,
+           long-only)" skip for any SHORT signal, enforced server-side regardless of what this
+           panel displays). -->
+      <div class="p1-scope-note" *ngIf="ofAnalysis?.isLoaded">
+        Futures-derived market context (funding, open interest, CVD) — shown for analysis only. Execution is spot, long-only.
+      </div>
+
+      <div *ngIf="ofAnalysis?.isLoaded">
+        <!-- Funding Rate -->
+        <div class="of-row" *ngIf="ofAnalysis?.funding">
+          <span class="of-label">Funding Rate</span>
+          <span class="of-val" [class.bull]="ofAnalysis!.funding!.fundingRate < 0" [class.bear]="ofAnalysis!.funding!.fundingRate > 0.03">
+            {{ofAnalysis!.funding!.fundingRate > 0 ? '+' : ''}}{{ofAnalysis!.funding!.fundingRate}}%
+          </span>
+          <span class="of-interp">{{ofAnalysis!.funding!.bias}}</span>
+        </div>
+
+        <!-- Open Interest -->
+        <div class="of-row" *ngIf="ofAnalysis?.openInterest">
+          <span class="of-label">Open Interest</span>
+          <span class="of-val" [class.bull]="ofAnalysis!.openInterest!.signal==='LONGS_BUILDING'||ofAnalysis!.openInterest!.signal==='SHORT_SQUEEZE'" [class.bear]="ofAnalysis!.openInterest!.signal==='SHORTS_BUILDING'||ofAnalysis!.openInterest!.signal==='LONG_SQUEEZE'">
+            {{ofAnalysis!.openInterest!.oiChange1h > 0 ? '+' : ''}}{{ofAnalysis!.openInterest!.oiChange1h}}% (1h)
+          </span>
+          <span class="of-interp">{{formatSignal(ofAnalysis!.openInterest!.signal)}}</span>
+        </div>
+
+        <!-- CVD -->
+        <div class="of-row" *ngIf="ofAnalysis?.cvd">
+          <span class="of-label">CVD</span>
+          <span class="of-val" [class.bull]="ofAnalysis!.cvd!.cvdTrend==='RISING'" [class.bear]="ofAnalysis!.cvd!.cvdTrend==='FALLING'">
+            {{ofAnalysis!.cvd!.cvdTrend}}
+          </span>
+          <span class="of-interp">Buy: ${{(ofAnalysis!.cvd!.buyVol/1000000).toFixed(1)}}M / Sell: ${{(ofAnalysis!.cvd!.sellVol/1000000).toFixed(1)}}M</span>
+        </div>
+
+        <!-- OF Reasons -->
+        <div class="of-reasons" *ngIf="ofAnalysis?.reasons?.length">
+          <div class="of-reason" *ngFor="let r of ofAnalysis!.reasons">{{r}}</div>
+        </div>
+      </div>
+
+      <div class="of-unavail" *ngIf="!ofAnalysis?.isLoaded && !loadingPhase1">
+        Order flow data requires Binance futures. Available for BTC, ETH, SOL etc.
+      </div>
+    </div>
+
+    <!-- Volume Profile Panel -->
+    <div class="p1-panel vp-panel" *ngIf="vpAnalysis">
+      <div class="p1-header">
+        <span class="p1-title">🏔️ Volume Profile</span>
+        <span class="p1-badge" [class.bull]="vpAnalysis.bias==='BULLISH'" [class.bear]="vpAnalysis.bias==='BEARISH'" [class.neut]="vpAnalysis.bias==='NEUTRAL'">
+          {{formatSignal(vpAnalysis.priceLocation || "")}}
+        </span>
+      </div>
+
+      <div class="vp-levels">
+        <div class="vp-row poc">
+          <span class="vp-label">🎯 POC</span>
+          <span class="vp-val">{{vpAnalysis.poc | number:'1.2-6'}}</span>
+          <span class="vp-note">highest volume</span>
+        </div>
+        <div class="vp-row vah">
+          <span class="vp-label">📊 VAH</span>
+          <span class="vp-val">{{vpAnalysis.vah | number:'1.2-6'}}</span>
+          <span class="vp-note">value area top</span>
+        </div>
+        <div class="vp-row val">
+          <span class="vp-label">📊 VAL</span>
+          <span class="vp-val">{{vpAnalysis.val | number:'1.2-6'}}</span>
+          <span class="vp-note">value area bottom</span>
+        </div>
+      </div>
+
+      <div class="vp-nodes" *ngIf="vpAnalysis.hvns.length">
+        <div class="vp-node-label">HVN (Support/Resistance)</div>
+        <div class="vp-node hvn" *ngFor="let h of vpAnalysis.hvns.slice(0,3)">
+          💎 {{h | number:'1.2-6'}}
+        </div>
+      </div>
+
+      <div class="vp-hvn-info" *ngIf="vpAnalysis.nearestHVN">
+        <span [class.bull]="vpAnalysis.nearestHVN.direction==='BELOW'" [class.bear]="vpAnalysis.nearestHVN.direction==='ABOVE'">
+          Nearest HVN {{vpAnalysis.nearestHVN.direction === 'BELOW' ? '🟢 below (support)' : '🔴 above (resistance)'}}:
+          {{vpAnalysis.nearestHVN.price | number:'1.2-6'}} ({{vpAnalysis.nearestHVN.distance.toFixed(1)}}% away)
+        </span>
+      </div>
+
+      <div class="vp-interp">{{vpAnalysis.interpretation}}</div>
+    </div>
+
+    <!-- Market Regime Panel -->
+    <div class="p1-panel regime-panel" *ngIf="regimeState">
+      <div class="p1-header">
+        <span class="p1-title">🎯 Market Regime</span>
+        <span class="regime-badge" [style.color]="regimeState.color" [style.border-color]="regimeState.color">
+          {{regimeState.emoji}} {{regimeState.label}}
+        </span>
+      </div>
+      <div class="regime-metrics">
+        <div class="rm-item"><span class="rm-l">ADX</span><span class="rm-v">{{regimeState.adx}}</span></div>
+        <div class="rm-item"><span class="rm-l">BB Width</span><span class="rm-v">{{(regimeState.bbWidth*100).toFixed(1)}}%</span></div>
+        <div class="rm-item"><span class="rm-l">ATR%</span><span class="rm-v">{{regimeState.atrPct.toFixed(1)}}%</span></div>
+        <div class="rm-item"><span class="rm-l">Vol Ratio</span><span class="rm-v">{{regimeState.volumeRatio}}x</span></div>
+      </div>
+      <div class="regime-strategy">
+        <div class="rs-type">Strategy: <strong>{{regimeState.strategy.type}}</strong></div>
+        <div class="rs-entry">{{regimeState.strategy.entryStyle}}</div>
+        <div class="rs-risk">Position size: <strong>{{regimeState.strategy.riskMultiplier}}x</strong> | SL: <strong>{{regimeState.strategy.slMultiplier}}x ATR</strong></div>
+      </div>
+      <div class="regime-best">
+        <div class="rb-label">Use:</div>
+        <span class="rb-chip" *ngFor="let ind of regimeState.strategy.bestIndicators.slice(0,3)">{{ind}}</span>
+      </div>
+      <div class="regime-avoid" *ngIf="regimeState.strategy.avoid.length">
+        <div class="ra-label">Avoid:</div>
+        <div class="ra-item" *ngFor="let a of regimeState.strategy.avoid.slice(0,2)">⛔ {{a}}</div>
+      </div>
+      <div class="regime-warn" *ngFor="let w of regimeState.warnings">{{w}}</div>
+    </div>
+
+    <!-- Fear & Greed Panel -->
+    <app-fear-greed></app-fear-greed>
+
+  </div>
+
+  <!-- Risk Engine Panel -->
+  <div class="risk-panel" *ngIf="tradeRisk && tradeCall?.direction !== 'WAIT'">
+    <div class="rp-header">
+      <!-- P3-4 fix ("client 'risk engine' unrelated to server limits" -- external review, full
+           context in crypto-terminal.component.ts's own onAccountSizeChange javadoc): the title
+           and tooltip make explicit what this panel always actually was -- a manual what-if
+           sizing calculator, never the account's real, server-enforced auto-trade risk limits
+           (those live entirely server-side in RiskProfile/RiskEngineService.java and are
+           configured under Settings → Broker & Auto-Trade). -->
+      <span class="rp-title" title="Manual position-sizing estimate only — does not reflect or affect your real auto-trade risk limits, which are configured separately under Settings → Broker & Auto-Trade.">💰 Risk Calculator (estimate)</span>
+      <span class="rp-rating" [style.color]="tradeRisk.riskColor">{{tradeRisk.riskRating}}</span>
+      <span class="rp-account">
+        Account: $<input type="number" class="rp-account-input" min="1" step="100"
+          [value]="risk.getParams().accountSize"
+          (change)="onAccountSizeChange($any($event.target).valueAsNumber)"
+          title="Enter your real capital so this estimate's dollar figures are meaningful — this value is never sent to or used by the server." />
+      </span>
+    </div>
+
+    <div class="rp-grid">
+      <div class="rp-card">
+        <div class="rp-label">Risk Amount</div>
+        <div class="rp-val" style="color:#FF3B5C">${{tradeRisk.riskAmount | number:'1.0-2'}}</div>
+        <div class="rp-sub">{{tradeRisk.riskPct}}% of account</div>
+      </div>
+      <div class="rp-card">
+        <div class="rp-label">Position Size</div>
+        <div class="rp-val" style="color:#00D4FF">${{tradeRisk.positionSize | number:'1.0-0'}}</div>
+        <div class="rp-sub">{{tradeRisk.positionSizePct}}% exposure</div>
+      </div>
+      <div class="rp-card">
+        <div class="rp-label">Reward at T2</div>
+        <div class="rp-val" style="color:#00FF88">${{tradeRisk.rewardT2 | number:'1.0-2'}}</div>
+        <div class="rp-sub">RR: {{tradeRisk.rrRatioT2}}</div>
+      </div>
+      <div class="rp-card">
+        <div class="rp-label">Kelly Size</div>
+        <div class="rp-val" style="color:#7B61FF">{{tradeRisk.kellyHalfSize}}%</div>
+        <div class="rp-sub">Half-Kelly (safer)</div>
+      </div>
+    </div>
+
+    <div class="rp-levels">
+      <div class="rpl-row entry"><span class="rpl-l">Entry</span><span class="rpl-v">{{formatPrice(tradeRisk.entry)}}</span><span class="rpl-r">{{tradeCall?.direction}}</span></div>
+      <div class="rpl-row sl"><span class="rpl-l">Stop Loss</span><span class="rpl-v">{{formatPrice(tradeRisk.stopLoss)}}</span><span class="rpl-r">−${{tradeRisk.riskAmount | number:'1.0-0'}}</span></div>
+      <div class="rpl-row t1"><span class="rpl-l">Target 1 (50%)</span><span class="rpl-v">{{formatPrice(tradeRisk.target1)}}</span><span class="rpl-r">+${{tradeRisk.rewardT1 | number:'1.0-0'}}</span></div>
+      <div class="rpl-row t2"><span class="rpl-l">Target 2 (30%)</span><span class="rpl-v">{{formatPrice(tradeRisk.target2)}}</span><span class="rpl-r">+${{tradeRisk.rewardT2 | number:'1.0-0'}}</span></div>
+      <div class="rpl-row t3"><span class="rpl-l">Target 3 (20%)</span><span class="rpl-v">{{formatPrice(tradeRisk.target3)}}</span><span class="rpl-r">+${{tradeRisk.rewardT3 | number:'1.0-0'}}</span></div>
+      <div class="rpl-row trail"><span class="rpl-l">Trailing Stop</span><span class="rpl-v">{{formatPrice(tradeRisk.trailingStop)}}</span><span class="rpl-r">Activate at T1</span></div>
+    </div>
+
+    <div class="rp-recs">
+      <div class="rp-rec" *ngFor="let r of tradeRisk.recommendations.slice(0,4)">✓ {{r}}</div>
+    </div>
+    <div class="rp-warn" *ngFor="let w of tradeRisk.warnings">{{w}}</div>
+  </div>
+
+  <!-- Execution: the old client-side Binance signing panel (app-execution) was removed —
+       it held API secrets in the browser and signed orders client-side, which is exactly what
+       the backend BrokerAdapter/AutoTradeService architecture (Settings → Broker & Auto-Trade)
+       exists to avoid. Real order execution now only happens server-side. -->
+  <div class="exec-section" *ngIf="!loading">
+    <div class="exec-redirect-note">
+      Live order execution has moved to <a routerLink="/app/broker">Broker &amp; Auto-Trade settings</a> —
+      connect a broker there and place trades through the backend, not the browser.
+    </div>
+  </div>
+
+  <!-- Call History -->
+  <div class="crypto-hist" *ngIf="!loading">
+    <app-call-history [symbol]="selectedSymbol" market="CRYPTO" [refresh]="historyRefresh"></app-call-history>
+  </div>
+</div>
+
+<app-analysis-modal [result]="tradeCall" [visible]="modalVisible"
+  market="CRYPTO" [symbol]="selectedSymbol+'/USDT'" [name]="selectedName"
+  [currentPrice]="currentTickerUSD" [priceFormatter]="getPriceFormatter()"
+  (close)="modalVisible=false" (callSaved)="historyRefresh=historyRefresh+1">
+</app-analysis-modal>
+
+<!-- Featured Crypto Trades -->
+<app-featured-trades market="CRYPTO"></app-featured-trades>

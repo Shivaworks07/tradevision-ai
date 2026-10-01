@@ -1,0 +1,13 @@
+This directory is intentionally empty in source control.
+
+Review finding ("P0 #2" — "You still ship an admin bootstrap secret inside the frontend"):
+investigating that finding turned up something broader — this directory previously held a
+STALE, committed Angular production build (dated weeks before the fix), containing not just the
+leaked admin bootstrap secret but also several other bugs already fixed in source (hardcoded
+localhost URLs, among others). Since Spring Boot serves anything here as static web content
+automatically, a deployment built straight from this repo without a fresh frontend build would
+have silently shipped that old, vulnerable bundle regardless of any source fixes.
+
+The Dockerfile now builds the Angular frontend fresh and copies it here as part of every image
+build (see the "Stage 0: Frontend build" section) — nothing should ever be manually committed
+into this directory again. See .gitignore for the enforcement.

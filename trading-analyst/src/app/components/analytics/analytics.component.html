@@ -1,0 +1,354 @@
+<div class="analytics-wrap">
+
+  <div class="an-header">
+    <div class="anh-title">
+      <h2>Strategy Analytics</h2>
+      <p>Research dashboard — understand what actually works</p>
+    </div>
+  </div>
+
+  <!-- Need more data -->
+  <div class="need-data" *ngIf="!loading && (!analytics || !analytics.overall || analytics.overall.total < 10)">
+    <div class="nd-icon">📊</div>
+    <div class="nd-title">Not enough data yet</div>
+    <div class="nd-desc">
+      You need at least 10 resolved trade calls (marked HIT_T1/T2/T3 or HIT_SL) to see analytics.<br>
+      Save calls from the Crypto, Indian Stocks, or Forex pages, then mark their results as they play out.
+    </div>
+    <div class="nd-count" *ngIf="analytics?.overall">
+      {{analytics.overall.total}} calls saved · {{analytics.overall.total < 10 ? (10 - analytics.overall.total) + ' more needed' : 'ready'}}
+    </div>
+  </div>
+
+  <div *ngIf="!loading && analytics?.overall?.total >= 10">
+    <!-- Overall stats -->
+    <div class="overall-grid">
+      <div class="og-card primary">
+        <div class="og-label">Total Calls</div>
+        <div class="og-val">{{analytics.overall.total}}</div>
+      </div>
+      <div class="og-card">
+        <div class="og-label">Win Rate</div>
+        <div class="og-val" [style.color]="wrColor(analytics.overall.winRate)">{{analytics.overall.winRate}}%</div>
+      </div>
+      <div class="og-card">
+        <div class="og-label">Profit Factor</div>
+        <div class="og-val" [style.color]="pfColor(analytics.overall.profitFactor)">{{analytics.overall.profitFactor}}</div>
+      </div>
+      <div class="og-card">
+        <div class="og-label">Avg R per Trade</div>
+        <div class="og-val" [style.color]="analytics.overall.avgR>0?'#00FF88':'#FF3B5C'">{{analytics.overall.avgR >= 0?'+':''}}{{analytics.overall.avgR}}R</div>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <button [class.active]="activeTab==='overview'"    (click)="activeTab='overview'">Overview</button>
+      <button [class.active]="activeTab==='regime'"      (click)="activeTab='regime'">By Regime</button>
+      <button [class.active]="activeTab==='confidence'"  (click)="activeTab='confidence'">By Confidence</button>
+      <button [class.active]="activeTab==='smc'"         (click)="activeTab='smc'">SMC & VP</button>
+      <button [class.active]="activeTab==='symbol'"      (click)="activeTab='symbol'">By Symbol</button>
+      <button [class.active]="activeTab==='calibration'" (click)="activeTab='calibration'">Calibration</button>
+      <button [class.active]="activeTab==='walkforward'" (click)="activeTab='walkforward'">Walk-Forward</button>
+      <button [class.active]="activeTab==='features'"    (click)="activeTab='features'">Feature Importance</button>
+      <button [class.active]="activeTab==='export'"      (click)="activeTab='export'">ML Export</button>
+      <button [class.active]="activeTab==='correlation'" (click)="activeTab='correlation'">Correlation</button>
+      <button [class.active]="activeTab==='comparison'"  (click)="activeTab='comparison'">Strategy Comparison</button>
+    </div>
+
+    <!-- Overview Tab -->
+    <div class="tab-content" *ngIf="activeTab==='overview'">
+      <div class="insight-grid">
+        <!-- Best regime -->
+        <div class="insight-card" *ngIf="analytics.byRegime?.length">
+          <div class="ic-title">Best Regime to Trade</div>
+          <div class="ic-top" [style.color]="pfColor(analytics.byRegime[0].profitFactor)">
+            {{fmt(analytics.byRegime[0].label)}}
+          </div>
+          <div class="ic-stats">PF {{analytics.byRegime[0].profitFactor}} · {{analytics.byRegime[0].winRate}}% WR · {{analytics.byRegime[0].trades}} trades</div>
+        </div>
+        <!-- Best confidence -->
+        <div class="insight-card" *ngIf="analytics.byConfidence?.length">
+          <div class="ic-title">Best Confidence Range</div>
+          <div class="ic-top" [style.color]="pfColor(analytics.byConfidence[0].profitFactor)">
+            {{analytics.byConfidence[0].label}}%
+          </div>
+          <div class="ic-stats">PF {{analytics.byConfidence[0].profitFactor}} · {{analytics.byConfidence[0].winRate}}% WR</div>
+        </div>
+        <!-- Best symbol -->
+        <div class="insight-card" *ngIf="analytics.bySymbol?.length">
+          <div class="ic-title">Most Profitable Symbol</div>
+          <div class="ic-top" style="color:#00D4FF">{{analytics.bySymbol[0].label}}</div>
+          <div class="ic-stats">PF {{analytics.bySymbol[0].profitFactor}} · {{analytics.bySymbol[0].winRate}}% WR · {{analytics.bySymbol[0].trades}} trades</div>
+        </div>
+        <!-- BOS edge -->
+        <div class="insight-card" *ngIf="analytics.byBOS?.length">
+          <div class="ic-title">BOS Confirmation Edge</div>
+          <ng-container *ngFor="let b of analytics.byBOS">
+            <div class="ic-row" *ngIf="b.label==='BOS_CONFIRMED'">
+              <span>With BOS</span><span [style.color]="pfColor(b.profitFactor)">PF {{b.profitFactor}} · {{b.winRate}}%</span>
+            </div>
+            <div class="ic-row" *ngIf="b.label==='NO_BOS'">
+              <span>Without BOS</span><span [style.color]="pfColor(b.profitFactor)">PF {{b.profitFactor}} · {{b.winRate}}%</span>
+            </div>
+          </ng-container>
+        </div>
+        <!-- F&G edge -->
+        <div class="insight-card" *ngIf="analytics.byFearGreed?.length">
+          <div class="ic-title">Best Fear & Greed Zone</div>
+          <div class="ic-top" [style.color]="pfColor(analytics.byFearGreed[0].profitFactor)">{{analytics.byFearGreed[0].label}}</div>
+          <div class="ic-stats">PF {{analytics.byFearGreed[0].profitFactor}} · {{analytics.byFearGreed[0].winRate}}% WR</div>
+        </div>
+        <!-- VP location -->
+        <div class="insight-card" *ngIf="analytics.byVPLocation?.length">
+          <div class="ic-title">Best Volume Profile Zone</div>
+          <div class="ic-top" [style.color]="pfColor(analytics.byVPLocation[0].profitFactor)">{{fmt(analytics.byVPLocation[0].label)}}</div>
+          <div class="ic-stats">PF {{analytics.byVPLocation[0].profitFactor}} · {{analytics.byVPLocation[0].winRate}}% WR</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Analytics table template -->
+    <div class="tab-content" *ngIf="activeTab==='regime'">
+      <div class="an-title">Performance by Market Regime</div>
+      <app-analytics-table [rows]="analytics.byRegime" [maxPF]="maxPF(analytics.byRegime)"
+        [pfColor]="pfColor" [wrColor]="wrColor"></app-analytics-table>
+    </div>
+
+    <div class="tab-content" *ngIf="activeTab==='confidence'">
+      <div class="an-title">Performance by Confidence Level</div>
+      <app-analytics-table [rows]="analytics.byConfidence" [maxPF]="maxPF(analytics.byConfidence)"
+        [pfColor]="pfColor" [wrColor]="wrColor"></app-analytics-table>
+    </div>
+
+    <div class="tab-content" *ngIf="activeTab==='smc'">
+      <div class="an-section">
+        <div class="an-title">Performance by SMC Bias</div>
+        <app-analytics-table [rows]="analytics.bySMC" [maxPF]="maxPF(analytics.bySMC)"
+          [pfColor]="pfColor" [wrColor]="wrColor"></app-analytics-table>
+      </div>
+      <div class="an-section">
+        <div class="an-title">BOS Confirmation Edge</div>
+        <app-analytics-table [rows]="analytics.byBOS" [maxPF]="maxPF(analytics.byBOS)"
+          [pfColor]="pfColor" [wrColor]="wrColor"></app-analytics-table>
+      </div>
+      <div class="an-section">
+        <div class="an-title">Order Block Edge</div>
+        <app-analytics-table [rows]="analytics.byOrderBlock" [maxPF]="maxPF(analytics.byOrderBlock)"
+          [pfColor]="pfColor" [wrColor]="wrColor"></app-analytics-table>
+      </div>
+      <div class="an-section">
+        <div class="an-title">Volume Profile Location</div>
+        <app-analytics-table [rows]="analytics.byVPLocation" [maxPF]="maxPF(analytics.byVPLocation)"
+          [pfColor]="pfColor" [wrColor]="wrColor"></app-analytics-table>
+      </div>
+    </div>
+
+    <div class="tab-content" *ngIf="activeTab==='symbol'">
+      <div class="an-title">Performance by Symbol</div>
+      <app-analytics-table [rows]="analytics.bySymbol" [maxPF]="maxPF(analytics.bySymbol)"
+        [pfColor]="pfColor" [wrColor]="wrColor"></app-analytics-table>
+    </div>
+
+    <!-- Confidence Calibration Tab -->
+    <div class="tab-content" *ngIf="activeTab==='calibration'">
+      <div class="an-title">Confidence Calibration</div>
+      <div class="cal-desc">
+        Compares <em>predicted confidence</em> vs <em>actual win rate</em>. 
+        A well-calibrated system shows 80% confidence → ~80% win rate. Gap > 15% means recalibration needed.
+      </div>
+      <div class="cal-table" *ngIf="calibration">
+        <div class="ct-header">
+          <span>Confidence</span><span>Trades</span><span>Actual WR</span><span>Expected WR</span><span>Gap</span><span>Status</span>
+        </div>
+        <div class="ct-row" *ngFor="let kv of asArray(calibration)">
+          <span class="ct-bucket">{{kv.bucket}}%</span>
+          <span>{{kv.trades}}</span>
+          <span [style.color]="wrColor(kv.winRate)">{{kv.winRate}}%</span>
+          <span class="muted">~{{kv.expectedWR}}%</span>
+          <span [style.color]="calGapColor(kv.calibrationGap)">{{kv.calibrationGap >= 0?'+':''}}{{kv.calibrationGap}}%</span>
+          <span class="cal-status" [class.good]="absVal(kv.calibrationGap)<=5" [class.warn]="absVal(kv.calibrationGap)>5&&absVal(kv.calibrationGap)<=15" [class.bad]="absVal(kv.calibrationGap)>15">
+            {{absVal(kv.calibrationGap)<=5?'Calibrated':absVal(kv.calibrationGap)<=15?'Slightly off':'Needs work'}}
+          </span>
+        </div>
+      </div>
+      <div class="cal-empty" *ngIf="!calibration">Not enough resolved calls for calibration analysis.</div>
+    </div>
+
+    <!-- Walk-Forward Tab -->
+    <div class="tab-content" *ngIf="activeTab==='walkforward'">
+      <div class="an-title">Walk-Forward Analysis</div>
+      <div class="wf-desc">
+        Splits your trade history into training (60%) and test (40%) periods. 
+        Checks if the strategy generalizes to new data or is overfit to past patterns.
+      </div>
+      <div class="wf-result" *ngIf="walkForward">
+        <div class="wf-periods">
+          <div class="wf-period train">
+            <div class="wfp-label">Training Period (60%)</div>
+            <div class="wfp-dates">{{walkForward.trainPeriod.from | date:'mediumDate'}} → {{walkForward.trainPeriod.to | date:'mediumDate'}}</div>
+            <div class="wfp-stats">
+              <span>{{walkForward.trainPeriod.stats.trades}} trades</span>
+              <span [style.color]="wrColor(walkForward.trainPeriod.stats.winRate)">{{walkForward.trainPeriod.stats.winRate}}% WR</span>
+              <span [style.color]="pfColor(walkForward.trainPeriod.stats.profitFactor)">PF {{walkForward.trainPeriod.stats.profitFactor}}</span>
+              <span>{{walkForward.trainPeriod.stats.avgR >= 0?'+':''}}{{walkForward.trainPeriod.stats.avgR}}R avg</span>
+            </div>
+          </div>
+          <div class="wf-arrow">→</div>
+          <div class="wf-period test">
+            <div class="wfp-label">Test Period (40%)</div>
+            <div class="wfp-dates">{{walkForward.testPeriod.from | date:'mediumDate'}} → {{walkForward.testPeriod.to | date:'mediumDate'}}</div>
+            <div class="wfp-stats">
+              <span>{{walkForward.testPeriod.stats.trades}} trades</span>
+              <span [style.color]="wrColor(walkForward.testPeriod.stats.winRate)">{{walkForward.testPeriod.stats.winRate}}% WR</span>
+              <span [style.color]="pfColor(walkForward.testPeriod.stats.profitFactor)">PF {{walkForward.testPeriod.stats.profitFactor}}</span>
+              <span>{{walkForward.testPeriod.stats.avgR >= 0?'+':''}}{{walkForward.testPeriod.stats.avgR}}R avg</span>
+            </div>
+          </div>
+        </div>
+        <div class="wf-verdict" [style.border-color]="overfitColor(walkForward.overfitScore)">
+          <div class="wfv-label" [style.color]="overfitColor(walkForward.overfitScore)">Verdict</div>
+          <div class="wfv-text">{{walkForward.overfitScore}}</div>
+        </div>
+      </div>
+      <div class="wf-empty" *ngIf="!walkForward?.trainPeriod">Need at least 20 resolved calls for walk-forward analysis.</div>
+    </div>
+    <!-- Feature Importance Tab -->
+    <div class="tab-content" *ngIf="activeTab==='features'">
+      <div class="an-title">Feature Importance (rule-based estimate)</div>
+      <div class="fi-desc">
+        Calculated from the spread in profit factor across each feature's groups.
+        Features with larger performance gaps between their categories are considered more important.
+        Will be replaced with XGBoost importance once ML Phase 3 is built.
+      </div>
+      <div class="fi-chart" *ngIf="featureImportance.length">
+        <div class="fi-row" *ngFor="let f of featureImportance">
+          <span class="fi-name">{{f.feature}}</span>
+          <div class="fi-bar-wrap">
+            <div class="fi-bar" [style.width.%]="f.importance" [style.background]="f.color"></div>
+          </div>
+          <span class="fi-pct" [style.color]="f.color">{{f.importance}}%</span>
+        </div>
+      </div>
+      <div class="fi-note" *ngIf="!featureImportance.length">Need resolved calls to calculate feature importance.</div>
+    </div>
+
+    <!-- ML Export Tab -->
+    <div class="tab-content" *ngIf="activeTab==='export'">
+      <div class="an-title">Dataset Export for ML</div>
+      <div class="export-desc">
+        Export all your saved calls as a CSV file with 40+ features per row.
+        This is your ML training dataset — ready to feed into XGBoost, LightGBM, or any Python ML framework.
+      </div>
+      <div class="export-schema">
+        <div class="es-title">Dataset Schema</div>
+        <div class="es-cols">
+          <div class="es-col"><div class="esc-head">Input Features (X)</div><div class="esc-items">RSI · MACD · ADX · Stoch · Williams %R · ATR% · EMA Trend · BB Signal · VWAP · OBV · Volume Ratio · SMC Bias · BOS · CHoCH · OB Near · FVG · P/D Zone · VP Location · POC Distance · OF Bias · OF Score · Funding Rate · OI Signal · CVD · Regime · Fear &amp; Greed · MTF Alignment</div></div>
+          <div class="es-col"><div class="esc-head">Output Label (Y)</div><div class="esc-items">result (HIT_T1 / HIT_T2 / HIT_T3 / HIT_SL) · pnl_pct · pnl_r</div></div>
+          <div class="es-col" style="margin-top:8px"><div class="esc-head">Quality &amp; Lineage</div><div class="esc-items">quality_score · rule_score · dataset_version · data_source · missing_features</div></div>
+          <div class="es-col" style="margin-top:8px"><div class="esc-head">Sub-class Groups (v2)</div><div class="esc-items">technical.* · smc.* · vp.* · orderFlow.* · sentiment.* · context.*</div></div>
+        </div>
+      </div>
+      <div class="export-stats" *ngIf="analytics?.overall">
+        <span>{{analytics.overall.total}} total calls</span>
+        <span>{{analytics.overall.wins}} resolved wins</span>
+        <span>Ready for ML training</span>
+      </div>
+      <button class="export-btn" (click)="downloadDataset('csv')">📥 Download CSV</button>
+      <button class="export-btn json-btn" (click)="downloadDataset('json')"> 
+        Download JSON
+      </button>
+      <div class="export-python">
+        <div class="ep-title">Python Quick Start</div>
+        <pre class="ep-code">{{pythonQuickstart}}</pre>
+      </div>
+    </div>
+
+
+    <!-- Correlation Analysis Tab -->
+    <div class="tab-content" *ngIf="activeTab==='correlation'">
+      <div class="an-title">Correlation Analysis</div>
+      <div class="corr-desc">
+        Shows how each input feature correlates with win rate and profit factor.
+        Helps identify which market conditions your strategy works best in.
+      </div>
+
+      <div class="corr-sections" *ngIf="correlation">
+        <div class="corr-section" *ngFor="let key of ['adxVsWinRate','rsiVsWinRate','volumeVsWinRate','confidenceVsWinRate','fearGreedVsExpectancy','regimeVsPF','smcBosCombo']">
+          <div class="cs-title">
+            {{key==='adxVsWinRate'?'ADX vs Win Rate':
+              key==='rsiVsWinRate'?'RSI Zone vs Win Rate':
+              key==='volumeVsWinRate'?'Volume Ratio vs Win Rate':
+              key==='confidenceVsWinRate'?'Confidence Level vs Win Rate':
+              key==='fearGreedVsExpectancy'?'Fear and Greed vs Performance':
+              key==='regimeVsPF'?'Market Regime vs Profit Factor':
+              'SMC + BOS Combination'}}
+          </div>
+          <app-analytics-table [rows]="correlation[key] || []"
+            [maxPF]="maxPF(correlation[key] || [])"
+            [pfColor]="pfColor" [wrColor]="wrColor">
+          </app-analytics-table>
+        </div>
+      </div>
+      <div class="corr-empty" *ngIf="!correlation">Need resolved calls for correlation analysis.</div>
+    </div>
+
+    <!-- Strategy Comparison Tab -->
+    <div class="tab-content" *ngIf="activeTab==='comparison'">
+      <div class="an-title">Strategy Comparison</div>
+      <div class="comp-desc">
+        Compares different filter strategies applied to your trade history.
+        Shows which combination of rules produces the best risk-adjusted returns.
+      </div>
+
+      <div class="comp-grid" *ngIf="comparison?.length">
+        <!-- Metrics table -->
+        <div class="comp-table">
+          <div class="ct-head">
+            <span>Strategy</span><span>Trades</span><span>Win%</span><span>PF</span><span>Avg R</span><span>Max DD</span>
+          </div>
+          <div class="ct-row" *ngFor="let s of comparison; let i=index"
+               [class.best]="i===0||s.profitFactor===comparison[0].profitFactor">
+            <span class="ctr-name">{{s.name}}</span>
+            <span>{{s.total}}</span>
+            <span [style.color]="wrColor(s.winRate)">{{s.winRate}}%</span>
+            <span [style.color]="pfColor(s.profitFactor)">{{s.profitFactor}}</span>
+            <span [style.color]="s.avgR>=0?'#00FF88':'#FF3B5C'">{{s.avgR>=0?'+':''}}{{s.avgR}}R</span>
+            <span [style.color]="s.maxDrawdown<=10?'#00FF88':s.maxDrawdown<=20?'#FFB800':'#FF3B5C'">{{s.maxDrawdown}}%</span>
+          </div>
+        </div>
+
+        <!-- Equity curves comparison -->
+        <div class="equity-curves" *ngIf="comparison[0]?.equity?.length">
+          <div class="ec-title">Equity Curves (normalized to 100)</div>
+          <div class="ec-chart">
+            <svg viewBox="0 0 300 80" class="ec-svg" preserveAspectRatio="none">
+              <line x1="0" y1="40" x2="300" y2="40" stroke="#1E2D4A" stroke-width="0.5" stroke-dasharray="3"/>
+              <ng-container *ngFor="let s of comparison; let i=index">
+                <path *ngIf="s.equity?.length"
+                      [attr.d]="equityPath(s.equity)"
+                      fill="none" stroke-width="1.5"
+                      [attr.stroke]="['#00FF88','#00D4FF','#7B61FF','#FFB800','#FF6B35','#FF3B5C','#8895B3'][i]"
+                      [attr.opacity]="i===0?1:0.7"/>
+              </ng-container>
+            </svg>
+            <div class="ec-legend">
+              <div class="ecl-row" *ngFor="let s of comparison; let i=index">
+                <span class="ecl-dot" [style.background]="['#00FF88','#00D4FF','#7B61FF','#FFB800','#FF6B35','#FF3B5C','#8895B3'][i]"></span>
+                <span class="ecl-name">{{s.name}}</span>
+                <span class="ecl-val" [style.color]="equityColor(s.equity)">{{s.equity?.length ? (s.equity[s.equity.length-1] | number:'1.1-1') : '100'}}%</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="comp-empty" *ngIf="!comparison?.length">Need resolved calls for strategy comparison.</div>
+    </div>
+
+  </div>
+
+  <div class="loading-state" *ngIf="loading">
+    <div class="ls-spin"></div>Loading analytics from your trade history…
+  </div>
+</div>

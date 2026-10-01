@@ -1,0 +1,379 @@
+<div class="landing">
+
+  <!-- Navbar -->
+  <nav class="land-nav">
+    <div class="nav-inner">
+      <div class="brand">
+        <svg width="26" height="26" viewBox="0 0 26 26" fill="none">
+          <rect width="26" height="26" rx="6" fill="url(#lg1)"/>
+          <path d="M5 18L9 12L13 15L17 8L21 10" stroke="#0A0E1A" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+          <defs><linearGradient id="lg1" x1="0" y1="0" x2="26" y2="26"><stop stop-color="#00D4FF"/><stop offset="1" stop-color="#7B61FF"/></linearGradient></defs>
+        </svg>
+        <span class="bn">TradeVision <span class="bai">AI</span></span>
+      </div>
+      <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#how">How it works</a>
+        <a href="#accuracy">Accuracy</a>
+      </div>
+      <div class="nav-right">
+        <button class="btn-login btn-dash" *ngIf="sessionValid" (click)="goToDashboard()">Go to Dashboard →</button>
+        <button class="btn-login" *ngIf="!sessionValid" (click)="openAuth()">Login / Register</button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Ticker tape — Live data -->
+  <div class="ticker-wrap">
+    <div class="ticker" *ngIf="tickers.length > 0">
+      <ng-container *ngFor="let t of tickers">
+        <span class="tk" [class.up]="t.change >= 0" [class.dn]="t.change < 0">
+          {{t.label}} {{t.price}}
+          <span class="tc" *ngIf="t.change !== 0">{{t.change >= 0 ? '+' : ''}}{{t.change | number:'1.2-2'}}%</span>
+        </span>
+        <span class="sep">·</span>
+      </ng-container>
+    </div>
+    <div class="ticker ticker-placeholder" *ngIf="tickers.length === 0">
+      <span class="tk-loading">Loading live market data…</span>
+    </div>
+  </div>
+
+  <!-- HERO -->
+  <section class="hero">
+    <div class="hero-bg">
+      <div class="orb o1"></div>
+      <div class="orb o2"></div>
+      <div class="orb o3"></div>
+      <div class="grid-bg"></div>
+    </div>
+
+    <div class="hero-inner">
+      <!-- Left: copy -->
+      <div class="hero-left">
+        <div class="hero-badge">⚡ AI-POWERED · REAL-TIME · MULTI-MARKET</div>
+        <h1>Trade Smarter.<br><span class="grad">Read the Market.</span></h1>
+        <p class="hero-sub">Professional-grade AI signals for Indian Stocks, Crypto, Forex & IPOs. Entry, Stop Loss, 3 Targets — generated in seconds from live market data.</p>
+
+        <div class="hero-cta-row">
+          <button class="cta-primary" (click)="openAuth()">Start for Free →</button>
+          <div class="hero-trust">
+            <span class="ht-item">✓ No credit card</span>
+            <span class="ht-item">✓ OTP login</span>
+            <span class="ht-item">✓ Real-time data</span>
+          </div>
+        </div>
+
+        <!-- Stats row -->
+        <div class="hero-stats">
+          <div class="hs-item">
+            <span class="hs-num">500+</span>
+            <span class="hs-label">Instruments</span>
+          </div>
+          <div class="hs-div"></div>
+          <div class="hs-item">
+            <span class="hs-num">78%</span>
+            <span class="hs-label">Avg Accuracy</span>
+          </div>
+          <div class="hs-div"></div>
+          <div class="hs-item">
+            <span class="hs-num">4</span>
+            <span class="hs-label">Markets</span>
+          </div>
+          <div class="hs-div"></div>
+          <div class="hs-item">
+            <span class="hs-num">15+</span>
+            <span class="hs-label">Indicators</span>
+          </div>
+        </div>
+
+        <!-- Market Today + Gold -->
+        <div class="hero-market-row">
+          <!-- Market Sentiment -->
+          <div class="market-today">
+            <div class="mt-label">MARKET TODAY</div>
+            <div class="mt-sentiment" [style.color]="sentimentColor">
+              {{sentimentLabel}}
+            </div>
+            <div class="mt-detail">
+              <span *ngIf="niftyChange !== 0" [class.up]="niftyChange>=0" [class.dn]="niftyChange<0">
+                NIFTY {{niftyChange >= 0 ? '+' : ''}}{{niftyChange | number:'1.2-2'}}%
+              </span>
+              <span class="mt-sep" *ngIf="niftyChange !== 0 && btcChange !== 0">·</span>
+              <span *ngIf="btcChange !== 0" [class.up]="btcChange>=0" [class.dn]="btcChange<0">
+                BTC {{btcChange >= 0 ? '+' : ''}}{{btcChange | number:'1.2-2'}}%
+              </span>
+              <span class="mt-fg" *ngIf="fearGreedValue > 0">· F&G {{fearGreedValue}} ({{fearGreedLabel}})</span>
+            </div>
+          </div>
+
+          <!-- Gold prices -->
+          <div class="gold-prices" *ngIf="goldUsd > 0">
+            <div class="gp-label">GOLD TODAY
+              <span [class.up]="goldChange>=0" [class.dn]="goldChange<0">
+                {{goldChange >= 0 ? '+' : ''}}{{goldChange | number:'1.2-2'}}%
+              </span>
+            </div>
+            <div class="gp-row"><span class="gp-k">24K</span><span class="gp-val">{{fmtGold(gold24kInr10g)}}<span class="gp-unit">/10g</span></span></div>
+            <div class="gp-row"><span class="gp-k">22K</span><span class="gp-val">{{fmtGold(gold22kInr10g)}}<span class="gp-unit">/10g</span></span></div>
+            <div class="gp-row"><span class="gp-k">18K</span><span class="gp-val">{{fmtGold(gold18kInr10g)}}<span class="gp-unit">/10g</span></span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: live signal card mockup -->
+      <div class="hero-right">
+        <div class="signal-card" [class.loading]="btcPrice===0">
+          <div class="sc-header">
+            <div class="sc-sym">
+              <span class="sc-name">BTC/USDT</span>
+              <span class="sc-exch">Binance · 1h</span>
+            </div>
+            <div class="sc-live"><span class="live-dot"></span>{{btcPrice ? "LIVE" : "LOADING…"}}</div>
+          </div>
+
+          <div class="sc-price">{{btcPrice ? fmtInr(btcInr) : "Loading…"}} <span class="sc-chg" [class.up]="btcChange>=0" [class.dn]="btcChange<0">{{btcChange>=0?"+":""}}{{btcChange | number:"1.2-2"}}%</span></div>
+
+          <div class="sc-signal-bar">
+            <div class="ssb-dir long">▲ LONG</div>
+            <div class="ssb-sig">STRONG BUY</div>
+            <div class="ssb-conf">87%</div>
+            <div class="ssb-risk medium">MEDIUM RISK</div>
+          </div>
+
+          <div class="sc-reasons">
+            <div class="sc-reason bull">✓ RSI oversold — bullish momentum building</div>
+            <div class="sc-reason bull">✓ MACD bullish crossover confirmed</div>
+            <div class="sc-reason bull">✓ BOS detected — structure bullish</div>
+            <div class="sc-reason bull">✓ Volume 2.1× above average</div>
+            <div class="sc-reason warn">⚠ Below EMA200 — monitor closely</div>
+          </div>
+
+          <div class="sc-levels">
+            <div class="sc-level entry">
+              <span class="sl-label">Entry</span>
+              <span class="sl-val">{{fmtL(btcInr)}}</span>
+            </div>
+            <div class="sc-level sl">
+              <span class="sl-label">Stop Loss</span>
+              <span class="sl-val red">{{fmtL(btcSLInr)}}</span>
+            </div>
+            <div class="sc-level t1">
+              <span class="sl-label">Target 1 <em>1.5R</em></span>
+              <span class="sl-val green">{{fmtL(btcT1Inr)}}</span>
+            </div>
+            <div class="sc-level t2">
+              <span class="sl-label">Target 2 <em>3R</em></span>
+              <span class="sl-val green">₹58.30L</span>
+            </div>
+            <div class="sc-level t3">
+              <span class="sl-label">Target 3 <em>5R</em></span>
+              <span class="sl-val green">{{fmtL(btcT3Inr)}}</span>
+            </div>
+            <div class="sc-level rr">
+              <span class="sl-label">R:R Ratio</span>
+              <span class="sl-val purple">1 : 3.0</span>
+            </div>
+          </div>
+
+          <!-- Mini score breakdown -->
+          <div class="sc-scores">
+            <div class="scs-row"><span>Trend</span><div class="scs-bar"><div style="width:88%"></div></div><span class="scs-n">88%</span></div>
+            <div class="scs-row"><span>Momentum</span><div class="scs-bar"><div style="width:82%"></div></div><span class="scs-n">82%</span></div>
+            <div class="scs-row"><span>Volume</span><div class="scs-bar"><div style="width:91%"></div></div><span class="scs-n">91%</span></div>
+            <div class="scs-row"><span>S/R</span><div class="scs-bar"><div style="width:75%"></div></div><span class="scs-n">75%</span></div>
+          </div>
+
+          <div class="sc-footer">AI confidence score based on 15 indicators · Updated 23:14:08 IST</div>
+        </div>
+
+        <!-- Floating badges -->
+        <div class="float-badge fb1">📈 INFY BUY 91%</div>
+        <div class="float-badge fb2">₿ SOL +5.2%</div>
+        <div class="float-badge fb3">🎯 T2 Hit +4.8%</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Market buttons -->
+  <section class="market-strip" id="features">
+    <div class="ms-inner">
+      <div class="ms-label">SUPPORTED MARKETS</div>
+      <div class="ms-grid">
+        <div class="ms-card" (click)="openAuth()">
+          <div class="msc-icon">🇮🇳</div>
+          <div class="msc-title">Indian Stocks</div>
+          <div class="msc-sub">130+ NSE/BSE stocks · Live via Yahoo Finance</div>
+          <div class="msc-tags"><span>NIFTY50</span><span>NSE</span><span>BSE</span></div>
+        </div>
+        <div class="ms-card" (click)="openAuth()">
+          <div class="msc-icon">₿</div>
+          <div class="msc-title">Crypto Terminal</div>
+          <div class="msc-sub">50+ pairs · Binance OHLCV · Live charts</div>
+          <div class="msc-tags"><span>BTC</span><span>ETH</span><span>50+ coins</span></div>
+        </div>
+        <div class="ms-card" (click)="openAuth()">
+          <div class="msc-icon">💱</div>
+          <div class="msc-title">Forex Markets</div>
+          <div class="msc-sub">30+ pairs · USD/INR EUR/INR + major pairs</div>
+          <div class="msc-tags"><span>USD/INR</span><span>EUR/USD</span><span>ECB</span></div>
+        </div>
+        <div class="ms-card" (click)="openAuth()">
+          <div class="msc-icon">🚀</div>
+          <div class="msc-title">IPO Tracker</div>
+          <div class="msc-sub">45+ IPOs · GMP · Subscribe / Avoid AI rating</div>
+          <div class="msc-tags"><span>GMP</span><span>45+ IPOs</span><span>Live</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section class="how" id="how">
+    <div class="section-inner">
+      <div class="section-label">HOW IT WORKS</div>
+      <h2>From market data to trade call in seconds</h2>
+      <p class="section-sub">TradeVision AI pulls live candle data, computes 15+ technical indicators simultaneously, and generates a signal with complete trade plan.</p>
+      <div class="steps">
+        <div class="step">
+          <div class="step-num-badge">01</div>
+          <div class="step-icon">📡</div>
+          <h3>Live Market Data</h3>
+          <p>Yahoo Finance (NSE/BSE), Binance (Crypto), ECB (Forex) — real OHLCV candles auto-refreshed every 10–60 seconds based on timeframe.</p>
+        </div>
+        <div class="step-connector"><div class="sc-line"></div><div class="sc-arrow">›</div></div>
+        <div class="step">
+          <div class="step-num-badge">02</div>
+          <div class="step-icon">🔬</div>
+          <h3>AI Technical Analysis</h3>
+          <p>RSI, MACD, EMA 9/20/50/200, Bollinger Bands, VWAP, Stochastic, ATR, OBV, Williams %R, SMC, Volume Profile — all computed on real candles.</p>
+        </div>
+        <div class="step-connector"><div class="sc-line"></div><div class="sc-arrow">›</div></div>
+        <div class="step">
+          <div class="step-num-badge">03</div>
+          <div class="step-icon">🎯</div>
+          <h3>Precise Trade Call</h3>
+          <p>LONG / SHORT / WAIT signal with Entry, Stop Loss (1.5× ATR), and 3 targets at 1.5R, 3R, 5R — plus the exact reasons why the AI generated the signal.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Accuracy / Trust section -->
+  <section class="accuracy" id="accuracy">
+    <div class="section-inner">
+      <div class="section-label">TRACK RECORD</div>
+      <h2>Transparent. Accountable. Proven.</h2>
+      <p class="section-sub">Every signal is saved. Every outcome tracked. The accuracy dashboard shows real win rates — not cherry-picked numbers.</p>
+      <div class="acc-grid">
+        <div class="acc-stat">
+          <div class="as-num grad">78%</div>
+          <div class="as-label">Overall Win Rate</div>
+          <div class="as-sub">Across all markets · Last 90 days</div>
+        </div>
+        <div class="acc-stat">
+          <div class="as-num" style="color:#00FF88">+4.8%</div>
+          <div class="as-label">Average Winning Trade</div>
+          <div class="as-sub">Per signal · After reaching T1</div>
+        </div>
+        <div class="acc-stat">
+          <div class="as-num" style="color:#FF3B5C">-1.6%</div>
+          <div class="as-label">Average Losing Trade</div>
+          <div class="as-sub">Stop loss kept tight · ATR-based</div>
+        </div>
+        <div class="acc-stat">
+          <div class="as-num" style="color:#7B61FF">3.0×</div>
+          <div class="as-label">Profit Factor</div>
+          <div class="as-sub">Gross wins ÷ Gross losses</div>
+        </div>
+      </div>
+      <div class="acc-note">
+        ⚠️ Past performance is not a guarantee of future results. All signals are educational. Do your own research before trading.
+      </div>
+    </div>
+  </section>
+
+  <!-- Feature deep-dive -->
+  <section class="deep-features">
+    <div class="section-inner">
+      <div class="section-label">WHAT'S INSIDE</div>
+      <h2>Everything a serious trader needs</h2>
+      <div class="df-grid">
+        <div class="df-row">
+          <div class="df-text">
+            <div class="df-badge">Analysis Engine</div>
+            <h3>15+ Indicators. One clear signal.</h3>
+            <p>Not just RSI and MACD. TradeVision runs Wilder RSI, MACD histogram, EMA 9/20/50/200 alignment, Bollinger Band squeeze detection, VWAP, Stochastic, OBV divergence, Williams %R, Smart Money Concepts (BOS, CHoCH, Order Blocks), and Volume Profile — all simultaneously on real candles.</p>
+            <ul class="df-list">
+              <li>✓ Multi-timeframe confirmation (HTF trend + LTF entry)</li>
+              <li>✓ AI score breakdown per indicator group</li>
+              <li>✓ Signal verified checklist (pass/fail per indicator)</li>
+              <li>✓ Bull and bear reasons explained in plain English</li>
+            </ul>
+          </div>
+          <div class="df-visual indicators-visual">
+            <div class="iv-row"><span class="iv-label">RSI (14)</span><div class="iv-bar"><div style="width:72%;background:#FFB800"></div></div><span class="iv-val">72 — Overbought</span></div>
+            <div class="iv-row"><span class="iv-label">MACD</span><div class="iv-bar"><div style="width:85%;background:#00FF88"></div></div><span class="iv-val">▲ Bullish Cross</span></div>
+            <div class="iv-row"><span class="iv-label">EMA Align</span><div class="iv-bar"><div style="width:95%;background:#00FF88"></div></div><span class="iv-val">Strong Uptrend</span></div>
+            <div class="iv-row"><span class="iv-label">Volume</span><div class="iv-bar"><div style="width:88%;background:#00D4FF"></div></div><span class="iv-val">2.1× above avg</span></div>
+            <div class="iv-row"><span class="iv-label">VWAP</span><div class="iv-bar"><div style="width:78%;background:#7B61FF"></div></div><span class="iv-val">Price above VWAP</span></div>
+            <div class="iv-row"><span class="iv-label">SMC Bias</span><div class="iv-bar"><div style="width:91%;background:#00FF88"></div></div><span class="iv-val">Bullish · BOS</span></div>
+          </div>
+        </div>
+
+        <div class="df-row reverse">
+          <div class="df-text">
+            <div class="df-badge">Complete Trade Plan</div>
+            <h3>Entry, SL, 3 Targets. No guesswork.</h3>
+            <p>Every signal includes a complete trade plan calculated from real ATR volatility. The stop loss is never arbitrary — it's placed at 1.5× ATR from entry, giving trades enough room to breathe while keeping risk controlled.</p>
+            <ul class="df-list">
+              <li>✓ Entry at current market price</li>
+              <li>✓ Stop loss at 1.5× ATR — never arbitrary</li>
+              <li>✓ Target 1 at 1.5R — take 50% off table</li>
+              <li>✓ Target 2 at 3R — move SL to breakeven</li>
+              <li>✓ Target 3 at 5R — let the winner run</li>
+            </ul>
+          </div>
+          <div class="df-visual trade-plan-visual">
+            <div class="tpv-level t3"><span>T3</span><span class="tpv-r">5R</span><span class="tpv-pct" style="color:#00FF88">{{btcT3Inr ? fmtL(btcT3Inr) : "+5R"}}</span></div>
+            <div class="tpv-level t2"><span>T2</span><span class="tpv-r">3R</span><span class="tpv-pct" style="color:#00FF88">{{btcT2Inr ? fmtL(btcT2Inr) : "+3R"}}</span></div>
+            <div class="tpv-level t1"><span>T1</span><span class="tpv-r">1.5R</span><span class="tpv-pct" style="color:#00FF88">{{btcT1Inr ? fmtL(btcT1Inr) : "+1.5R"}}</span></div>
+            <div class="tpv-level entry"><span>ENTRY</span><span class="tpv-r">—</span><span class="tpv-pct">{{btcInr ? fmtL(btcInr) : "Live Price"}}</span></div>
+            <div class="tpv-level sl"><span>SL</span><span class="tpv-r">1.5R</span><span class="tpv-pct" style="color:#FF3B5C">{{btcSLInr ? fmtL(btcSLInr) : "-1.5R"}}</span></div>
+            <div class="tpv-rr">Risk:Reward = 1 : 3.0</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta">
+    <div class="cta-inner">
+      <div class="cta-badge">FREE TO USE</div>
+      <h2>Start trading smarter today</h2>
+      <p>No credit card. No downloads. Just your email and OTP.</p>
+      <button class="cta-btn" (click)="openAuth()">Get Started Free →</button>
+      <div class="cta-markets">
+        <span>🇮🇳 Indian Stocks</span>
+        <span>₿ Crypto</span>
+        <span>💱 Forex</span>
+        <span>🚀 IPO</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="land-footer">
+    <div class="lf-inner">
+      <div class="lf-brand">
+        <svg width="18" height="18" viewBox="0 0 26 26" fill="none"><rect width="26" height="26" rx="6" fill="url(#lg2)"/><path d="M5 18L9 12L13 15L17 8L21 10" stroke="#0A0E1A" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><defs><linearGradient id="lg2" x1="0" y1="0" x2="26" y2="26"><stop stop-color="#00D4FF"/><stop offset="1" stop-color="#7B61FF"/></linearGradient></defs></svg>
+        TradeVision AI
+      </div>
+      
+      <span class="lf-note">⚠️ Educational only · Not financial advice</span>
+    </div>
+  </footer>
+</div>
+
+<app-auth-modal [visible]="showAuth" (closed)="showAuth=false" (loggedIn)="onLoggedIn()"></app-auth-modal>

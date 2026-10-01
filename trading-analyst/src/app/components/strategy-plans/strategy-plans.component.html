@@ -1,0 +1,168 @@
+<div class="sp-wrap">
+  <div class="sp-header">
+    <h2>Strategy Plans</h2>
+    <p>Create independent trading strategies -- each with its own timeframe, direction, coin universe, risk, and trading session. All plans run simultaneously, subject to your account-level risk ceiling.</p>
+  </div>
+
+  <div class="sp-toast" *ngIf="message()" [class.err]="message()?.type === 'error'">
+    {{ message()?.text }}
+  </div>
+
+  <div class="sp-body">
+
+    <!-- Credential selector -->
+    <div class="sp-section" *ngIf="credentials().length > 1">
+      <div class="ss-title">Broker connection</div>
+      <select [ngModel]="selectedCredentialId()" (ngModelChange)="selectCredential($event)">
+        <option *ngFor="let c of credentials()" [ngValue]="c.id">{{ c.broker }} ({{ c.mode }}) -- {{ c.keyHint }}</option>
+      </select>
+    </div>
+
+    <div class="sp-section" *ngIf="credentials().length === 0">
+      <div class="ss-desc">Connect a broker credential first, on the Broker &amp; Auto-Trade page, before creating a strategy plan.</div>
+    </div>
+
+    <!-- Plan list -->
+    <div class="sp-section" *ngIf="credentials().length > 0">
+      <div class="sp-section-head">
+        <div class="ss-title">Your strategy plans</div>
+        <button class="btn-primary" (click)="openCreateForm()">+ Create Strategy Plan</button>
+      </div>
+
+      <div class="sp-empty" *ngIf="!loading() && plans().length === 0">No strategy plans yet for this credential. Create one to get started.</div>
+
+      <div class="sp-plan-list">
+        <div class="sp-plan" *ngFor="let plan of plans()">
+          <div class="sp-plan-main">
+            <div class="sp-plan-name">
+              {{ plan.name }}
+              <span class="sp-badge" *ngIf="plan.defaultPlan">DEFAULT</span>
+              <span class="sp-badge off" *ngIf="!plan.enabled">OFF</span>
+            </div>
+            <div class="sp-plan-meta">
+              {{ plan.timeframe }} &middot; {{ plan.direction }} &middot;
+              {{ plan.dynamicUniverseEnabled ? ('Dynamic universe (' + plan.dynamicUniverseMaxSymbols + ')') : (plan.enabledSymbols.length + ' fixed symbols') }} &middot;
+              Risk {{ plan.riskPerTradePercent }}%<span *ngIf="effectiveRisk(plan) !== null && effectiveRisk(plan) !== plan.riskPerTradePercent"> (effective: {{ effectiveRisk(plan) }}%, limited by account)</span> &middot; Max {{ plan.maxConcurrentTrades }} positions
+              <span *ngIf="plan.maxHoldMinutes"> &middot; Max hold {{ plan.maxHoldMinutes }}m</span>
+              <span *ngIf="plan.sessionMode !== 'ALWAYS_ON'"> &middot; {{ plan.sessionStart }}&ndash;{{ plan.sessionEnd }} {{ plan.sessionTimezone }}</span>
+              <span *ngIf="plan.sessionMode === 'ALWAYS_ON'"> &middot; 24/7</span>
+            </div>
+          </div>
+          <div class="sp-plan-actions">
+            <label class="switch">
+              <input type="checkbox" [checked]="plan.enabled" (change)="toggleEnabled(plan)" />
+              <span class="slider"></span>
+            </label>
+            <button class="btn-ghost-sm" (click)="openEditForm(plan)">Edit</button>
+            <button class="btn-ghost-sm" (click)="duplicatePlan(plan)">Duplicate</button>
+            <button class="btn-ghost-sm danger" (click)="deletePlan(plan)">Delete</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Create/edit form -->
+    <div class="sp-section" *ngIf="showForm()">
+      <div class="ss-title">{{ editingId ? 'Edit strategy plan' : 'New strategy plan' }}</div>
+
+      <div class="sp-grid">
+        <label>Name <input type="text" [(ngModel)]="form.name" /></label>
+
+        <label>Timeframe
+          <select [(ngModel)]="form.timeframe">
+            <option *ngFor="let tf of timeframes" [value]="tf">{{ tf }}</option>
+          </select>
+        </label>
+
+        <label>Direction
+          <select [(ngModel)]="form.direction">
+            <option *ngFor="let d of directions" [value]="d" [disabled]="d !== 'LONG'">{{ d }}{{ d !== 'LONG' ? ' (not yet available)' : '' }}</option>
+          </select>
+          <span class="sp-hint">SHORT/BOTH require a margin or futures broker connection, which isn't implemented yet -- every current connection is spot-only, long-only.</span>
+        </label>
+
+        <label>Minimum confidence <input type="number" min="0" max="100" [(ngModel)]="form.minConfidence" /></label>
+        <span class="sp-hint" *ngIf="accountRiskProfile() as acct">
+          Effective minimum: {{ effectiveFormMinConfidence() }}% (the stricter/higher of this plan's {{ form.minConfidence }}% and your account floor of {{ acct.minConfidence }}% is what's actually enforced)
+        </span>
+      </div>
+
+      <div class="ss-title sp-subhead">Coin universe</div>
+      <div class="sp-grid">
+        <label class="toggle-row-inline">
+          <span>Dynamic universe (auto-discover by liquidity)</span>
+          <label class="switch">
+            <input type="checkbox" [(ngModel)]="form.dynamicUniverseEnabled" />
+            <span class="slider"></span>
+          </label>
+        </label>
+        <label *ngIf="form.dynamicUniverseEnabled">Max dynamic symbols <input type="number" min="1" [(ngModel)]="form.dynamicUniverseMaxSymbols" /></label>
+        <label class="sp-span2">Fixed symbols (comma-separated, always scanned in addition to the built-in core)
+          <input type="text" placeholder="BTCUSDT,ETHUSDT" [(ngModel)]="enabledSymbolsCsv" />
+        </label>
+      </div>
+
+      <div class="ss-title sp-subhead">Risk (narrows your account-level ceiling -- never widens it)</div>
+      <div class="sp-grid">
+        <label>Risk per trade % <input type="number" step="0.1" min="0.1" [(ngModel)]="form.riskPerTradePercent" /></label>
+        <span class="sp-hint" *ngIf="accountRiskProfile() as acct">
+          Effective risk: {{ effectiveFormRisk() }}% (the smaller of this plan's {{ form.riskPerTradePercent }}% and your account ceiling of {{ acct.riskPerTradePercent }}% is what's actually used -- the account ceiling always wins)
+        </span>
+        <label>Max concurrent positions <input type="number" min="1" [(ngModel)]="form.maxConcurrentTrades" /></label>
+        <label>Max capital (optional) <input type="number" min="0" [(ngModel)]="form.maxCapital" /></label>
+        <label>Cooldown (minutes) <input type="number" min="0" [(ngModel)]="form.cooldownMinutes" /></label>
+      </div>
+
+      <div class="ss-title sp-subhead">Exit policy</div>
+      <div class="sp-grid">
+        <label>Maximum hold (minutes, blank = no limit) <input type="number" min="0" [(ngModel)]="form.maxHoldMinutes" /></label>
+        <label class="toggle-row-inline">
+          <span>Exit on signal reversal</span>
+          <label class="switch"><input type="checkbox" [(ngModel)]="form.exitOnSignalReversal" /><span class="slider"></span></label>
+        </label>
+        <label class="toggle-row-inline">
+          <span>Exit on account risk emergency (halt)</span>
+          <label class="switch"><input type="checkbox" [(ngModel)]="form.exitOnRiskEmergency" /><span class="slider"></span></label>
+        </label>
+      </div>
+
+      <div class="ss-title sp-subhead">Trading session</div>
+      <div class="ss-desc">24/7 is the default and the safest choice -- only change this if you specifically want this plan to stop trading and close its own positions outside a daily window.</div>
+      <div class="sp-grid">
+        <label>Session mode
+          <select [(ngModel)]="form.sessionMode">
+            <option *ngFor="let m of sessionModes" [value]="m">{{ m }}</option>
+          </select>
+        </label>
+        <ng-container *ngIf="form.sessionMode !== 'ALWAYS_ON'">
+          <label>Start time <input type="time" step="1" [(ngModel)]="form.sessionStart" /></label>
+          <label>End time <input type="time" step="1" [(ngModel)]="form.sessionEnd" /></label>
+          <label>Timezone
+            <select [(ngModel)]="form.sessionTimezone">
+              <option *ngFor="let tz of commonTimezones" [value]="tz">{{ tz }}</option>
+            </select>
+          </label>
+          <label>End-of-session action
+            <select [(ngModel)]="form.endOfSessionAction">
+              <option *ngFor="let a of endOfSessionActions" [value]="a">{{ a }}</option>
+            </select>
+          </label>
+          <span class="sp-hint" *ngIf="form.sessionStart && form.sessionEnd && form.sessionStart > form.sessionEnd">
+            Overnight session (crosses midnight) -- supported.
+          </span>
+        </ng-container>
+        <div class="sp-days" *ngIf="form.sessionMode === 'CUSTOM_DAYS'">
+          <button *ngFor="let d of allDays" type="button" class="day-chip" [class.active]="form.sessionDays.includes(d)" (click)="toggleSessionDay(d)">
+            {{ d.substring(0, 3) }}
+          </button>
+        </div>
+      </div>
+
+      <div class="sp-form-actions">
+        <button class="btn-primary" (click)="save()">Save plan</button>
+        <button class="btn-ghost-sm" (click)="cancelForm()">Cancel</button>
+      </div>
+    </div>
+
+  </div>
+</div>

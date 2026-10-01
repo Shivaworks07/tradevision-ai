@@ -1,0 +1,79 @@
+<div class="section-container">
+  <div class="section-header">
+    <div class="section-icon" style="background:rgba(0,212,255,0.1);">💱</div>
+    <div class="section-title">
+      <h2>Forex Markets</h2>
+      <p>30+ currency pairs · Live ECB rates · Auto-refresh 60s · {{currency.currency()==='INR'?'₹ INR Mode':'$ USD Mode'}}</p>
+    </div>
+    <div class="hdr-right">
+      <!-- Review finding (closing statement — "Never: 🟢 LIVE when the application is actually
+           showing fallback numbers"): this was hardcoded regardless of actual data state. -->
+      <span class="live-chip" *ngIf="!anyStale()">🟢 LIVE</span>
+      <span class="live-chip stale-chip" *ngIf="anyStale()">🟡 STALE</span>
+      <button class="cur-toggle" (click)="currency.toggle()">
+        {{currency.currency()==='INR'?'Switch to $ USD':'Switch to ₹ INR'}}
+      </button>
+    </div>
+  </div>
+
+  <div class="group-filter">
+    <button *ngFor="let g of groups" [class.active]="selectedGroup===g" (click)="setGroup(g)">{{g}}</button>
+  </div>
+
+  <div class="search-bar-wrap">
+    <span class="search-icon">🔍</span>
+    <input [(ngModel)]="search" (ngModelChange)="filterPairs()" placeholder="Search pairs… USD/INR, EUR/USD…">
+  </div>
+
+  <div class="loading-state" *ngIf="loading"><div class="spinner"></div><p>Loading forex rates…</p></div>
+
+  <div class="forex-grid" *ngIf="!loading">
+    <div class="forex-card" [class.bullish]="!p.ohlcUnavailable && p.changePct>=0" [class.bearish]="!p.ohlcUnavailable && p.changePct<0" *ngFor="let p of filtered">
+      <div class="fx-header">
+        <div class="fx-pair">{{p.symbol}}</div>
+        <!-- Review finding ("still fake/derived FX market data"): change/changePct were
+             Math.random()-derived even for a genuinely live rate — never shown as a real
+             number now; "—" when this data source genuinely doesn't provide it. -->
+        <span class="change-pill" *ngIf="!p.ohlcUnavailable" [class.up]="p.changePct>=0" [class.dn]="p.changePct<0">
+          {{p.changePct>=0?'▲':'▼'}} {{p.changePct|number:'1.2-2'}}%
+        </span>
+        <span class="change-pill fx-na" *ngIf="p.ohlcUnavailable" title="This data source provides only a point-in-time rate, no change data">—</span>
+      </div>
+      <!-- Review finding (P1 #8 — "The frontend still fabricates market data") -->
+      <div class="fx-stale" *ngIf="p.stale" title="Live rate unavailable — showing a placeholder, not a current price">⚠️ STALE — not a live rate</div>
+      <div class="fx-name">{{p.name}}</div>
+
+      <!-- Price shown correctly for both USD and INR mode -->
+      <div class="fx-price">{{formatRate(p)}}</div>
+      <div class="fx-raw" *ngIf="currency.currency()==='INR' && !p.symbol.endsWith('/INR')">
+        Raw: {{p.price | number:'1.4-5'}}
+      </div>
+      <div class="fx-hl" *ngIf="!p.ohlcUnavailable">
+        <span>H: {{p.high|number:'1.4-5'}}</span>
+        <span>L: {{p.low|number:'1.4-5'}}</span>
+      </div>
+      <div class="fx-hl" *ngIf="p.ohlcUnavailable">
+        <span>H: —</span>
+        <span>L: —</span>
+      </div>
+      <button class="analyze-btn" (click)="analyze(p)" [disabled]="analyzing===p.symbol">
+        {{analyzing===p.symbol?'⟳ Analyzing…':'📊 Get Trade Call'}}
+      </button>
+      <!-- Review finding (P1 #9 — "Synthetic candles are still used to generate trading
+           analysis"): the review's own required UI text for this exact state. -->
+      <div class="fx-analysis-unavailable" *ngIf="analysisUnavailable===p.symbol">
+        ⚠️ Analysis unavailable — live historical market data could not be retrieved for {{p.symbol}}.
+      </div>
+      <app-call-history [symbol]="p.symbol" market="FOREX" [refresh]="historyRefresh"></app-call-history>
+    </div>
+  </div>
+  <div class="fx-note" *ngIf="!loading">⚡ ECB rates via proxy · Updated {{lastUpdated}} · {{filtered.length}} pairs</div>
+</div>
+
+<app-analysis-modal [result]="tradeCall" [visible]="modalVisible"
+  market="FOREX"
+  [symbol]="selectedPair?.symbol||''" [name]="selectedPair?.name||''"
+   [currentPrice]="selectedPair ? getDisplayPrice(selectedPair) : 0"
+  [priceFormatter]="fmtPrice"
+  (close)="modalVisible=false" (callSaved)="historyRefresh=historyRefresh+1">
+</app-analysis-modal>

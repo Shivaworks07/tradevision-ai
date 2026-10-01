@@ -1,0 +1,49 @@
+<div class="hero">
+  <canvas class="hero-canvas" id="heroCanvas"></canvas>
+  <div class="ticker-tape">
+    <div class="ticker-inner">
+      <span class="ticker-item" *ngFor="let t of tickers; let i = index">
+        <span class="t-sym">{{t.sym}}</span>
+        <span class="t-val" [class.up]="t.up" [class.down]="!t.up">{{t.val}}</span>
+      </span>
+      <!-- duplicate for seamless loop -->
+      <span class="ticker-item" *ngFor="let t of tickers">
+        <span class="t-sym">{{t.sym}}</span>
+        <span class="t-val" [class.up]="t.up" [class.down]="!t.up">{{t.val}}</span>
+      </span>
+    </div>
+  </div>
+
+  <div class="hero-content">
+    <div class="hero-eyebrow">
+      <span class="dot"></span>
+      AI-Powered Technical Analysis Platform
+    </div>
+    <h1>
+      Trade Smarter.<br>
+      <span class="gradient-text">Read the Market.</span>
+    </h1>
+    <p class="hero-sub">
+      Real-time technical analysis across Indian Stocks, Forex, Crypto &amp; IPOs.
+      RSI · MACD · Bollinger Bands · Candlestick Patterns — all in one terminal.
+    </p>
+
+    <div class="hero-cta">
+      <button class="btn-primary" (click)="scrollTo('indian-market')">🇮🇳 Indian Market</button>
+      <button class="btn-outline" (click)="scrollTo('crypto')">₿ Crypto</button>
+      <button class="btn-outline" (click)="scrollTo('forex')">💱 Forex</button>
+      <button class="btn-outline" (click)="scrollTo('ipo')">🚀 IPO</button>
+    </div>
+
+    <div class="hero-stats">
+      <div class="stat" *ngFor="let s of stats">
+        <div class="stat-val">{{s.value}}</div>
+        <div class="stat-label">{{s.label}}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="hero-time">
+    IST {{time | date:'HH:mm:ss'}} &nbsp;|&nbsp; {{time | date:'dd MMM yyyy'}}
+  </div>
+</div>

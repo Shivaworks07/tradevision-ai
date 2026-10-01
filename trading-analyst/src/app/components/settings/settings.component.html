@@ -1,0 +1,121 @@
+<div class="set-wrap">
+  <div class="set-header">
+    <h2>Settings</h2>
+    <p>Notification preferences and account settings</p>
+  </div>
+
+  <div class="set-body">
+
+    <!-- SECTION: Browser notifications -->
+    <div class="set-section">
+      <div class="ss-title">Browser Notifications</div>
+      <div class="ss-desc">Receive alerts when watched symbols generate signals matching your filters.</div>
+
+      <div class="ss-perm-row">
+        <div class="perm-status" [style.border-color]="permColor">
+          <span class="ps-dot" [style.background]="permColor"></span>
+          <span class="ps-label">Browser permission:
+            <strong [style.color]="permColor">{{browserPermission | titlecase}}</strong>
+          </span>
+        </div>
+        <button class="btn-enable" *ngIf="browserPermission !== 'granted'" (click)="enableBrowserNotifs()">
+          Enable Notifications
+        </button>
+      </div>
+
+      <!-- Master switch -->
+      <div class="toggle-row">
+        <div class="tr-left">
+          <div class="tr-label">Notifications enabled</div>
+          <div class="tr-desc">Master on/off for all alerts</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" [(ngModel)]="prefs.enabled">
+          <span class="ts-slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <!-- SECTION: Signal filters -->
+    <div class="set-section" [class.disabled]="!prefs.enabled">
+      <div class="ss-title">Signal Filters</div>
+      <div class="ss-desc">Only receive alerts for signals matching all selected criteria.</div>
+
+      <!-- Min confidence -->
+      <div class="pref-row">
+        <div class="pr-label">Minimum confidence</div>
+        <div class="chip-group">
+          <button *ngFor="let c of minConfOptions"
+                  [class.active]="prefs.minConfidence===c"
+                  (click)="prefs.minConfidence=c">{{c}}%</button>
+        </div>
+      </div>
+
+      <!-- Direction -->
+      <div class="pref-row">
+        <div class="pr-label">Signal direction</div>
+        <div class="chip-group">
+          <button [class.active]="hasDir('LONG')"  (click)="toggleDir('LONG')">▲ BUY signals</button>
+          <button [class.active]="hasDir('SHORT')" (click)="toggleDir('SHORT')">▼ SELL signals</button>
+        </div>
+      </div>
+
+      <!-- Signal type -->
+      <div class="pref-row">
+        <div class="pr-label">Signal strength</div>
+        <div class="chip-group">
+          <button *ngFor="let s of signalOptions"
+                  [class.active]="hasSig(s.value)"
+                  (click)="toggleSignal(s.value)">{{s.label}}</button>
+        </div>
+      </div>
+
+      <!-- Markets -->
+      <div class="pref-row">
+        <div class="pr-label">Markets</div>
+        <div class="chip-group">
+          <button *ngFor="let m of marketOptions"
+                  [class.active]="hasMkt(m.value)"
+                  (click)="toggleMarket(m.value)">{{m.label}}</button>
+        </div>
+      </div>
+
+      <!-- Only on change -->
+      <div class="toggle-row">
+        <div class="tr-left">
+          <div class="tr-label">Only alert on signal change</div>
+          <div class="tr-desc">Skip alerts when a signal repeats (e.g. BUY → BUY)</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" [(ngModel)]="prefs.onlyOnChange">
+          <span class="ts-slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Preview of current settings -->
+    <div class="set-section preview">
+      <div class="ss-title">Active Filter Preview</div>
+      <div class="preview-text">
+        You will be alerted when:
+        <strong>{{hasMkt('CRYPTO')?'Crypto ':''}}{{hasMkt('STOCK')?'Stock ':''}}{{hasMkt('FOREX')?'Forex':''}} </strong>
+        signals with confidence ≥ <strong>{{prefs.minConfidence}}%</strong>
+        are
+        <strong>{{hasDir('LONG')&&hasDir('SHORT')?'BUY or SELL':hasDir('LONG')?'BUY only':'SELL only'}}</strong>
+        with strength
+        <strong>{{prefs.signalTypes.join(' / ')}}</strong>
+        <span *ngIf="prefs.onlyOnChange"> — only when the signal changes.</span>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="set-actions">
+      <button class="btn-reset" (click)="reset()">↺ Reset to defaults</button>
+      <button class="btn-save" (click)="save()">
+        <span *ngIf="!saved">Save Preferences</span>
+        <span *ngIf="saved">✓ Saved!</span>
+      </button>
+    </div>
+
+  </div>
+</div>

@@ -1,0 +1,75 @@
+<div class="call-history" *ngIf="auth.isLoggedIn && symbol">
+
+  <!-- Toggle button -->
+  <button class="ch-toggle" (click)="toggle()">
+    📋 {{calls.length > 0 ? calls.length + ' call' + (calls.length > 1 ? 's' : '') + ' — tap to ' + (expanded ? 'hide' : 'view') : 'View call history'}}
+    <span class="ch-arrow">{{expanded ? '▲' : '▼'}}</span>
+  </button>
+
+  <div class="ch-body" *ngIf="expanded">
+    <div class="ch-loading" *ngIf="loading">
+      <span class="mini-spin"></span> Loading…
+    </div>
+
+    <div class="ch-empty" *ngIf="!loading && calls.length === 0">
+      No calls yet. Click "Get Trade Call" to generate and save your first call.
+    </div>
+
+    <div class="ch-list" *ngIf="!loading && calls.length > 0">
+      <div class="ch-row" *ngFor="let c of calls" [class]="resultClass(c.result)">
+        <div class="cr-top">
+          <span class="cr-dir" [class]="c.direction.toLowerCase()">
+            {{c.direction === 'LONG' ? '📈' : c.direction === 'SHORT' ? '📉' : '⏸'}} {{c.direction}}
+          </span>
+          <span class="cr-result" [class]="resultClass(c.result)">{{resultLabel(c.result)}}</span>
+          <span class="cr-time">{{timeAgo(c.calledAt)}}</span>
+          <span class="cr-conf">{{c.confidence}}%</span>
+          <span class="cr-pnl" *ngIf="c.outcome?.pnlR != null"
+                [class.pos]="(c.outcome?.pnlR || 0) > 0" [class.neg]="(c.outcome?.pnlR || 0) <= 0">
+            {{(c.outcome!.pnlR! >= 0 ? '+' : '')}}{{c.outcome!.pnlR! | number:'1.1-2'}}R
+          </span>
+          <span class="cr-dur" *ngIf="c.outcome?.durationLabel">{{c.outcome!.durationLabel}}</span>
+        </div>
+
+        <div class="cr-levels">
+          <span class="cl-item entry">E: {{c.entryPrice | number:'1.2-4'}}</span>
+          <span class="cl-item sl">SL: {{c.stopLoss | number:'1.2-4'}}</span>
+          <span class="cl-item t1">T1: {{c.target1 | number:'1.2-4'}}</span>
+          <span class="cl-item t2">T2: {{c.target2 | number:'1.2-4'}}</span>
+          <span class="cl-item t3">T3: {{c.target3 | number:'1.2-4'}}</span>
+        </div>
+
+        <!-- Signal Timeline -->
+        <div class="cr-timeline" *ngIf="c.result !== 'PENDING'">
+          <div class="crt-step done">
+            <div class="crt-dot"></div>
+            <div class="crt-info">
+              <span class="crt-label">Generated</span>
+              <span class="crt-time">{{formatTime(c.calledAt)}}</span>
+            </div>
+          </div>
+          <div class="crt-line"></div>
+          <div class="crt-step" [class.done]="c.result !== 'PENDING'">
+            <div class="crt-dot" [class]="resultClass(c.result)"></div>
+            <div class="crt-info">
+              <span class="crt-label">{{resultLabel(c.result)}}</span>
+              <span class="crt-time" *ngIf="c.outcome?.durationLabel">{{c.outcome!.durationLabel}}</span>
+              <span class="crt-pnl" *ngIf="c.outcome?.pnlPct" [class.pos]="c.outcome!.pnlPct! > 0" [class.neg]="c.outcome!.pnlPct! < 0">
+                {{c.outcome!.pnlPct! >= 0 ? '+' : ''}}{{c.outcome!.pnlPct! | number:'1.1-1'}}%
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Mark result for pending calls -->
+        <div class="cr-mark" *ngIf="c.result === 'PENDING'">
+          <span class="cr-mark-lbl">Mark:</span>
+          <button class="mk-btn t1" (click)="markResult(c,'HIT_T1')">T1 ✅</button>
+          <button class="mk-btn t2" (click)="markResult(c,'HIT_T2')">T2 ✅</button>
+          <button class="mk-btn t3" (click)="markResult(c,'HIT_T3')">T3 🎯</button>
+          <button class="mk-btn sl" (click)="markResult(c,'HIT_SL')">SL ❌</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

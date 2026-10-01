@@ -1,0 +1,205 @@
+<div class="replay-wrap">
+  <div class="rp-header">
+    <div>
+      <h2>Trade Replay</h2>
+      <p>Watch the AI trade candle-by-candle — high conviction signals only</p>
+    </div>
+  </div>
+
+  <!-- Config panel (shown before load) -->
+  <div class="rp-config" *ngIf="!loaded">
+
+    <!-- Market tabs -->
+    <div class="mkt-tabs">
+      <button [class.active]="activeMarket==='CRYPTO'" (click)="setMarket('CRYPTO')">₿ Crypto</button>
+      <button [class.active]="activeMarket==='STOCK'"  (click)="setMarket('STOCK')">🇮🇳 Indian Stocks</button>
+      <button [class.active]="activeMarket==='FOREX'"  (click)="setMarket('FOREX')">💱 Forex</button>
+    </div>
+
+    <!-- CRYPTO input -->
+    <div *ngIf="activeMarket==='CRYPTO'" class="rc-row">
+      <div class="rc-field">
+        <label>Symbol — type any coin</label>
+        <div class="sym-wrap">
+          <input class="sym-input" [(ngModel)]="cryptoInput"
+                 (ngModelChange)="onCryptoInput()"
+                 (blur)="showCryptSug=false" (focus)="onCryptoInput()"
+                 placeholder="BTC, ETH, PEPE, WIF…" autocomplete="off">
+          <span class="sym-badge">USDT</span>
+          <div class="sym-suggest" *ngIf="showCryptSug">
+            <div class="ss-item" *ngFor="let s of filteredSugg" (mousedown)="selectCrypto(s)">{{s}}</div>
+          </div>
+        </div>
+      </div>
+      <div class="rc-field">
+        <label>Timeframe</label>
+        <div class="seg">
+          <button *ngFor="let tf of CRYPTO_TFS" [class.active]="timeframe===tf" (click)="timeframe=tf">{{tf}}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- STOCK input -->
+    <div *ngIf="activeMarket==='STOCK'" class="rc-row">
+      <div class="rc-field">
+        <label>NSE Symbol</label>
+        <div class="sym-wrap">
+          <input class="sym-input" [(ngModel)]="stockInput"
+                 (ngModelChange)="onStockInput()"
+                 (blur)="showStockSug=false" (focus)="onStockInput()"
+                 placeholder="RELIANCE, TCS, INFY…" autocomplete="off">
+          <span class="sym-badge">NSE</span>
+          <div class="sym-suggest" *ngIf="showStockSug">
+            <div class="ss-item" *ngFor="let s of filteredStock" (mousedown)="selectStock(s)">{{s}}</div>
+          </div>
+        </div>
+      </div>
+      <div class="rc-field">
+        <label>Timeframe</label>
+        <div class="seg">
+          <button *ngFor="let tf of STOCK_TFS" [class.active]="timeframe===tf" (click)="timeframe=tf">{{tf}}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- FOREX input -->
+    <div *ngIf="activeMarket==='FOREX'" class="rc-row">
+      <div class="rc-field">
+        <label>Forex Pair</label>
+        <div class="seg forex-seg">
+          <button *ngFor="let p of FOREX_PAIRS"
+                  [class.active]="forexBase===p.base && forexQuote===p.quote"
+                  (click)="forexBase=p.base; forexQuote=p.quote">{{p.label}}</button>
+        </div>
+      </div>
+      <div class="rc-field">
+        <label>Timeframe</label>
+        <div class="seg">
+          <button *ngFor="let tf of FOREX_TFS" [class.active]="timeframe===tf" (click)="timeframe=tf">{{tf}}</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="rc-row">
+      <div class="rc-field">
+        <label>Date Range</label>
+        <div class="seg">
+          <button *ngFor="let r of DATE_RANGES" [class.active]="dateRange===r.value" (click)="dateRange=r.value">{{r.label}}</button>
+        </div>
+      </div>
+    </div>
+    <button class="load-btn" (click)="load()" [disabled]="loading">
+      <span *ngIf="!loading">▶ Load & Start Replay</span>
+      <span *ngIf="loading"><span class="mini-spin"></span> Loading…</span>
+    </button>
+  </div>
+
+  <!-- Replay active -->
+  <div *ngIf="loaded">
+
+    <!-- Controls bar -->
+    <div class="rp-controls">
+      <button class="ctrl-btn" (click)="reset()" title="Reset (R)">⏮</button>
+      <button class="ctrl-btn" (click)="stepBack()" title="Previous candle (←)">◀</button>
+      <button class="ctrl-btn play" (click)="play()" [disabled]="playing">▶ Play</button>
+      <button class="ctrl-btn" (click)="stop()" [disabled]="!playing">⏸ Pause</button>
+      <button class="ctrl-btn" (click)="step()" title="Next candle (→)">▶ Step</button>
+      <div class="speed-presets">
+        <button *ngFor="let s of SPEED_PRESETS; let i=index"
+                [class.active]="activeSpeedIdx===i" (click)="setSpeed(i)">{{s.label}}</button>
+      </div>
+      <span class="kbd-hint">Space=Play/Pause · ←→=Step · R=Reset</span>
+      <div class="rp-progress">
+        <div class="rpp-bar"><div class="rpp-fill" [style.width.%]="progress"></div></div>
+        <span class="rpp-label">{{currentIdx}} / {{allCandles.length}} candles</span>
+      </div>
+      <button class="change-btn" (click)="loaded=false; stop()">Change Symbol</button>
+    </div>
+
+    <!-- Chart -->
+    <div class="rp-chart-area">
+      <div class="rp-chart-label">{{displaySymbol}} · {{timeframe}} · {{activeMarket}}</div>
+      <div #replayChart class="rp-chart"></div>
+    </div>
+
+    <!-- Current signal bar -->
+    <div class="rp-signal" *ngIf="currentCall && currentCall.direction !== 'WAIT'">
+      <div class="rs-left">
+        <div class="rs-dir" [class.long]="currentCall.direction==='LONG'" [class.short]="currentCall.direction==='SHORT'">
+          {{currentCall.direction === 'LONG' ? '▲ LONG' : '▼ SHORT'}}
+        </div>
+        <div class="rs-sig">{{currentCall.signal}}</div>
+        <div class="rs-conf">{{currentCall.confidence}}%</div>
+      </div>
+
+      <div class="rs-plan">
+        <div class="rsp-row entry"><span>Entry</span><strong>{{fmtPrice(currentCall.entry)}}</strong></div>
+        <div class="rsp-row sl"><span>SL</span><strong>{{fmtPrice(currentCall.stopLoss)}}</strong></div>
+        <div class="rsp-row t1"><span>T1</span><strong>{{fmtPrice(currentCall.target1)}}</strong></div>
+        <div class="rsp-row t2"><span>T2</span><strong>{{fmtPrice(currentCall.target2)}}</strong></div>
+        <div class="rsp-row t3"><span>T3</span><strong>{{fmtPrice(currentCall.target3)}}</strong></div>
+        <div class="rsp-row rr"><span>R:R</span><strong>{{currentCall.rrRatio}}</strong></div>
+      </div>
+
+      <div class="rs-reasons" *ngIf="currentCall.bullReasons?.length || currentCall.bearReasons?.length">
+        <div class="rsr-item" *ngFor="let r of (currentCall.direction==='LONG' ? currentCall.bullReasons : currentCall.bearReasons).slice(0,4)">
+          <span [class.green]="currentCall.direction==='LONG'" [class.red]="currentCall.direction==='SHORT'">
+            {{currentCall.direction==='LONG'?'✓':'✗'}}
+          </span>
+          {{r}}
+        </div>
+      </div>
+
+      <div class="rs-result" *ngIf="lastResult" [class]="lastResult.startsWith('HIT_T')?'win':'loss'">
+        {{resultLabel(lastResult)}}
+        <span *ngIf="history[0]?.pnlPct" [class.pos]="history[0].pnlPct>0" [class.neg]="history[0].pnlPct<0">
+          {{history[0].pnlPct >= 0 ? '+' : ''}}{{history[0].pnlPct}}%
+        </span>
+      </div>
+      <div class="rs-wait" *ngIf="pendingCallActive">⏳ Monitoring…</div>
+    </div>
+
+    <!-- Stats row -->
+    <div class="rp-stats">
+      <div class="rps-card"><div class="rpsc-label">Signals</div><div class="rpsc-val">{{wins+losses}}</div></div>
+      <div class="rps-card win"><div class="rpsc-label">Wins</div><div class="rpsc-val">{{wins}}</div></div>
+      <div class="rps-card loss"><div class="rpsc-label">Losses</div><div class="rpsc-val">{{losses}}</div></div>
+      <div class="rps-card"><div class="rpsc-label">Win Rate</div><div class="rpsc-val" [style.color]="winRate>=60?'#00FF88':winRate>=50?'#FFB800':'#FF3B5C'">{{winRate}}%</div></div>
+      <div class="rps-card"><div class="rpsc-label">Avg P&L</div><div class="rpsc-val" [style.color]="avgPnl>=0?'#00FF88':'#FF3B5C'">{{avgPnl>=0?'+':''}}{{avgPnl}}%</div></div>
+      <div class="rps-card"><div class="rpsc-label">Total P&L</div><div class="rpsc-val" [style.color]="totalPnl>=0?'#00FF88':'#FF3B5C'">{{totalPnl>=0?'+':''}}{{totalPnl | number:'1.1-1'}}%</div></div>
+    </div>
+
+    <!-- Comparison + Export -->
+    <div class="rp-comparison" *ngIf="wins+losses > 0">
+      <div class="rpc-title">AI vs Buy & Hold</div>
+      <div class="rpc-grid">
+        <div class="rpc-col ai">
+          <div class="rpc-label">AI Strategy</div>
+          <div class="rpc-val" [style.color]="totalPnl>=0?'#00FF88':'#FF3B5C'">{{totalPnl>=0?'+':''}}{{totalPnl | number:'1.1-1'}}%</div>
+          <div class="rpc-sub">{{wins}} wins · {{winRate}}% WR</div>
+        </div>
+        <div class="rpc-vs">VS</div>
+        <div class="rpc-col bh">
+          <div class="rpc-label">Buy & Hold</div>
+          <div class="rpc-val" [style.color]="buyHoldReturn>=0?'#00D4FF':'#FF3B5C'">{{buyHoldReturn>=0?'+':''}}{{buyHoldReturn}}%</div>
+          <div class="rpc-sub">{{displaySymbol}} · same period</div>
+        </div>
+      </div>
+      <button class="export-btn" (click)="exportCSV()">⬇ Export Results CSV</button>
+    </div>
+
+    <!-- Signal history -->
+    <div class="rp-history" *ngIf="history.length">
+      <div class="rph-title">Signal History</div>
+      <div class="rph-row" *ngFor="let h of history" [class]="h.result.startsWith('HIT_T')?'win':'loss'">
+        <span class="rph-idx">Bar {{h.idx}}</span>
+        <span class="rph-dir" [class.long]="h.call.direction==='LONG'" [class.short]="h.call.direction==='SHORT'">
+          {{h.call.direction==='LONG'?'▲':'▼'}} {{h.call.signal}}
+        </span>
+        <span class="rph-conf">{{h.call.confidence}}%</span>
+        <span class="rph-result" [style.color]="resultColor(h.result)">{{resultLabel(h.result)}}</span>
+        <span class="rph-pnl" [class.pos]="h.pnlPct>0" [class.neg]="h.pnlPct<0">{{h.pnlPct>=0?'+':''}}{{h.pnlPct}}%</span>
+      </div>
+    </div>
+  </div>
+</div>

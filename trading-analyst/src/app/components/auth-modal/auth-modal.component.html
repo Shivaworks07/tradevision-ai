@@ -1,0 +1,131 @@
+<div class="auth-overlay" *ngIf="visible" (click)="onClose()">
+<div class="auth-modal" (click)="$event.stopPropagation()">
+
+  <!-- Close -->
+  <button class="auth-close" (click)="onClose()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="16" height="16">
+      <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+    </svg>
+  </button>
+
+  <!-- Brand -->
+  <div class="auth-brand">
+    <div class="auth-logo">
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+        <rect width="28" height="28" rx="8" fill="url(#agl)"/>
+        <path d="M6 19L10 13L14 16L18 9L22 11" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <defs><linearGradient id="agl" x1="0" y1="0" x2="28" y2="28"><stop stop-color="#00D4FF"/><stop offset="1" stop-color="#7B61FF"/></linearGradient></defs>
+      </svg>
+    </div>
+    <div class="auth-brand-text">
+      <span class="ab-name">TradeVision</span>
+      <span class="ab-ai">AI</span>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="auth-tabs">
+    <button [class.active]="mode==='login'"    (click)="mode='login'">Sign In</button>
+    <button [class.active]="mode==='register'" (click)="mode='register'">Create Account</button>
+    <div class="auth-tab-indicator" [style.transform]="mode==='register' ? 'translateX(100%)' : 'translateX(0)'"></div>
+  </div>
+
+  <!-- Step 1: Identifier -->
+  <div *ngIf="step===1" class="auth-form">
+
+    <!-- Login -->
+    <div *ngIf="mode==='login'" class="auth-heading">
+      <h2>Welcome back</h2>
+      <p>Enter your email to receive a login code</p>
+    </div>
+
+    <!-- Register -->
+    <div *ngIf="mode==='register'" class="auth-heading">
+      <h2>Get started free</h2>
+      <p>No credit card · No downloads · Just email</p>
+    </div>
+
+    <!-- Name row (register only) -->
+    <div class="auth-name-row" *ngIf="mode==='register'">
+      <div class="auth-input-group">
+        <label>First Name <span style="color:#FF3B5C">*</span></label>
+        <input [(ngModel)]="firstName" type="text" autocomplete="given-name" placeholder="First name" (keyup.enter)="sendOtp()">
+      </div>
+      <div class="auth-input-group">
+        <label>Last Name</label>
+        <input [(ngModel)]="lastName" type="text" autocomplete="family-name" placeholder="Last name">
+      </div>
+    </div>
+
+    <!-- Email -->
+    <div class="auth-input-group">
+      <label>Email Address</label>
+      <div class="auth-input-icon-wrap">
+        <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="16" height="16">
+          <rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="2,4 12,13 22,4"/>
+        </svg>
+        <input [(ngModel)]="email" type="email" autocomplete="email"
+               placeholder="Enter your email address"
+               (keyup.enter)="sendOtp()">
+      </div>
+    </div>
+
+    <div class="auth-error" *ngIf="error">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      {{error}}
+    </div>
+
+    <button class="auth-submit" (click)="sendOtp()" [disabled]="loading || checking">
+      <span *ngIf="!loading && !checking">Send OTP <span class="arrow">→</span></span>
+      <span *ngIf="checking" style="font-size:13px">Checking email…</span>
+      <span *ngIf="loading && !checking" class="auth-spinner"></span>
+    </button>
+
+    <div class="auth-legal">
+      By continuing you agree to our <a href="#">Terms</a> and <a href="#">Privacy Policy</a>
+    </div>
+  </div>
+
+  <!-- Step 2: OTP -->
+  <div *ngIf="step===2" class="auth-form">
+    <div class="auth-heading">
+      <h2>Check your email</h2>
+      <p>We sent a 6-digit code to<br><strong>{{email}}</strong></p>
+    </div>
+
+    <div class="otp-label">6-DIGIT CODE</div>
+    <div class="otp-inputs">
+      <input *ngFor="let i of [0,1,2,3,4,5]"
+             type="text" inputmode="numeric" maxlength="1"
+             [value]="otpDigits[i] || ''"
+             (input)="onOtpInput($event, i)"
+             (keydown)="onOtpKey($event, i)"
+             (paste)="onOtpPaste($event)"
+             [id]="'otp'+i"
+             class="otp-box"
+             [class.filled]="otpDigits[i]">
+    </div>
+
+    <div class="auth-error" *ngIf="error">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      {{error}}
+    </div>
+
+    <button class="auth-submit" (click)="verify()" [disabled]="loading || otpDigits.join('').length < 6">
+      <span *ngIf="!loading">Verify &amp; Continue <span class="arrow">→</span></span>
+      <span *ngIf="loading" class="auth-spinner"></span>
+    </button>
+
+    <div class="auth-resend">
+      <button class="auth-back" (click)="step=1; error=''; otpDigits=[]">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><polyline points="15 18 9 12 15 6"/></svg>
+        Change email
+      </button>
+      <button class="auth-resend-btn" (click)="resend()" [disabled]="resendCooldown>0">
+        {{resendCooldown > 0 ? 'Resend in ' + resendCooldown + 's' : 'Resend code'}}
+      </button>
+    </div>
+  </div>
+
+</div>
+</div>

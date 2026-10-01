@@ -1,0 +1,62 @@
+<div class="section-container">
+  <div class="section-header">
+    <div class="section-icon" style="background:rgba(247,147,26,0.1);">₿</div>
+    <div class="section-title">
+      <h2>Crypto Markets</h2>
+      <p>Top Coins — Live Prices from CoinGecko</p>
+    </div>
+    <span class="section-badge" style="background:rgba(247,147,26,0.1);color:#F7931A;border:1px solid rgba(247,147,26,0.2)">CRYPTO</span>
+  </div>
+
+  <!-- Fear & Greed -->
+  <div class="fg-bar">
+    <div class="fg-label">
+      <span>Fear &amp; Greed Index</span>
+      <span class="fg-val" [class]="getFGClass()">{{fearGreedIndex}} — {{fearGreedLabel}}</span>
+    </div>
+    <div class="fg-track">
+      <div class="fg-fill" [style.width.%]="fearGreedIndex" [class]="getFGClass()"></div>
+      <div class="fg-marker" [style.left.%]="fearGreedIndex"></div>
+    </div>
+    <div class="fg-scale">
+      <span>Extreme Fear</span><span>Fear</span><span>Neutral</span><span>Greed</span><span>Extreme Greed</span>
+    </div>
+  </div>
+
+  <div class="search-bar-wrap">
+    <span class="search-icon">🔍</span>
+    <input [(ngModel)]="search" (ngModelChange)="filterCoins()" placeholder="Search coins... (e.g. BTC, ETH, ONDO, FET, Sonic)">
+  </div>
+
+  <div class="loading-state" *ngIf="loading">
+    <div class="spinner"></div><p>Fetching live crypto prices...</p>
+  </div>
+
+  <div class="crypto-grid" *ngIf="!loading">
+    <div class="crypto-card" [class.bullish]="c.changePercent>=0" [class.bearish]="c.changePercent<0"
+         *ngFor="let c of filtered; let i=index">
+      <div class="crypto-rank">#{{i+1}}</div>
+      <div class="crypto-header">
+        <div class="coin-icon">{{c.symbol.charAt(0)}}</div>
+        <div class="coin-info">
+          <div class="coin-symbol">{{c.symbol}}</div>
+          <div class="coin-name">{{c.name}}</div>
+        </div>
+        <div class="coin-change" [class.up]="c.changePercent>=0" [class.down]="c.changePercent<0">
+          {{c.changePercent>=0?'+':''}}{{c.changePercent | number:'1.2-2'}}%
+        </div>
+      </div>
+      <div class="coin-price">${{formatPrice(c.price)}}</div>
+      <div class="coin-meta">
+        <div class="meta-item"><span class="meta-label">24h High</span><span>${{formatPrice(c.high!)}}</span></div>
+        <div class="meta-item"><span class="meta-label">24h Low</span><span>${{formatPrice(c.low!)}}</span></div>
+        <div class="meta-item"><span class="meta-label">Mkt Cap</span><span>{{c.marketCap}}</span></div>
+      </div>
+      <button class="analyze-btn" (click)="analyze(c)" [disabled]="analyzing===c.symbol">
+        {{analyzing===c.symbol ? '⟳ Analyzing...' : '📊 Analyze'}}
+      </button>
+    </div>
+  </div>
+</div>
+
+<app-analysis-modal [result]="analysisResult" [visible]="modalVisible" (close)="modalVisible=false"></app-analysis-modal>

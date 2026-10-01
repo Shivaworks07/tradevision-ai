@@ -1,0 +1,86 @@
+<div class="auth-page">
+  <div class="auth-bg">
+    <div class="bg-orb orb1"></div>
+    <div class="bg-orb orb2"></div>
+    <div class="bg-orb orb3"></div>
+    <div class="grid-lines"></div>
+  </div>
+
+  <div class="auth-card">
+    <!-- Brand -->
+    <div class="auth-brand">
+      <span class="brand-icon">⚡</span>
+      <span class="brand-name">TradeVision <span class="brand-ai">AI</span></span>
+    </div>
+    <p class="auth-tagline">India's smartest trading analysis platform</p>
+
+    <!-- Step: Mobile -->
+    <div class="auth-form" *ngIf="step === 'mobile'">
+      <div class="form-header">
+        <h2>Welcome Back</h2>
+        <p>Login with your mobile number</p>
+      </div>
+
+      <div class="field" [class.error]="mobileError">
+        <label>Mobile Number</label>
+        <div class="input-wrap">
+          <span class="input-prefix">🇮🇳 +91</span>
+          <input type="tel" [(ngModel)]="mobile" (ngModelChange)="mobileError=''"
+                 placeholder="9876543210" maxlength="10" (keyup.enter)="sendOtp()">
+        </div>
+        <span class="field-error" *ngIf="mobileError">{{mobileError}}</span>
+      </div>
+
+      <div class="alert error" *ngIf="error">⚠️ {{error}}</div>
+
+      <button class="btn-primary" (click)="sendOtp()" [disabled]="loading">
+        <span *ngIf="!loading">Send OTP →</span>
+        <span *ngIf="loading" class="btn-loader">⟳ Sending…</span>
+      </button>
+
+      <p class="auth-link">Don't have an account? <a routerLink="/register">Register</a></p>
+    </div>
+
+    <!-- Step: OTP -->
+    <div class="auth-form" *ngIf="step === 'otp'">
+      <div class="form-header">
+        <h2>Verify OTP</h2>
+        <p>Enter the 6-digit code sent to <strong>+91 {{mobile}}</strong></p>
+      </div>
+
+      <div class="field" [class.error]="otpError">
+        <label>OTP Code</label>
+        <input class="otp-input" type="text" [(ngModel)]="otp" (ngModelChange)="otpError=''"
+               placeholder="• • • • • •" maxlength="6" (keyup.enter)="verify()"
+               inputmode="numeric" autocomplete="one-time-code">
+        <span class="field-error" *ngIf="otpError">{{otpError}}</span>
+      </div>
+
+      <div class="otp-note">
+        📱 OTP is printed in your backend console (SMS integration pending)
+      </div>
+
+      <div class="alert error" *ngIf="error">⚠️ {{error}}</div>
+      <div class="alert success" *ngIf="success">✅ {{success}}</div>
+
+      <button class="btn-primary" (click)="verify()" [disabled]="loading">
+        <span *ngIf="!loading">Verify & Login →</span>
+        <span *ngIf="loading" class="btn-loader">⟳ Verifying…</span>
+      </button>
+
+      <div class="otp-actions">
+        <button class="btn-ghost" (click)="backToMobile()">← Change Number</button>
+        <button class="btn-ghost" (click)="resend()" [disabled]="resendTimer > 0">
+          {{resendTimer > 0 ? 'Resend in '+resendTimer+'s' : 'Resend OTP'}}
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div class="auth-footer">
+    <span>⚡ TradeVision AI</span>
+    <span>·</span>
+    <span>Built by <strong>Basu</strong></span>
+  </div>
+</div>

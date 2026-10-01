@@ -1,0 +1,88 @@
+.call-history { margin-top: 8px; }
+
+.ch-toggle {
+  width: 100%; padding: 7px 12px;
+  background: rgba(0,212,255,0.04); border: 1px solid #1E2D4A;
+  border-radius: 8px; color: #8895B3;
+  font-family: 'Space Grotesk', sans-serif; font-size: 11px; font-weight: 600;
+  cursor: pointer; transition: all 0.2s; display: flex; justify-content: space-between;
+  &:hover { border-color: #2A3F6A; color: #00D4FF; background: rgba(0,212,255,0.06); }
+  .ch-arrow { color: #4A5568; font-size: 9px; }
+}
+
+.ch-body { margin-top: 6px; background: #080C18; border: 1px solid #1E2D4A; border-radius: 8px; overflow: hidden; }
+
+.ch-loading, .ch-empty {
+  padding: 10px 12px; font-size: 11px; color: #4A5568;
+  display: flex; align-items: center; gap: 6px;
+}
+.mini-spin {
+  display: inline-block; width: 10px; height: 10px;
+  border: 2px solid #1E2D4A; border-top-color: #00D4FF;
+  border-radius: 50%; animation: spin 0.7s linear infinite; flex-shrink: 0;
+}
+
+.ch-row {
+  padding: 8px 12px; border-bottom: 1px solid #1A2340;
+  &:last-child { border-bottom: none; }
+  &.win     { border-left: 2px solid #00FF88; }
+  &.loss    { border-left: 2px solid #FF3B5C; }
+  &.pending { border-left: 2px solid #FFB800; }
+  &.expired { border-left: 2px solid #4A5568; }
+}
+
+.cr-top {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 5px; flex-wrap: wrap;
+  .cr-dir {
+    font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 6px;
+    &.long  { background: rgba(0,255,136,0.1); color:#00FF88; }
+    &.short { background: rgba(255,59,92,0.1);  color:#FF3B5C; }
+    &.wait  { background: rgba(255,184,0,0.08); color:#FFB800; }
+  }
+  .cr-result {
+    font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 6px;
+    &.win     { background:rgba(0,255,136,0.1);color:#00FF88; }
+    &.loss    { background:rgba(255,59,92,0.1); color:#FF3B5C; }
+    &.pending { background:rgba(255,184,0,0.08);color:#FFB800; }
+    &.expired { background:rgba(74,85,104,0.1); color:#4A5568; }
+  }
+  .cr-time { font-size: 9px; color: #4A5568; font-family:'JetBrains Mono',monospace; margin-left: auto; }
+  .cr-conf { font-size: 9px; color: #4A5568; }
+}
+
+.cr-levels {
+  display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 5px;
+  .cl-item {
+    font-size: 9px; font-family:'JetBrains Mono',monospace;
+    padding: 1px 5px; border-radius: 4px; background: #0F1525;
+    &.entry { color:#00D4FF; } &.sl { color:#FF3B5C; }
+    &.t1 { color:rgba(0,255,136,0.6); } &.t2 { color:rgba(0,255,136,0.8); } &.t3 { color:#00FF88; }
+  }
+}
+
+.cr-mark {
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  .cr-mark-lbl { font-size: 9px; color: #4A5568; }
+}
+.mk-btn {
+  padding: 2px 7px; border-radius: 5px; border: 1px solid #1E2D4A;
+  background: transparent; font-size: 9px; font-weight: 700;
+  cursor: pointer; transition: all 0.15s; font-family:'Space Grotesk',sans-serif;
+  &.t1,&.t2,&.t3 { color:#00FF88; &:hover { background:rgba(0,255,136,0.1);border-color:#00FF88; } }
+  &.sl { color:#FF3B5C; &:hover { background:rgba(255,59,92,0.1);border-color:#FF3B5C; } }
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+.cr-pnl { font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;padding:2px 6px;border-radius:5px;
+  &.pos{color:#00FF88;background:rgba(0,255,136,0.08);}
+  &.neg{color:#FF3B5C;background:rgba(255,59,92,0.08);}
+}
+.cr-dur { font-size:9px;color:#4A5568;font-family:'JetBrains Mono',monospace; }
+/* Signal Timeline */
+.cr-timeline { display:flex;align-items:center;gap:6px;padding:6px 0;
+  .crt-step{display:flex;align-items:center;gap:6px;
+    .crt-dot{width:8px;height:8px;border-radius:50%;background:#2A3F6A;border:2px solid #1E2D4A;flex-shrink:0;&.done{background:#00D4FF;border-color:#00D4FF;}&.win{background:#00FF88;border-color:#00FF88;}&.loss{background:#FF3B5C;border-color:#FF3B5C;}}
+    .crt-info{display:flex;flex-direction:column;gap:1px;.crt-label{font-size:9px;color:#4A5568;}.crt-time{font-size:9px;color:#8895B3;font-family:'JetBrains Mono',monospace;}.crt-pnl{font-size:9px;font-weight:700;&.pos{color:#00FF88;}&.neg{color:#FF3B5C;}}}
+  }
+  .crt-line{flex:1;height:1px;background:linear-gradient(90deg,#00D4FF,#1A2340);}
+}

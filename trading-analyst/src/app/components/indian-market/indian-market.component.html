@@ -1,0 +1,167 @@
+<div class="section-container">
+  <div class="section-header">
+    <div class="section-icon" style="background:rgba(255,153,0,0.12);">IN</div>
+    <div class="section-title">
+      <h2>Indian Stock Market</h2>
+      <p>130+ NSE/BSE stocks · Search any stock · Live via Yahoo Finance · Auto-refresh 60s</p>
+    </div>
+    <div class="hdr-right">
+      <span class="live-chip">🟢 LIVE</span>
+      <span class="section-badge" style="background:rgba(255,153,0,0.1);color:#FF9900;border:1px solid rgba(255,153,0,0.2)">NSE/BSE</span>
+    </div>
+  </div>
+
+  <!-- Index Bar -->
+  <div class="index-bar">
+    <div class="index-pill">
+      <span class="idx-name">NIFTY 50</span>
+      <span class="idx-val">{{nifty.value}}</span>
+      <span class="idx-chg" [class.up]="nifty.up" [class.dn]="!nifty.up">
+        {{nifty.up?'▲':'▼'}} {{nifty.pct}}%
+      </span>
+      <!-- Review finding (P1 #10 — "Index fallback is also fake market data") -->
+      <span class="idx-stale" *ngIf="nifty.stale" title="Live index data unavailable — showing a placeholder, not a current price">⚠️ STALE</span>
+    </div>
+    <div class="index-pill">
+      <span class="idx-name">SENSEX</span>
+      <span class="idx-val">{{sensex.value}}</span>
+      <span class="idx-chg" [class.up]="sensex.up" [class.dn]="!sensex.up">
+        {{sensex.up?'▲':'▼'}} {{sensex.pct}}%
+      </span>
+      <span class="idx-stale" *ngIf="sensex.stale" title="Live index data unavailable — showing a placeholder, not a current price">⚠️ STALE</span>
+    </div>
+    <div class="idx-meta">
+      <span class="idx-source">{{dataSource}}</span>
+      <span class="idx-time" *ngIf="lastUpdated">Updated {{lastUpdated}}</span>
+    </div>
+  </div>
+
+  <!-- Search any NSE stock -->
+  <div class="stock-search-wrap">
+    <div class="search-box">
+      <span class="si">🔍</span>
+      <input
+        [(ngModel)]="search"
+        (ngModelChange)="onSearchInput()"
+        (blur)="showDropdown=false"
+        (focus)="onSearchInput()"
+        placeholder="Search any NSE stock… ZOMATO, IRCTC, HAL, MRF, PAYTM…">
+      <span class="searching-spin" *ngIf="searching">⟳</span>
+    </div>
+
+    <!-- Dropdown results -->
+    <div class="search-dropdown" *ngIf="showDropdown && searchResults.length">
+      <div class="sd-item" *ngFor="let r of searchResults"
+           (mousedown)="selectFromDropdown(r)">
+        <div class="sd-left">
+          <span class="sd-sym">{{r.sym.replace('.NS','')}}</span>
+          <span class="sd-name">{{r.name}}</span>
+        </div>
+        <div class="sd-right">
+          <span class="sd-sector">{{r.sector}}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sector Filter -->
+  <div class="sector-filter">
+    <button *ngFor="let s of sectors" [class.active]="selectedSector===s" (click)="setSector(s)">
+      {{s}}
+    </button>
+  </div>
+
+  <div class="loading-state" *ngIf="loading">
+    <div class="spinner"></div><p>Fetching live NSE data…</p>
+  </div>
+
+  <!-- Stock Grid -->
+  <div class="stock-grid" *ngIf="!loading">
+    <div class="stock-card"
+         [class.bullish]="s.changePct>=0"
+         [class.bearish]="s.changePct<0"
+         *ngFor="let s of filtered">
+      <div class="card-header">
+        <span class="symbol-badge">{{s.symbol}}</span>
+        <span class="sector-tag">{{s.sector}}</span>
+        <!-- Review finding (P1 #8 — "The frontend still fabricates market data") -->
+        <span class="idx-stale" *ngIf="s.stale" title="Live data unavailable — this price is a placeholder, not current">⚠️ STALE</span>
+        <button class="fav-btn" (click)="toggleFavorite(s.symbol, $event)"
+                [class.active]="isFav(s.symbol)" title="Add to favorites">
+          {{isFav(s.symbol) ? '❤️' : '🤍'}}
+        </button>
+      </div>
+      <div class="stock-name">{{s.name}}</div>
+      <div class="price-row">
+        <span class="price">{{formatPrice(s.price)}}</span>
+        <span class="change" [class.up]="s.changePct>=0" [class.down]="s.changePct<0">
+          {{s.changePct>=0?'+':''}}{{s.changePct|number:'1.2-2'}}%
+        </span>
+      </div>
+      <div class="hl-row">
+        <span>H:{{formatPrice(s.high)}}</span>
+        <span>L:{{formatPrice(s.low)}}</span>
+        <span>Vol:{{(s.volume/1e6)|number:'1.1-1'}}M</span>
+      </div>
+      <div class="card-actions">
+        <button class="analyze-btn intraday-btn" (click)="analyzeIntraday(s)" [disabled]="analyzing===s.symbol" title="15m entry, confirmed by 1H trend">
+          {{analyzing===s.symbol && callMode==='INTRADAY' ?'⟳ Analyzing…':'⚡ Intraday Call'}}
+        </button>
+        <button class="analyze-btn" (click)="analyze(s)" [disabled]="analyzing===s.symbol" title="Daily entry, confirmed by Weekly trend">
+          {{analyzing===s.symbol && callMode==='SWING' ?'⟳ Analyzing…':'📊 Swing Call'}}
+        </button>
+        <button class="chart-btn" (click)="openChart(s.symbol,$event)" title="View live chart">📈</button>
+      </div>
+      <div class="intraday-unavailable" *ngIf="intradayUnavailable===s.symbol">
+        ⚠️ No intraday (15m) data available for {{s.symbol}} right now — try again during market hours, or use Swing Call instead.
+      </div>
+      <!-- Review finding (P1 #9 — "Synthetic candles are still used to generate trading
+           analysis"): the review's own required UI text for this exact state. -->
+      <div class="intraday-unavailable" *ngIf="analysisUnavailable===s.symbol">
+        ⚠️ Analysis unavailable — live historical market data could not be retrieved for {{s.symbol}}.
+      </div>
+      <app-stock-chart *ngIf="chartSymbol===s.symbol && showChart" [symbol]="s.symbol" [visible]="true" [tradeLevels]="chartTradeLevels()"></app-stock-chart>
+      <!-- Inline signal summary after analysis (feature 9) -->
+      <div class="stock-signal-bar" *ngIf="selectedStock?.symbol === s.symbol && tradeCall">
+        <div class="ssb-dir" [class.bull]="tradeCall.direction==='LONG'" [class.bear]="tradeCall.direction==='SHORT'" [class.neutral]="tradeCall.direction==='WAIT'">
+          {{tradeCall.direction==='LONG'?'▲ BUY':tradeCall.direction==='SHORT'?'▼ SELL':'⏸ WAIT'}}
+        </div>
+        <div class="ssb-conf">
+          <svg viewBox="0 0 40 40" width="36" height="36">
+            <circle cx="20" cy="20" r="16" fill="none" stroke="#1A2340" stroke-width="4"/>
+            <circle cx="20" cy="20" r="16" fill="none"
+              [attr.stroke]="tradeCall.confidence>=75?'#00FF88':tradeCall.confidence>=55?'#FFB800':'#FF3B5C'"
+              stroke-width="4" stroke-linecap="round"
+              [attr.stroke-dasharray]="100.5"
+              [attr.stroke-dashoffset]="100.5-(100.5*tradeCall.confidence/100)"
+              transform="rotate(-90 20 20)"/>
+            <text x="20" y="24" text-anchor="middle" font-size="9" font-weight="800"
+              [attr.fill]="tradeCall.confidence>=75?'#00FF88':tradeCall.confidence>=55?'#FFB800':'#FF3B5C'">{{tradeCall.confidence}}%</text>
+          </svg>
+        </div>
+        <div class="ssb-levels">
+          <div class="ssbl-row"><span>Entry</span><strong>{{formatPrice(tradeCall.entry)}}</strong></div>
+          <div class="ssbl-row"><span>SL</span><strong class="red">{{formatPrice(tradeCall.stopLoss)}}</strong></div>
+          <div class="ssbl-row"><span>T1</span><strong class="green">{{formatPrice(tradeCall.target1)}}</strong></div>
+        </div>
+        <div class="ssb-risk" [class]="'risk-'+tradeCall.risk.toLowerCase()">{{tradeCall.risk}}</div>
+        <button class="ssb-detail" (click)="modalVisible=true">Full →</button>
+      </div>
+
+      <app-call-history [symbol]="s.symbol" market="STOCK" [refresh]="historyRefresh"></app-call-history>
+    </div>
+  </div>
+</div>
+
+<app-analysis-modal
+  [result]="tradeCall" [visible]="modalVisible"
+  market="STOCK"
+  [symbol]="selectedStock?.symbol||''" [name]="selectedStock?.name||''"
+  [currentPrice]="selectedStock?.price||0"
+  [priceFormatter]="priceFormatter"
+  (close)="modalVisible=false">
+</app-analysis-modal>
+<app-option-chain></app-option-chain>
+
+<!-- Featured Indian Stock Trades -->
+<app-featured-trades market="STOCK"></app-featured-trades>

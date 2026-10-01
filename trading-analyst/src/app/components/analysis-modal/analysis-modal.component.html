@@ -1,0 +1,226 @@
+<div class="am-overlay" *ngIf="visible" (click)="close.emit()">
+<div class="am-panel" (click)="$event.stopPropagation()">
+
+  <!-- Header -->
+  <div class="am-header">
+    <div class="am-title-row">
+      <span class="am-sym">{{symbol}}</span>
+      <span class="am-name">{{name}}</span>
+      <div class="signal-badge" [class]="getSignalClass()" *ngIf="result">
+        {{result.direction === 'LONG' ? '▲ LONG' : result.direction === 'SHORT' ? '▼ SHORT' : '⏸ WAIT'}}
+      </div>
+      <span class="signal-strength-badge" *ngIf="result?.signalStrength" [class]="'str-'+result!.signalStrength!.toLowerCase().replace(' ','-')">
+        {{result!.signalStrength}}
+      </span>
+    </div>
+    <button class="am-close" (click)="close.emit()">✕</button>
+  </div>
+
+  <div class="am-body" *ngIf="result">
+
+    <!-- ROW 1: Confidence meter + Signal strength -->
+    <div class="am-top-row">
+
+      <!-- Circular Confidence Meter -->
+      <div class="conf-circle-wrap">
+        <svg class="conf-svg" viewBox="0 0 120 120">
+          <circle cx="60" cy="60" r="50" fill="none" stroke="#1A2340" stroke-width="10"/>
+          <circle cx="60" cy="60" r="50" fill="none"
+            [attr.stroke]="getConfColor(result.confidence)"
+            stroke-width="10" stroke-linecap="round"
+            [attr.stroke-dasharray]="314"
+            [attr.stroke-dashoffset]="314 - (314 * result.confidence / 100)"
+            transform="rotate(-90 60 60)"/>
+          <text x="60" y="55" text-anchor="middle" font-size="26" font-weight="800" [attr.fill]="getConfColor(result.confidence)">{{result.confidence}}%</text>
+          <text x="60" y="73" text-anchor="middle" font-size="10" fill="#4A5568">AI CONFIDENCE</text>
+          <text x="60" y="88" text-anchor="middle" font-size="9" fill="#8895B3">{{getStars(result.confidence)}}</text>
+        </svg>
+        <div class="cc-sub">{{result.signal}}</div>
+      </div>
+
+      <!-- AI Score Breakdown -->
+      <div class="score-breakdown" *ngIf="result.scoreBreakdown">
+        <div class="sb-title">AI Score Breakdown</div>
+        <div class="sb-row" *ngFor="let s of getScoreRows(result.scoreBreakdown)">
+          <span class="sbr-label">{{s.label}}</span>
+          <div class="sbr-bar-wrap">
+            <div class="sbr-bar" [style.width.%]="s.value" [style.background]="getConfColor(s.value)"></div>
+          </div>
+          <span class="sbr-val" [style.color]="getConfColor(s.value)">{{s.value}}%</span>
+        </div>
+      </div>
+
+      <!-- Signal verified checks -->
+      <div class="verified-block">
+        <div class="vb-title">Signal Verified</div>
+        <div class="vb-row" *ngFor="let ck of getChecks(result)">
+          <span class="vb-dot" [class.pass]="ck.pass" [class.fail]="!ck.pass">{{ck.pass ? '✓' : '✗'}}</span>
+          <span class="vb-label" [class.pass]="ck.pass" [class.fail]="!ck.pass">{{ck.label}}</span>
+        </div>
+        <div class="vb-score">Passed {{getPassCount(result)}}/{{getChecks(result).length}} Checks</div>
+      </div>
+    </div>
+
+    <!-- ROW 2: Trade Plan -->
+    <div class="trade-plan" *ngIf="result.direction !== 'WAIT'">
+      <div class="tp-title">Trade Plan</div>
+      <div class="tp-levels">
+        <div class="tp-entry">
+          <div class="tpl-label">Entry</div>
+          <div class="tpl-val">{{priceFormatter(result.entry)}}</div>
+          <div class="tpl-sub">{{result.direction === 'LONG' ? 'Limit buy / market on confirm' : 'Limit sell / market on confirm'}}</div>
+        </div>
+        <div class="tp-sl">
+          <div class="tpl-label">Stop Loss</div>
+          <div class="tpl-val red">{{priceFormatter(result.stopLoss)}}</div>
+          <div class="tpl-sub">Risk: {{result.riskPct | number:'1.2-2'}}% · {{result.atr | number:'1.2-2'}} ATR · DO NOT widen</div>
+        </div>
+        <div class="tp-targets">
+          <div class="tp-target">
+            <div class="tpl-label">Target 1 <span class="rr-badge">1.5R</span></div>
+            <div class="tpl-val green">{{priceFormatter(result.target1)}}</div>
+            <div class="tpl-sub">Exit 50% — lock in profit</div>
+          </div>
+          <div class="tp-target">
+            <div class="tpl-label">Target 2 <span class="rr-badge">2.8R</span></div>
+            <div class="tpl-val green">{{priceFormatter(result.target2)}}</div>
+            <div class="tpl-sub">Exit 30% — move SL to breakeven</div>
+          </div>
+          <div class="tp-target">
+            <div class="tpl-label">Target 3 <span class="rr-badge">4.2R</span></div>
+            <div class="tpl-val green">{{priceFormatter(result.target3)}}</div>
+            <div class="tpl-sub">Trail 20% — let winners run</div>
+          </div>
+        </div>
+        <div class="tp-meta">
+          <div class="tpm-item"><div class="tpm-l">R:R Ratio</div><div class="tpm-v">{{result.rrRatio}}</div></div>
+          <div class="tpm-item"><div class="tpm-l">Expected Move</div><div class="tpm-v" [style.color]="result.direction==='LONG'?'#00FF88':'#FF3B5C'">{{result.expectedMove || 'N/A'}}</div></div>
+          <div class="tpm-item"><div class="tpm-l">Hold Period</div><div class="tpm-v">{{result.expectedHolding}}</div></div>
+          <div class="tpm-item"><div class="tpm-l">Risk Level</div><div class="tpm-v" [class]="'risk-'+(result.risk || '').toLowerCase()">{{result.risk}}</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ROW 3: Why BUY / Why NOT -->
+    <div class="reasons-row">
+      <!-- Bullish reasons -->
+      <div class="reason-col bull" *ngIf="result.bullReasons?.length">
+        <div class="rc-title">{{result.direction === 'LONG' ? '✓ Why BUY' : '↑ Bull Factors'}}</div>
+        <div class="rc-item" *ngFor="let r of result.bullReasons">
+          <span class="rc-dot">✓</span><span>{{r}}</span>
+        </div>
+      </div>
+      <!-- Bearish reasons / Why Not -->
+      <div class="reason-col bear" *ngIf="result.bearReasons?.length">
+        <div class="rc-title">{{result.direction === 'SHORT' ? '✓ Why SELL' : '✗ Risks / Why Not'}}</div>
+        <div class="rc-item" *ngFor="let r of result.bearReasons">
+          <span class="rc-dot">✗</span><span>{{r}}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ROW 4: Indicator deep-dive -->
+    <div class="indicators-grid">
+      <div class="ig-card" [class.bull]="result.rsi < 45" [class.bear]="result.rsi > 65">
+        <div class="igc-label">RSI (14)</div>
+        <div class="igc-val">{{result.rsi | number:'1.0-1'}}</div>
+        <div class="igc-sub" [class.green]="result.rsi<35" [class.red]="result.rsi>65">{{result.rsiZone}}</div>
+        <div class="igc-bar"><div class="igcb-fill" [style.left.%]="result.rsi" [style.background]="result.rsi<35?'#00FF88':result.rsi>65?'#FF3B5C':'#FFB800'"></div></div>
+      </div>
+      <div class="ig-card" [class.bull]="result.macdBull" [class.bear]="!result.macdBull">
+        <div class="igc-label">MACD</div>
+        <div class="igc-val" [class.green]="result.macdBull" [class.red]="!result.macdBull">{{result.macdBull ? '▲ Bullish' : '▼ Bearish'}}</div>
+        <div class="igc-sub">Hist: {{result.macdHist | number:'1.2-4'}}</div>
+      </div>
+      <div class="ig-card" [class.bull]="result.adx > 25" [class.bear]="result.adx < 15">
+        <div class="igc-label">ADX</div>
+        <div class="igc-val">{{result.adx | number:'1.0-1'}}</div>
+        <div class="igc-sub">{{result.adxTrend}}</div>
+      </div>
+      <div class="ig-card" [class.bull]="result.vwapSignal==='ABOVE'" [class.bear]="result.vwapSignal==='BELOW'">
+        <div class="igc-label">VWAP</div>
+        <div class="igc-val" [class.green]="result.vwapSignal==='ABOVE'" [class.red]="result.vwapSignal==='BELOW'">{{result.vwapSignal}}</div>
+        <div class="igc-sub">{{priceFormatter(result.vwap)}}</div>
+      </div>
+      <div class="ig-card" [class.bull]="result.stochK<30" [class.bear]="result.stochK>70">
+        <div class="igc-label">Stoch %K</div>
+        <div class="igc-val">{{result.stochK | number:'1.0-1'}}</div>
+        <div class="igc-sub">{{result.stochZone}}</div>
+      </div>
+      <div class="ig-card" [class.bull]="result.obvSignal==='RISING'" [class.bear]="result.obvSignal==='FALLING'">
+        <div class="igc-label">OBV</div>
+        <div class="igc-val" [class.green]="result.obvSignal==='RISING'" [class.red]="result.obvSignal==='FALLING'">{{result.obvSignal}}</div>
+        <div class="igc-sub">{{result.volumeRatio | number:'1.2-2'}}x vol</div>
+      </div>
+    </div>
+
+    <!-- ROW 5b: Multi-Timeframe Confirmation -->
+    <div class="mtf-block" *ngIf="result.mtfContext?.length">
+      <div class="mtf-title">Multi-Timeframe Confirmation</div>
+      <div class="mtf-grid">
+        <div class="mtf-row" *ngFor="let ctx of result.mtfContext">
+          <span class="mtf-tf">{{ctx.tf}}</span>
+          <span class="mtf-dir" [class.bull]="ctx.trend==='UP'" [class.bear]="ctx.trend==='DOWN'">
+            {{ctx.trend==='UP'?'▲ BUY':ctx.trend==='DOWN'?'▼ SELL':'— HOLD'}}
+          </span>
+          <span class="mtf-rsi" [class.green]="ctx.rsi<40" [class.red]="ctx.rsi>65">RSI {{ctx.rsi | number:'1.0-0'}}</span>
+          <span class="mtf-macd" [class.bull]="ctx.macdBull" [class.bear]="!ctx.macdBull">MACD {{ctx.macdBull?'▲':'▼'}}</span>
+        </div>
+      </div>
+      <div class="mtf-summary">
+        {{result.mtfAlignment === 'ALL_ALIGNED' ? '✓ All timeframes aligned — high conviction' :
+          result.mtfAlignment === 'PARTIAL' ? '~ Partial alignment — moderate conviction' :
+          '✗ Conflicting signals — wait for clarity'}}
+      </div>
+    </div>
+
+    <!-- ROW 5: Patterns + SMC + Regime -->
+    <div class="context-row">
+      <div class="ctx-block" *ngIf="result.patterns?.length">
+        <div class="ctx-title">Candlestick Patterns</div>
+        <div class="ctx-chips">
+          <span class="ctx-chip" *ngFor="let p of result.patterns">{{p}}</span>
+        </div>
+      </div>
+      <div class="ctx-block" *ngIf="result.smcBias">
+        <div class="ctx-title">Smart Money (SMC)</div>
+        <div class="ctx-val" [class.green]="result.smcBias==='BULLISH'" [class.red]="result.smcBias==='BEARISH'">
+          {{result.smcBias}} · {{result.smcBiasStrength}}%
+        </div>
+        <div class="ctx-sub" *ngIf="result.smcSetup">{{result.smcSetup}}</div>
+      </div>
+      <div class="ctx-block" *ngIf="result.regime">
+        <div class="ctx-title">Market Regime</div>
+        <div class="ctx-val">{{result.regimeLabel || result.regime}}</div>
+        <div class="ctx-sub">{{result.regimeStrategy}}</div>
+      </div>
+    </div>
+
+    <!-- ROW 6: ML Section -->
+    <div class="ml-section" *ngIf="result.mlSampleSize && result.mlSampleSize >= 3">
+      <div class="ml-title">AI Learning ({{result.mlSampleSize}} historical calls)</div>
+      <div class="ml-row">
+        <div class="ml-item"><div class="ml-l">Win Rate</div><div class="ml-v" [class.green]="result.mlWinRate! >= 60" [class.red]="result.mlWinRate! < 40">{{result.mlWinRate | number:'1.0-0'}}%</div></div>
+        <div class="ml-item"><div class="ml-l">Adjusted</div><div class="ml-v">{{result.mlAdjusted ? 'Yes' : 'No'}}</div></div>
+        <div class="ml-item"><div class="ml-l">Samples</div><div class="ml-v">{{result.mlSampleSize}}</div></div>
+      </div>
+      <div class="ml-note" *ngIf="result.mlAdjusted">Confidence adjusted based on {{result.mlSampleSize}} trades for this asset</div>
+      <div class="ml-note warn" *ngIf="!result.mlAdjusted && result.mlSampleSize < 10">Need {{10 - result.mlSampleSize}} more calls to fully calibrate ML</div>
+    </div>
+
+    <!-- ROW 7: Save + Action buttons -->
+    <div class="am-actions">
+      <button class="act-save" *ngIf="auth.isLoggedIn && !saved" (click)="saveCall()" [disabled]="saving">
+  {{ saving ? '⏳ Saving…' : '💾 Save Trade Call' }}
+</button>
+<div class="act-saved" *ngIf="saved">✓ Saved to history</div>
+<div class="act-error" *ngIf="saveError && !saved">
+  ⚠ {{saveError}}
+  <button class="act-retry" (click)="saveCall()">Retry</button>
+</div>
+      <div class="act-disclaimer">Educational only. Not financial advice. Do your own research.</div>
+    </div>
+
+  </div><!-- /am-body -->
+</div>
+</div>

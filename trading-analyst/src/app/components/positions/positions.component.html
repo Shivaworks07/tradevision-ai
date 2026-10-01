@@ -1,0 +1,135 @@
+<div class="bs-wrap">
+  <div class="bs-header">
+    <h2>Positions</h2>
+    <p>Every position this bot currently holds or has held for the selected credential — you should never have to check Binance directly to answer "does my bot own something right now?"</p>
+    <p *ngIf="criticalIncidentCount > 0" class="incident-badge">🔴 {{ criticalIncidentCount }} CRITICAL — check the audit log for details</p>
+  </div>
+
+  <div class="bs-toast" *ngIf="toast" [class.err]="toast.err">{{ toast.text }}</div>
+
+  <div class="bs-body">
+    <div class="bs-section" *ngIf="credentials.length === 0">
+      <div class="ss-desc">No broker credentials connected yet. Connect one under Broker Settings first.</div>
+    </div>
+
+    <div class="bs-section" *ngIf="credentials.length > 0">
+      <div class="bs-form-row">
+        <select [(ngModel)]="selectedCredentialId" (ngModelChange)="onCredentialChange()">
+          <option *ngFor="let c of credentials" [value]="c.id">{{ c.broker }} · {{ c.mode }} · {{ c.keyHint }}</option>
+        </select>
+        <select [(ngModel)]="statusFilter" (ngModelChange)="onStatusFilterChange()">
+          <option value="OPEN">Open</option>
+          <option value="CLOSED">Closed</option>
+          <option value="ALL">All</option>
+        </select>
+        <button class="btn-ghost-sm" [disabled]="actionInFlight['__reconcile']" (click)="reconcileNow()">
+          {{ actionInFlight['__reconcile'] ? 'Reconciling…' : 'Reconcile now' }}
+        </button>
+      </div>
+      <div class="ss-desc" *ngIf="selectedCredential() as sel">
+        Reconcile now re-syncs every position on this credential against what Binance actually reports — the same check that already runs automatically every 60 seconds, just on demand.
+      </div>
+    </div>
+
+    <div class="bs-section" *ngIf="loading">
+      <div class="ss-desc">Loading positions…</div>
+    </div>
+
+    <div class="bs-section" *ngIf="!loading && credentials.length > 0 && positions.length === 0">
+      <div class="ss-desc">No {{ statusFilter === 'ALL' ? '' : (statusFilter | lowercase) + ' ' }}positions for this credential.</div>
+    </div>
+
+    <div class="pos-card" *ngFor="let p of positions" [class.pos-halted]="p.status !== 'OPEN'">
+      <div class="pos-card-head">
+        <div class="pos-symbol">
+          {{ p.symbol }}
+          <span class="bc-mode" [class.live]="p.mode === 'LIVE'">{{ p.mode }}</span>
+        </div>
+        <div class="pos-status" [ngSwitch]="p.status">
+          <span *ngSwitchCase="'OPEN'" class="pos-badge open">OPEN</span>
+          <span *ngSwitchCase="'CLOSED'" class="pos-badge closed">CLOSED</span>
+          <span *ngSwitchCase="'CLOSED_UNVERIFIED_PNL'" class="pos-badge warn">CLOSED · P&amp;L UNVERIFIED</span>
+          <span *ngSwitchCase="'NAKED_FLATTENED'" class="pos-badge warn">EMERGENCY FLATTENED</span>
+          <span *ngSwitchDefault class="pos-badge">{{ p.status }}</span>
+        </div>
+      </div>
+
+      <div class="pos-warn-row" *ngIf="p.avgEntryPriceUnverified">
+        ⚠ Entry price could not be verified for this position — P&amp;L figures below are not shown until this is resolved.
+      </div>
+
+      <div class="pos-grid">
+        <div class="pos-field">
+          <span class="pf-label">{{ p.status === 'OPEN' ? 'Quantity' : 'Closed quantity' }}</span>
+          <span class="pf-value">{{ p.status === 'OPEN' ? p.quantity : p.closedQuantity }} {{ p.symbol.replace('USDT','') }}</span>
+        </div>
+        <div class="pos-field">
+          <span class="pf-label">Entry price</span>
+          <span class="pf-value">{{ p.avgEntryPriceUnverified ? 'Unverified' : (p.avgEntryPrice ?? '—') }}</span>
+        </div>
+        <div class="pos-field" *ngIf="p.status === 'OPEN'">
+          <span class="pf-label">Current price</span>
+          <span class="pf-value">{{ currentPrices[p.symbol] ?? '…' }}</span>
+        </div>
+        <div class="pos-field" *ngIf="p.status !== 'OPEN'">
+          <span class="pf-label">Exit price</span>
+          <span class="pf-value">{{ p.exitPrice ?? '—' }}</span>
+        </div>
+        <div class="pos-field" *ngIf="p.status === 'OPEN'">
+          <span class="pf-label">Unrealized P&amp;L</span>
+          <span class="pf-value" [class.pnl-pos]="(unrealizedPnl(p) ?? 0) > 0" [class.pnl-neg]="(unrealizedPnl(p) ?? 0) < 0">
+            {{ unrealizedPnl(p) !== null ? (unrealizedPnl(p)! > 0 ? '+' : '') + (unrealizedPnl(p)! | number:'1.2-2') : '—' }}
+          </span>
+        </div>
+        <div class="pos-field" *ngIf="p.status !== 'OPEN' && p.realizedPnlQuote !== null">
+          <span class="pf-label">Realized P&amp;L</span>
+          <span class="pf-value" [class.pnl-pos]="p.realizedPnlQuote! > 0" [class.pnl-neg]="p.realizedPnlQuote! < 0">
+            {{ p.realizedPnlQuote! > 0 ? '+' : '' }}{{ p.realizedPnlQuote | number:'1.2-2' }}
+          </span>
+        </div>
+        <div class="pos-field" *ngIf="p.stopLossPrice">
+          <span class="pf-label">Stop loss</span>
+          <span class="pf-value">{{ p.stopLossPrice }}</span>
+        </div>
+        <div class="pos-field" *ngIf="p.takeProfitPrice">
+          <span class="pf-label">Take profit</span>
+          <span class="pf-value">{{ p.takeProfitPrice }}</span>
+        </div>
+      </div>
+
+      <div class="pos-protection" *ngIf="p.status === 'OPEN'">
+        <!-- Review finding ("The UI needs explicit protection-state presentation" -- external
+             review, second pass): replaced the single collapsed badge with the review's own
+             explicitly requested breakdown -- Protected / Residual / Status as separate,
+             labeled fields, using the server's own real protectionStatus classification
+             directly rather than this component's own former client-side guess (which had no
+             real exchange minQty to judge a residual against, and could not tell a genuine
+             partial gap apart from harmless exchange-rounding dust). The whole point: an
+             operator glancing at "OCO: ACTIVE" alone could believe the WHOLE position is
+             covered when only part of it is -- this makes the actual protected/residual split
+             impossible to miss. -->
+        <div class="prot-detail">
+          <span class="pf-label">Protected</span>
+          <span class="pf-value">{{ p.protectedQuantity ?? 0 }} / {{ p.quantity }}</span>
+        </div>
+        <div class="prot-detail" *ngIf="p.protectedQuantity != null && (p.quantity - p.protectedQuantity) > 0">
+          <span class="pf-label">Residual</span>
+          <span class="pf-value">{{ (p.quantity - p.protectedQuantity) | number:'1.0-8' }}</span>
+        </div>
+        <span class="prot-badge safe" *ngIf="p.protectionStatus === 'FULL'">🛡 Protected</span>
+        <span class="prot-badge warn" *ngIf="p.protectionStatus === 'DUST_RESIDUAL'">🛡 Dust residual (below exchange minimum)</span>
+        <span class="prot-badge danger" *ngIf="p.protectionStatus === 'PARTIAL'">⚠ Partially protected -- real residual exposure</span>
+        <span class="prot-badge danger" *ngIf="p.protectionStatus === 'UNPROTECTED'">⚠ Unprotected</span>
+      </div>
+
+      <div class="pos-footer" *ngIf="p.status === 'OPEN'">
+        <button class="btn-danger" [disabled]="actionInFlight[p.id]" (click)="confirmFlatten(p)">
+          {{ actionInFlight[p.id] ? 'Flattening…' : 'Emergency flatten' }}
+        </button>
+      </div>
+      <div class="pos-footer-info" *ngIf="p.status !== 'OPEN'">
+        {{ p.closeReason || 'Closed' }} · {{ p.closedAt ? (p.closedAt | date:'medium') : '' }}
+      </div>
+    </div>
+  </div>
+</div>

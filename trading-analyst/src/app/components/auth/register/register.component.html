@@ -1,0 +1,112 @@
+<div class="auth-page">
+  <div class="auth-bg">
+    <div class="bg-orb orb1"></div>
+    <div class="bg-orb orb2"></div>
+    <div class="bg-orb orb3"></div>
+    <div class="grid-lines"></div>
+  </div>
+
+  <div class="auth-card">
+    <div class="auth-brand">
+      <span class="brand-icon">⚡</span>
+      <span class="brand-name">TradeVision <span class="brand-ai">AI</span></span>
+    </div>
+    <p class="auth-tagline">Create your free trading analysis account</p>
+
+    <!-- Step: Form -->
+    <div class="auth-form" *ngIf="step === 'form'">
+      <div class="form-header">
+        <h2>Create Account</h2>
+        <p>Quick setup — just your name and mobile</p>
+      </div>
+
+      <!-- First Name -->
+      <div class="field" [class.error]="errors['firstName']">
+        <label>First Name <span class="req">*</span></label>
+        <input type="text" [(ngModel)]="form.firstName" (ngModelChange)="errors['firstName']=''"
+               placeholder="Basu" maxlength="50">
+        <span class="field-error" *ngIf="errors['firstName']">{{errors['firstName']}}</span>
+      </div>
+
+      <!-- Last Name -->
+      <div class="field">
+        <label>Last Name <span class="opt">(optional)</span></label>
+        <input type="text" [(ngModel)]="form.lastName" placeholder="Jyoti" maxlength="50">
+      </div>
+
+      <!-- Mobile -->
+      <div class="field" [class.error]="errors['mobile']">
+        <label>Mobile Number <span class="req">*</span></label>
+        <div class="input-wrap">
+          <span class="input-prefix">🇮🇳 +91</span>
+          <input type="tel" [(ngModel)]="form.mobile" (ngModelChange)="errors['mobile']=''"
+                 placeholder="9876543210" maxlength="10">
+        </div>
+        <span class="field-error" *ngIf="errors['mobile']">{{errors['mobile']}}</span>
+      </div>
+
+      <!-- Trading Platform -->
+      <div class="field">
+        <label>Trading Platform <span class="opt">(optional)</span></label>
+        <select [(ngModel)]="form.tradingPlatform">
+          <option value="">Select your platform</option>
+          <option *ngFor="let p of platforms" [value]="p">{{p}}</option>
+        </select>
+      </div>
+
+      <div class="alert error" *ngIf="error">⚠️ {{error}}</div>
+
+      <button class="btn-primary" (click)="submit()" [disabled]="loading">
+        <span *ngIf="!loading">Send OTP & Register →</span>
+        <span *ngIf="loading" class="btn-loader">⟳ Sending…</span>
+      </button>
+
+      <p class="auth-link">Already have an account? <a routerLink="/login">Login</a></p>
+    </div>
+
+    <!-- Step: OTP -->
+    <div class="auth-form" *ngIf="step === 'otp'">
+      <div class="form-header">
+        <h2>Verify Mobile</h2>
+        <p>Enter the 6-digit code sent to <strong>+91 {{form.mobile}}</strong></p>
+      </div>
+
+      <div class="otp-preview">
+        <span>👤 {{form.firstName}} {{form.lastName}}</span>
+        <span *ngIf="form.tradingPlatform">· {{form.tradingPlatform}}</span>
+      </div>
+
+      <div class="field">
+        <label>OTP Code</label>
+        <input class="otp-input" type="text" [(ngModel)]="otp"
+               placeholder="• • • • • •" maxlength="6" (keyup.enter)="verify()"
+               inputmode="numeric" autocomplete="one-time-code">
+      </div>
+
+      <div class="otp-note">
+        📱 OTP is printed in your backend console (SMS integration pending)
+      </div>
+
+      <div class="alert error"   *ngIf="error">⚠️ {{error}}</div>
+      <div class="alert success" *ngIf="success">✅ {{success}}</div>
+
+      <button class="btn-primary" (click)="verify()" [disabled]="loading">
+        <span *ngIf="!loading">Complete Registration →</span>
+        <span *ngIf="loading" class="btn-loader">⟳ Verifying…</span>
+      </button>
+
+      <div class="otp-actions">
+        <button class="btn-ghost" (click)="backToForm()">← Edit Details</button>
+        <button class="btn-ghost" (click)="resend()" [disabled]="resendTimer > 0">
+          {{resendTimer > 0 ? 'Resend in '+resendTimer+'s' : 'Resend OTP'}}
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="auth-footer">
+    <span>⚡ TradeVision AI</span>
+    <span>·</span>
+    <span>Built by <strong>Basu</strong></span>
+  </div>
+</div>

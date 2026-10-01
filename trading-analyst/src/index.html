@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>TradeVision AI — Indian Stocks, Forex, Crypto & IPO Analysis</title>
+  <base href="/">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="AI-powered trading signals for Indian Stocks, Crypto, Forex &amp; IPO — Real-time analysis platform">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="apple-touch-icon" href="favicon.svg">
+  <meta name="theme-color" content="#0F1525">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="TradeVision AI">
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { background:#0A0E1A; font-family:'Segoe UI',sans-serif; }
+    #app-loader {
+      position:fixed;inset:0;z-index:9999;background:#0A0E1A;
+      display:flex;flex-direction:column;align-items:center;justify-content:center;gap:28px;
+      transition:opacity 0.5s ease;
+    }
+    #app-loader.fade-out{opacity:0;pointer-events:none;}
+    .loader-brand{display:flex;align-items:center;gap:12px;}
+    .loader-icon{font-size:36px;animation:bounce 1s ease infinite alternate;}
+    .loader-title{font-size:28px;font-weight:700;background:linear-gradient(135deg,#00D4FF,#7B61FF,#00FF88);-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+    .loader-bar-wrap{width:200px;background:#1E2D4A;border-radius:4px;height:3px;overflow:hidden;}
+    .loader-bar{height:100%;width:0%;background:linear-gradient(90deg,#00D4FF,#7B61FF);border-radius:4px;animation:loadProg 1.8s ease forwards;}
+    .loader-credit{position:absolute;bottom:28px;display:flex;flex-direction:column;align-items:center;gap:5px;}
+    .lc-built{font-size:11px;color:#4A5568;}
+    .lc-name{font-size:14px;font-weight:700;color:#E8EDF5;letter-spacing:3px;}
+    .lc-dots{display:flex;gap:5px;margin-top:3px;}
+    .lc-dots span{width:5px;height:5px;border-radius:50%;animation:dotP 1.2s ease infinite;}
+    .lc-dots span:nth-child(1){background:#00D4FF;}
+    .lc-dots span:nth-child(2){background:#7B61FF;animation-delay:0.2s;}
+    .lc-dots span:nth-child(3){background:#00FF88;animation-delay:0.4s;}
+    @keyframes bounce{from{transform:translateY(0)}to{transform:translateY(-8px)}}
+    @keyframes loadProg{0%{width:0%}40%{width:45%}70%{width:72%}90%{width:88%}100%{width:100%}}
+    @keyframes dotP{0%,100%{opacity:0.3;transform:scale(0.8)}50%{opacity:1;transform:scale(1.2)}}
+  </style>
+</head>
+<body>
+  <div id="app-loader">
+    <div class="loader-brand">
+      <img src="favicon.svg" style="width:48px;height:48px;border-radius:10px" alt="TradeVision AI">
+      <span class="loader-title">TradeVision AI</span>
+    </div>
+    <div class="loader-bar-wrap"><div class="loader-bar"></div></div>
+
+  </div>
+  <app-root></app-root>
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      setTimeout(function() {
+        var l = document.getElementById('app-loader');
+        if (l) { l.classList.add('fade-out'); setTimeout(function(){l.style.display='none';},600); }
+      }, 2000);
+    });
+  </script>
+</body>
+</html>

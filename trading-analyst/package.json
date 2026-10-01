@@ -21,7 +21,7 @@
     "@angular/router": "^17.3.0",
     "axios": "^1.18.0",
     "chart.js": "^4.5.1",
-    "lightweight-charts": "^5.2.0",
+    "lightweight-charts": "^5.2.1",
     "rxjs": "~7.8.0",
     "tslib": "^2.3.0",
     "zone.js": "~0.14.3"

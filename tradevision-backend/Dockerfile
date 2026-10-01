@@ -19,7 +19,7 @@ COPY trading-analyst/ ./
 RUN npx ng build --configuration production
 
 # ── Stage 1: Backend build ────────────────────────────────────
-FROM maven:3.9.9-eclipse-temurin-21 AS build
+FROM maven:3.9.15-eclipse-temurin-26 AS build
 
 WORKDIR /app
 

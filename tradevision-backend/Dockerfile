@@ -59,7 +59,7 @@ COPY --from=frontend-build /frontend/dist/trading-analyst/browser/ ./src/main/re
 RUN mvn clean verify -q -Dtest='!*IntegrationTest' -DfailIfNoTests=false
 
 # ── Stage 2: Runtime ──────────────────────────────────────────
-FROM eclipse-temurin:21-jre-alpine
+FROM eclipse-temurin:25-jre-alpine
 
 WORKDIR /app
 

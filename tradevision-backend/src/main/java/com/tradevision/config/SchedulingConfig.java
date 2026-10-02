@@ -57,7 +57,9 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
  * mechanism explained in TradeVisionApplication's own updated javadoc): this whole configuration
  * class -- the dedicated TaskScheduler pools, not just whether @Scheduled methods run against
  * them -- is now gated behind the same app.scheduling.enabled property (default true everywhere
- * except the TEST classpath's own application.properties, which sets it false). Gating the pools
+ * except the test JVM, where tradevision-backend/pom.xml sets it false via a Surefire
+ * systemPropertyVariable -- see that file's own comment for why a src/test/resources/
+ * application.properties file was tried first and reverted). Gating the pools
  * themselves, not only @EnableScheduling, means a test context doesn't even spin up and later
  * have to shut down four live thread pools it will never use -- purely a resource-cleanliness
  * improvement on top of the actual fix (which is EnableScheduling moving to
@@ -74,8 +76,8 @@ public class SchedulingConfig {
      * TradeVisionApplication, meaning it was active, unconditionally, in every Spring context
      * this application ever boots -- including every Testcontainers-backed integration test.
      * Moved here, onto its own tiny @ConditionalOnProperty-gated configuration class, so that
-     * src/test/resources/application.properties's app.scheduling.enabled=false can turn off
-     * REAL @Scheduled timer firing for Spring-context-backed tests specifically, without
+     * pom.xml's Surefire-set app.scheduling.enabled=false can turn off REAL @Scheduled timer
+     * firing for Spring-context-backed tests specifically, without
      * touching the property's default (matchIfMissing = true) for every real deployment profile
      * (prod, local) or for a developer's own manual "local" run, which still behaves exactly as
      * it did before this fix -- this is a test-lifecycle fix, not a change to production

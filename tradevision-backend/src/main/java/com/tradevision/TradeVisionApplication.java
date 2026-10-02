@@ -32,10 +32,20 @@ import org.springframework.scheduling.annotation.EnableAsync;
 // @ConditionalOnProperty-gated SchedulingEnablerConfig (see that class's own javadoc) that
 // defaults to enabled (matchIfMissing = true) everywhere -- a real deployment, `java -jar`, or a
 // developer's own "local" profile run behaves identically to before, scheduling included. Only
-// src/test/resources/application.properties (packaged solely on the TEST classpath, never into
-// the production jar) sets app.scheduling.enabled=false, so every Spring-context-backed test in
-// this codebase -- unit or integration, whatever profile it activates -- now boots with
-// scheduling off by default. None of the integration tests this review is about rely on a
+// a Surefire systemPropertyVariable (set once in tradevision-backend/pom.xml, see its own
+// comment there) sets app.scheduling.enabled=false, so every Spring-context-backed test in this
+// codebase -- unit or integration, whatever profile it activates -- now boots with scheduling
+// off by default. A src/test/resources/application.properties file was tried first and reverted
+// after it broke every single integration test's ApplicationContext in a real CI run
+// (Testcontainers was never available in the sandbox this was first written in, so the
+// regression could not be caught before that real run surfaced it): Spring Boot does not merge
+// a test-classpath application.properties with the main one, it loads whichever one the
+// classloader resolves first, and target/test-classes precedes target/classes on Maven's test
+// classpath -- so that file silently replaced the ENTIRE main application.properties for every
+// test, wiping out unrelated properties such as app.jwt.expiration and breaking JwtUtil's
+// construction. The pom.xml systemPropertyVariable sidesteps that failure mode entirely: a JVM
+// system property never touches classpath resource loading, and Spring's property resolution
+// already places it above any properties file. None of the integration tests this review is about rely on a
 // @Scheduled method actually firing on its own timer; each one calls the production method
 // under test directly (e.g. positionMonitorService.createPositionForLateDiscoveredFill(...),
 // positionMonitorService.recoverStuckProtectionAttempts(...)) rather than waiting for the

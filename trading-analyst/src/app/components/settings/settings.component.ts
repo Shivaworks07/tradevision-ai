@@ -5,11 +5,10 @@ import { NotificationService, NotificationPrefs } from '../../services/notificat
 import { AuthService } from '../../services/auth.service';
 
 @Component({
-  selector: 'app-settings',
-  standalone: true,
-  imports: [CommonModule, FormsModule],
-  templateUrl: './settings.component.html',
-  styleUrls:  ['./settings.component.scss']
+    selector: 'app-settings',
+    imports: [CommonModule, FormsModule],
+    templateUrl: './settings.component.html',
+    styleUrls: ['./settings.component.scss']
 })
 export class SettingsComponent {
   notif = inject(NotificationService);

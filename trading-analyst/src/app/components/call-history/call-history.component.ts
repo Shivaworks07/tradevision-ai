@@ -5,11 +5,10 @@ import { AuthService } from '../../services/auth.service';
 import { TaEngineService } from '../../services/ta-engine.service';
 
 @Component({
-  selector: 'app-call-history',
-  standalone: true,
-  imports: [CommonModule],
-  templateUrl: './call-history.component.html',
-  styleUrls: ['./call-history.component.scss']
+    selector: 'app-call-history',
+    imports: [CommonModule],
+    templateUrl: './call-history.component.html',
+    styleUrls: ['./call-history.component.scss']
 })
 export class CallHistoryComponent implements OnChanges {
   @Input() symbol  = '';

@@ -17,26 +17,36 @@
         <a href="#accuracy">Accuracy</a>
       </div>
       <div class="nav-right">
-        <button class="btn-login btn-dash" *ngIf="sessionValid" (click)="goToDashboard()">Go to Dashboard →</button>
-        <button class="btn-login" *ngIf="!sessionValid" (click)="openAuth()">Login / Register</button>
+        @if (sessionValid) {
+          <button class="btn-login btn-dash" (click)="goToDashboard()">Go to Dashboard →</button>
+        }
+        @if (!sessionValid) {
+          <button class="btn-login" (click)="openAuth()">Login / Register</button>
+        }
       </div>
     </div>
   </nav>
 
   <!-- Ticker tape — Live data -->
   <div class="ticker-wrap">
-    <div class="ticker" *ngIf="tickers.length > 0">
-      <ng-container *ngFor="let t of tickers">
-        <span class="tk" [class.up]="t.change >= 0" [class.dn]="t.change < 0">
-          {{t.label}} {{t.price}}
-          <span class="tc" *ngIf="t.change !== 0">{{t.change >= 0 ? '+' : ''}}{{t.change | number:'1.2-2'}}%</span>
-        </span>
-        <span class="sep">·</span>
-      </ng-container>
-    </div>
-    <div class="ticker ticker-placeholder" *ngIf="tickers.length === 0">
-      <span class="tk-loading">Loading live market data…</span>
-    </div>
+    @if (tickers.length > 0) {
+      <div class="ticker">
+        @for (t of tickers; track t) {
+          <span class="tk" [class.up]="t.change >= 0" [class.dn]="t.change < 0">
+            {{t.label}} {{t.price}}
+            @if (t.change !== 0) {
+              <span class="tc">{{t.change >= 0 ? '+' : ''}}{{t.change | number:'1.2-2'}}%</span>
+            }
+          </span>
+          <span class="sep">·</span>
+        }
+      </div>
+    }
+    @if (tickers.length === 0) {
+      <div class="ticker ticker-placeholder">
+        <span class="tk-loading">Loading live market data…</span>
+      </div>
+    }
   </div>
 
   <!-- HERO -->
@@ -96,28 +106,38 @@
               {{sentimentLabel}}
             </div>
             <div class="mt-detail">
-              <span *ngIf="niftyChange !== 0" [class.up]="niftyChange>=0" [class.dn]="niftyChange<0">
-                NIFTY {{niftyChange >= 0 ? '+' : ''}}{{niftyChange | number:'1.2-2'}}%
-              </span>
-              <span class="mt-sep" *ngIf="niftyChange !== 0 && btcChange !== 0">·</span>
-              <span *ngIf="btcChange !== 0" [class.up]="btcChange>=0" [class.dn]="btcChange<0">
-                BTC {{btcChange >= 0 ? '+' : ''}}{{btcChange | number:'1.2-2'}}%
-              </span>
-              <span class="mt-fg" *ngIf="fearGreedValue > 0">· F&G {{fearGreedValue}} ({{fearGreedLabel}})</span>
+              @if (niftyChange !== 0) {
+                <span [class.up]="niftyChange>=0" [class.dn]="niftyChange<0">
+                  NIFTY {{niftyChange >= 0 ? '+' : ''}}{{niftyChange | number:'1.2-2'}}%
+                </span>
+              }
+              @if (niftyChange !== 0 && btcChange !== 0) {
+                <span class="mt-sep">·</span>
+              }
+              @if (btcChange !== 0) {
+                <span [class.up]="btcChange>=0" [class.dn]="btcChange<0">
+                  BTC {{btcChange >= 0 ? '+' : ''}}{{btcChange | number:'1.2-2'}}%
+                </span>
+              }
+              @if (fearGreedValue > 0) {
+                <span class="mt-fg">· F&G {{fearGreedValue}} ({{fearGreedLabel}})</span>
+              }
             </div>
           </div>
 
           <!-- Gold prices -->
-          <div class="gold-prices" *ngIf="goldUsd > 0">
-            <div class="gp-label">GOLD TODAY
-              <span [class.up]="goldChange>=0" [class.dn]="goldChange<0">
-                {{goldChange >= 0 ? '+' : ''}}{{goldChange | number:'1.2-2'}}%
-              </span>
+          @if (goldUsd > 0) {
+            <div class="gold-prices">
+              <div class="gp-label">GOLD TODAY
+                <span [class.up]="goldChange>=0" [class.dn]="goldChange<0">
+                  {{goldChange >= 0 ? '+' : ''}}{{goldChange | number:'1.2-2'}}%
+                </span>
+              </div>
+              <div class="gp-row"><span class="gp-k">24K</span><span class="gp-val">{{fmtGold(gold24kInr10g)}}<span class="gp-unit">/10g</span></span></div>
+              <div class="gp-row"><span class="gp-k">22K</span><span class="gp-val">{{fmtGold(gold22kInr10g)}}<span class="gp-unit">/10g</span></span></div>
+              <div class="gp-row"><span class="gp-k">18K</span><span class="gp-val">{{fmtGold(gold18kInr10g)}}<span class="gp-unit">/10g</span></span></div>
             </div>
-            <div class="gp-row"><span class="gp-k">24K</span><span class="gp-val">{{fmtGold(gold24kInr10g)}}<span class="gp-unit">/10g</span></span></div>
-            <div class="gp-row"><span class="gp-k">22K</span><span class="gp-val">{{fmtGold(gold22kInr10g)}}<span class="gp-unit">/10g</span></span></div>
-            <div class="gp-row"><span class="gp-k">18K</span><span class="gp-val">{{fmtGold(gold18kInr10g)}}<span class="gp-unit">/10g</span></span></div>
-          </div>
+          }
         </div>
       </div>
 
@@ -370,7 +390,7 @@
         <svg width="18" height="18" viewBox="0 0 26 26" fill="none"><rect width="26" height="26" rx="6" fill="url(#lg2)"/><path d="M5 18L9 12L13 15L17 8L21 10" stroke="#0A0E1A" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><defs><linearGradient id="lg2" x1="0" y1="0" x2="26" y2="26"><stop stop-color="#00D4FF"/><stop offset="1" stop-color="#7B61FF"/></linearGradient></defs></svg>
         TradeVision AI
       </div>
-      
+
       <span class="lf-note">⚠️ Educational only · Not financial advice</span>
     </div>
   </footer>

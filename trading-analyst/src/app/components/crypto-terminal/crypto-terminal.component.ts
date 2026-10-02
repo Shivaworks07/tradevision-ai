@@ -24,11 +24,10 @@ import { FearGreedComponent } from '../fear-greed/fear-greed.component';
 interface CoinResult { id:string; symbol:string; name:string; thumb?:string; market_cap_rank?:number; }
 
 @Component({
-  selector: 'app-crypto-terminal',
-  standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink, FeaturedTradesComponent, AnalysisModalComponent, CallHistoryComponent, FearGreedComponent],
-  templateUrl: './crypto-terminal.component.html',
-  styleUrls: ['./crypto-terminal.component.scss']
+    selector: 'app-crypto-terminal',
+    imports: [CommonModule, FormsModule, RouterLink, FeaturedTradesComponent, AnalysisModalComponent, CallHistoryComponent, FearGreedComponent],
+    templateUrl: './crypto-terminal.component.html',
+    styleUrls: ['./crypto-terminal.component.scss']
 })
 export class CryptoTerminalComponent implements OnInit, OnDestroy, AfterViewInit {
   @ViewChild('chartContainer') chartRef!: ElementRef;

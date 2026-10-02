@@ -20,11 +20,10 @@ interface ReplayCall {
 }
 
 @Component({
-  selector: 'app-replay',
-  standalone: true,
-  imports: [CommonModule, FormsModule],
-  templateUrl: './replay.component.html',
-  styleUrls: ['./replay.component.scss']
+    selector: 'app-replay',
+    imports: [CommonModule, FormsModule],
+    templateUrl: './replay.component.html',
+    styleUrls: ['./replay.component.scss']
 })
 export class ReplayComponent implements OnInit, OnDestroy, AfterViewInit {
   @ViewChild('replayChart') chartRef!: ElementRef;

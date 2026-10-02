@@ -1,8 +1,10 @@
 package com.tradevision.config;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.TaskScheduler;
+import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 /**
@@ -49,9 +51,41 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
  * Every pool is named explicitly (setThreadNamePrefix) for the same reason AsyncConfig's own
  * executors already are -- a thread dump or profiler should never require guessing which
  * @Scheduled method a given thread belongs to.
+ *
+ * CI-review fix ("MongoDB connection-refused errors from scheduled background reconciliation
+ * tasks" -- external review, GitHub Actions integration-test failures, "Additional issue"; full
+ * mechanism explained in TradeVisionApplication's own updated javadoc): this whole configuration
+ * class -- the dedicated TaskScheduler pools, not just whether @Scheduled methods run against
+ * them -- is now gated behind the same app.scheduling.enabled property (default true everywhere
+ * except the TEST classpath's own application.properties, which sets it false). Gating the pools
+ * themselves, not only @EnableScheduling, means a test context doesn't even spin up and later
+ * have to shut down four live thread pools it will never use -- purely a resource-cleanliness
+ * improvement on top of the actual fix (which is EnableScheduling moving to
+ * SchedulingEnablerConfig below); it does not change production behavior, since
+ * matchIfMissing = true keeps every pool created exactly as before outside of tests.
  */
 @Configuration
+@ConditionalOnProperty(name = "app.scheduling.enabled", havingValue = "true", matchIfMissing = true)
 public class SchedulingConfig {
+
+    /**
+     * CI-review fix (full context in this class's own header javadoc and in
+     * TradeVisionApplication's updated javadoc): @EnableScheduling used to sit directly on
+     * TradeVisionApplication, meaning it was active, unconditionally, in every Spring context
+     * this application ever boots -- including every Testcontainers-backed integration test.
+     * Moved here, onto its own tiny @ConditionalOnProperty-gated configuration class, so that
+     * src/test/resources/application.properties's app.scheduling.enabled=false can turn off
+     * REAL @Scheduled timer firing for Spring-context-backed tests specifically, without
+     * touching the property's default (matchIfMissing = true) for every real deployment profile
+     * (prod, local) or for a developer's own manual "local" run, which still behaves exactly as
+     * it did before this fix -- this is a test-lifecycle fix, not a change to production
+     * scheduling cadence, conditions, or behavior.
+     */
+    @Configuration
+    @ConditionalOnProperty(name = "app.scheduling.enabled", havingValue = "true", matchIfMissing = true)
+    @EnableScheduling
+    public static class SchedulingEnablerConfig {
+    }
 
     @Bean("reconciliationScheduler")
     public TaskScheduler reconciliationScheduler() {

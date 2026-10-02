@@ -21,7 +21,9 @@
       <div class="cfg-presets">
         <div class="cp-label">Quick Presets</div>
         <div class="cp-chips">
-          <button *ngFor="let p of PRESETS" class="cp-chip" (click)="applyPreset(p)">{{p.label}}</button>
+          @for (p of PRESETS; track p) {
+            <button class="cp-chip" (click)="applyPreset(p)">{{p.label}}</button>
+          }
         </div>
       </div>
 
@@ -40,25 +42,35 @@
           <label>Symbol <span class="hint">— type any coin or stock</span></label>
           <div class="sym-wrap">
             <input class="sym-input" [(ngModel)]="symbolInput"
-                   (ngModelChange)="onSymbolInput()"
-                   (focus)="onSymbolFocus()"
-                   (blur)="onSymbolBlur()"
-                   placeholder="e.g. BTC, ETH, RELIANCE, ZOMATO…"
-                   autocomplete="off">
+              (ngModelChange)="onSymbolInput()"
+              (focus)="onSymbolFocus()"
+              (blur)="onSymbolBlur()"
+              placeholder="e.g. BTC, ETH, RELIANCE, ZOMATO…"
+              autocomplete="off">
             <span class="sym-badge">{{config.market==='CRYPTO'?'USDT pair':'NSE'}}</span>
-            <div class="sym-suggest" *ngIf="showSuggest">
-              <div class="ss-item" *ngFor="let s of filteredSugg" (mousedown)="selectSymbol(s)">{{s}}</div>
-            </div>
+            @if (showSuggest) {
+              <div class="sym-suggest">
+                @for (s of filteredSugg; track s) {
+                  <div class="ss-item" (mousedown)="selectSymbol(s)">{{s}}</div>
+                }
+              </div>
+            }
           </div>
-          <div class="sym-hint" *ngIf="config.market==='CRYPTO'">Binance: any USDT pair — PEPE, WIF, BONK, any altcoin</div>
-          <div class="sym-hint" *ngIf="config.market==='STOCK'">NSE: any stock — ZOMATO, IRCTC, SUZLON, YESBANK etc</div>
+          @if (config.market==='CRYPTO') {
+            <div class="sym-hint">Binance: any USDT pair — PEPE, WIF, BONK, any altcoin</div>
+          }
+          @if (config.market==='STOCK') {
+            <div class="sym-hint">NSE: any stock — ZOMATO, IRCTC, SUZLON, YESBANK etc</div>
+          }
         </div>
 
         <!-- Timeframe -->
         <div class="cfg-field">
           <label>Timeframe</label>
           <div class="seg-ctrl">
-            <button *ngFor="let tf of TIMEFRAMES" [class.active]="config.timeframe===tf" (click)="config.timeframe=tf">{{tf}}</button>
+            @for (tf of TIMEFRAMES; track tf) {
+              <button [class.active]="config.timeframe===tf" (click)="config.timeframe=tf">{{tf}}</button>
+            }
           </div>
         </div>
 
@@ -66,13 +78,17 @@
         <div class="cfg-field">
           <label>Start Year</label>
           <select [(ngModel)]="config.startYear">
-            <option *ngFor="let y of YEARS" [value]="y">{{y}}</option>
+            @for (y of YEARS; track y) {
+              <option [value]="y">{{y}}</option>
+            }
           </select>
         </div>
         <div class="cfg-field">
           <label>End Year</label>
           <select [(ngModel)]="config.endYear">
-            <option *ngFor="let y of YEARS" [value]="y">{{y}}</option>
+            @for (y of YEARS; track y) {
+              <option [value]="y">{{y}}</option>
+            }
           </select>
         </div>
 
@@ -103,181 +119,202 @@
       </div>
 
       <!-- Regime filter -->
-      <div class="cfg-regimes" *ngIf="config.useRegime">
-        <div class="cr-label">Trade only in (empty = all regimes):</div>
-        <div class="cr-chips">
-          <button *ngFor="let r of REGIMES" class="cr-chip"
-                  [class.active]="config.regimeFilter.includes(r)"
-                  (click)="toggleRegime(r)">
-            {{fmt(r)}}
-          </button>
+      @if (config.useRegime) {
+        <div class="cfg-regimes">
+          <div class="cr-label">Trade only in (empty = all regimes):</div>
+          <div class="cr-chips">
+            @for (r of REGIMES; track r) {
+              <button class="cr-chip"
+                [class.active]="config.regimeFilter.includes(r)"
+                (click)="toggleRegime(r)">
+                {{fmt(r)}}
+              </button>
+            }
+          </div>
         </div>
-      </div>
+      }
 
       <button class="run-btn" (click)="runBacktest()" [disabled]="running">
-        <span *ngIf="!running">▶ Run Backtest</span>
-        <span *ngIf="running" class="run-loading">
-          <span class="run-spin"></span> {{bt.progressMessage}}
-        </span>
+        @if (!running) {
+          <span>▶ Run Backtest</span>
+        }
+        @if (running) {
+          <span class="run-loading">
+            <span class="run-spin"></span> {{bt.progressMessage}}
+          </span>
+        }
       </button>
 
       <!-- Progress bar -->
-      <div class="progress-bar" *ngIf="running">
-        <div class="pb-fill" [style.width.%]="bt.progress"></div>
-      </div>
+      @if (running) {
+        <div class="progress-bar">
+          <div class="pb-fill" [style.width.%]="bt.progress"></div>
+        </div>
+      }
 
-      <div class="bt-error" *ngIf="error">⚠️ {{error}}</div>
+      @if (error) {
+        <div class="bt-error">⚠️ {{error}}</div>
+      }
     </div>
 
     <!-- Results Panel -->
-    <div class="results-panel" *ngIf="result">
-
-      <!-- What these results mean -->
-      <div class="results-tip">
-        💡 <strong>How to read:</strong> Win Rate >55% + Profit Factor >1.5 + Sharpe >1.0 = tradeable strategy.
-        Grade A/B = use it. Grade C = needs tuning. Grade D/F = don't trade.
-      </div>
-
-      <!-- Grade -->
-      <div class="grade-hero">
-        <div class="grade-badge" [style.color]="result.gradeColor" [style.border-color]="result.gradeColor">
-          {{result.grade}}
+    @if (result) {
+      <div class="results-panel">
+        <!-- What these results mean -->
+        <div class="results-tip">
+          💡 <strong>How to read:</strong> Win Rate >55% + Profit Factor >1.5 + Sharpe >1.0 = tradeable strategy.
+          Grade A/B = use it. Grade C = needs tuning. Grade D/F = don't trade.
         </div>
-        <div class="grade-info">
-          <div class="gi-label">{{gradeDesc(result.grade)}}</div>
-          <div class="gi-reason">{{result.gradeReason}}</div>
-          <div class="gi-meta">{{result.symbol}} · {{result.timeframe}} · {{result.startDate}} → {{result.endDate}} · {{result.totalTrades}} trades</div>
-        </div>
-      </div>
-
-      <!-- Tabs -->
-      <div class="tabs">
-        <button [class.active]="activeTab==='overview'" (click)="activeTab='overview'">📊 Overview</button>
-        <button [class.active]="activeTab==='equity'"   (click)="activeTab='equity'">📈 Equity Curve</button>
-        <button [class.active]="activeTab==='monthly'"  (click)="activeTab='monthly'">📅 Monthly</button>
-        <button [class.active]="activeTab==='regime'"   (click)="activeTab='regime'">🎯 By Regime</button>
-        <button [class.active]="activeTab==='trades'"   (click)="activeTab='trades'">📋 Trades</button>
-      </div>
-
-      <!-- Overview Tab -->
-      <div class="tab-content" *ngIf="activeTab==='overview'">
-        <div class="metrics-grid">
-          <div class="mc primary" [style.border-color]="result.totalPnlPct>=0?'#00FF88':'#FF3B5C'">
-            <div class="mc-label">Total P&L</div>
-            <div class="mc-val" [style.color]="pnlColor(result.totalPnlPct)">{{result.totalPnlPct>=0?'+':''}}{{result.totalPnlPct}}%</div>
-            <div class="mc-sub">{{result.totalPnlR>=0?'+':''}}{{result.totalPnlR}}R total</div>
+        <!-- Grade -->
+        <div class="grade-hero">
+          <div class="grade-badge" [style.color]="result.gradeColor" [style.border-color]="result.gradeColor">
+            {{result.grade}}
           </div>
-          <div class="mc primary">
-            <div class="mc-label">Win Rate</div>
-            <div class="mc-val" [style.color]="result.winRate>=55?'#00FF88':result.winRate>=45?'#FFB800':'#FF3B5C'">{{result.winRate}}%</div>
-            <div class="mc-sub">{{result.winningTrades}}W / {{result.losingTrades}}L / {{result.totalTrades}} total</div>
-          </div>
-          <div class="mc primary">
-            <div class="mc-label">Profit Factor</div>
-            <div class="mc-val" [style.color]="result.profitFactor>=1.5?'#00FF88':result.profitFactor>=1?'#FFB800':'#FF3B5C'">{{result.profitFactor}}</div>
-            <div class="mc-sub">Gross Win / Gross Loss</div>
-          </div>
-          <div class="mc primary">
-            <div class="mc-label">Max Drawdown</div>
-            <div class="mc-val" [style.color]="result.maxDrawdownPct<=10?'#00FF88':result.maxDrawdownPct<=20?'#FFB800':'#FF3B5C'">{{result.maxDrawdownPct}}%</div>
-            <div class="mc-sub">Peak-to-trough</div>
+          <div class="grade-info">
+            <div class="gi-label">{{gradeDesc(result.grade)}}</div>
+            <div class="gi-reason">{{result.gradeReason}}</div>
+            <div class="gi-meta">{{result.symbol}} · {{result.timeframe}} · {{result.startDate}} → {{result.endDate}} · {{result.totalTrades}} trades</div>
           </div>
         </div>
-
-        <div class="metrics-grid secondary">
-          <div class="mc"><div class="mc-label">Sharpe Ratio</div><div class="mc-val sm" [style.color]="result.sharpeRatio>=1?'#00FF88':result.sharpeRatio>=0.5?'#FFB800':'#FF3B5C'">{{result.sharpeRatio}}</div></div>
-          <div class="mc"><div class="mc-label">Sortino Ratio</div><div class="mc-val sm" [style.color]="result.sortinoRatio>=1.5?'#00FF88':'#FFB800'">{{result.sortinoRatio}}</div></div>
-          <div class="mc"><div class="mc-label">Expectancy</div><div class="mc-val sm" [style.color]="result.expectancy>0?'#00FF88':'#FF3B5C'">{{result.expectancy}}R</div></div>
-          <div class="mc"><div class="mc-label">Calmar Ratio</div><div class="mc-val sm">{{result.calmarRatio}}</div></div>
-          <div class="mc"><div class="mc-label">Avg Win</div><div class="mc-val sm" style="color:#00FF88">+{{result.avgWinPct}}%</div></div>
-          <div class="mc"><div class="mc-label">Avg Loss</div><div class="mc-val sm" style="color:#FF3B5C">{{result.avgLossPct}}%</div></div>
-          <div class="mc"><div class="mc-label">Avg Win (R)</div><div class="mc-val sm" style="color:#00FF88">+{{result.avgWinR}}R</div></div>
-          <div class="mc"><div class="mc-label">Avg Loss (R)</div><div class="mc-val sm" style="color:#FF3B5C">{{result.avgLossR}}R</div></div>
-          <div class="mc"><div class="mc-label">Max Win Streak</div><div class="mc-val sm">{{result.maxWinStreak}}</div></div>
-          <div class="mc"><div class="mc-label">Max Loss Streak</div><div class="mc-val sm">{{result.maxLossStreak}}</div></div>
-          <div class="mc"><div class="mc-label">Avg Hold</div><div class="mc-val sm">{{result.avgHoldBars}} candles</div></div>
-          <div class="mc"><div class="mc-label">Total Candles</div><div class="mc-val sm">{{result.totalCandles}}</div></div>
+        <!-- Tabs -->
+        <div class="tabs">
+          <button [class.active]="activeTab==='overview'" (click)="activeTab='overview'">📊 Overview</button>
+          <button [class.active]="activeTab==='equity'"   (click)="activeTab='equity'">📈 Equity Curve</button>
+          <button [class.active]="activeTab==='monthly'"  (click)="activeTab='monthly'">📅 Monthly</button>
+          <button [class.active]="activeTab==='regime'"   (click)="activeTab='regime'">🎯 By Regime</button>
+          <button [class.active]="activeTab==='trades'"   (click)="activeTab='trades'">📋 Trades</button>
         </div>
-
-        <div class="bt-summary">{{result.summary}}</div>
-      </div>
-
-      <!-- Equity Curve Tab -->
-      <div class="tab-content" *ngIf="activeTab==='equity'">
-        <div class="eq-chart-wrap">
-          <div class="eq-label">Equity Curve (starting 100%)</div>
-          <svg viewBox="0 0 800 200" class="eq-svg" preserveAspectRatio="none">
-            <defs>
-              <linearGradient id="eqGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" [attr.stop-color]="result.totalPnlPct>=0?'#00FF88':'#FF3B5C'" stop-opacity="0.3"/>
-                <stop offset="100%" [attr.stop-color]="result.totalPnlPct>=0?'#00FF88':'#FF3B5C'" stop-opacity="0"/>
-              </linearGradient>
-            </defs>
-            <!-- Zero line -->
-            <line x1="0" y1="150" x2="800" y2="150" stroke="#1E2D4A" stroke-width="1" stroke-dasharray="4"/>
-            <!-- Fill -->
-            <path [attr.d]="svgFill" fill="url(#eqGrad)"/>
-            <!-- Line -->
-            <path [attr.d]="svgPath" [attr.stroke]="result.totalPnlPct>=0?'#00FF88':'#FF3B5C'" stroke-width="2" fill="none"/>
-          </svg>
-          <div class="eq-stats">
-            <span style="color:#00FF88">Start: 100%</span>
-            <span [style.color]="pnlColor(result.totalPnlPct)">End: {{(100+result.totalPnlPct).toFixed(1)}}%</span>
-            <span style="color:#FF3B5C">Max DD: -{{result.maxDrawdownPct}}%</span>
+        <!-- Overview Tab -->
+        @if (activeTab==='overview') {
+          <div class="tab-content">
+            <div class="metrics-grid">
+              <div class="mc primary" [style.border-color]="result.totalPnlPct>=0?'#00FF88':'#FF3B5C'">
+                <div class="mc-label">Total P&L</div>
+                <div class="mc-val" [style.color]="pnlColor(result.totalPnlPct)">{{result.totalPnlPct>=0?'+':''}}{{result.totalPnlPct}}%</div>
+                <div class="mc-sub">{{result.totalPnlR>=0?'+':''}}{{result.totalPnlR}}R total</div>
+              </div>
+              <div class="mc primary">
+                <div class="mc-label">Win Rate</div>
+                <div class="mc-val" [style.color]="result.winRate>=55?'#00FF88':result.winRate>=45?'#FFB800':'#FF3B5C'">{{result.winRate}}%</div>
+                <div class="mc-sub">{{result.winningTrades}}W / {{result.losingTrades}}L / {{result.totalTrades}} total</div>
+              </div>
+              <div class="mc primary">
+                <div class="mc-label">Profit Factor</div>
+                <div class="mc-val" [style.color]="result.profitFactor>=1.5?'#00FF88':result.profitFactor>=1?'#FFB800':'#FF3B5C'">{{result.profitFactor}}</div>
+                <div class="mc-sub">Gross Win / Gross Loss</div>
+              </div>
+              <div class="mc primary">
+                <div class="mc-label">Max Drawdown</div>
+                <div class="mc-val" [style.color]="result.maxDrawdownPct<=10?'#00FF88':result.maxDrawdownPct<=20?'#FFB800':'#FF3B5C'">{{result.maxDrawdownPct}}%</div>
+                <div class="mc-sub">Peak-to-trough</div>
+              </div>
+            </div>
+            <div class="metrics-grid secondary">
+              <div class="mc"><div class="mc-label">Sharpe Ratio</div><div class="mc-val sm" [style.color]="result.sharpeRatio>=1?'#00FF88':result.sharpeRatio>=0.5?'#FFB800':'#FF3B5C'">{{result.sharpeRatio}}</div></div>
+              <div class="mc"><div class="mc-label">Sortino Ratio</div><div class="mc-val sm" [style.color]="result.sortinoRatio>=1.5?'#00FF88':'#FFB800'">{{result.sortinoRatio}}</div></div>
+              <div class="mc"><div class="mc-label">Expectancy</div><div class="mc-val sm" [style.color]="result.expectancy>0?'#00FF88':'#FF3B5C'">{{result.expectancy}}R</div></div>
+              <div class="mc"><div class="mc-label">Calmar Ratio</div><div class="mc-val sm">{{result.calmarRatio}}</div></div>
+              <div class="mc"><div class="mc-label">Avg Win</div><div class="mc-val sm" style="color:#00FF88">+{{result.avgWinPct}}%</div></div>
+              <div class="mc"><div class="mc-label">Avg Loss</div><div class="mc-val sm" style="color:#FF3B5C">{{result.avgLossPct}}%</div></div>
+              <div class="mc"><div class="mc-label">Avg Win (R)</div><div class="mc-val sm" style="color:#00FF88">+{{result.avgWinR}}R</div></div>
+              <div class="mc"><div class="mc-label">Avg Loss (R)</div><div class="mc-val sm" style="color:#FF3B5C">{{result.avgLossR}}R</div></div>
+              <div class="mc"><div class="mc-label">Max Win Streak</div><div class="mc-val sm">{{result.maxWinStreak}}</div></div>
+              <div class="mc"><div class="mc-label">Max Loss Streak</div><div class="mc-val sm">{{result.maxLossStreak}}</div></div>
+              <div class="mc"><div class="mc-label">Avg Hold</div><div class="mc-val sm">{{result.avgHoldBars}} candles</div></div>
+              <div class="mc"><div class="mc-label">Total Candles</div><div class="mc-val sm">{{result.totalCandles}}</div></div>
+            </div>
+            <div class="bt-summary">{{result.summary}}</div>
           </div>
+        }
+        <!-- Equity Curve Tab -->
+        @if (activeTab==='equity') {
+          <div class="tab-content">
+            <div class="eq-chart-wrap">
+              <div class="eq-label">Equity Curve (starting 100%)</div>
+              <svg viewBox="0 0 800 200" class="eq-svg" preserveAspectRatio="none">
+                <defs>
+                  <linearGradient id="eqGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" [attr.stop-color]="result.totalPnlPct>=0?'#00FF88':'#FF3B5C'" stop-opacity="0.3"/>
+                      <stop offset="100%" [attr.stop-color]="result.totalPnlPct>=0?'#00FF88':'#FF3B5C'" stop-opacity="0"/>
+                      </linearGradient>
+                    </defs>
+                    <!-- Zero line -->
+                    <line x1="0" y1="150" x2="800" y2="150" stroke="#1E2D4A" stroke-width="1" stroke-dasharray="4"/>
+                    <!-- Fill -->
+                    <path [attr.d]="svgFill" fill="url(#eqGrad)"/>
+                    <!-- Line -->
+                    <path [attr.d]="svgPath" [attr.stroke]="result.totalPnlPct>=0?'#00FF88':'#FF3B5C'" stroke-width="2" fill="none"/>
+                    </svg>
+                    <div class="eq-stats">
+                      <span style="color:#00FF88">Start: 100%</span>
+                      <span [style.color]="pnlColor(result.totalPnlPct)">End: {{(100+result.totalPnlPct).toFixed(1)}}%</span>
+                      <span style="color:#FF3B5C">Max DD: -{{result.maxDrawdownPct}}%</span>
+                    </div>
+                  </div>
+                </div>
+              }
+              <!-- Monthly Tab -->
+              @if (activeTab==='monthly') {
+                <div class="tab-content">
+                  <div class="monthly-grid">
+                    <div class="mh-row header">
+                      <span>Month</span><span>Trades</span><span>Win%</span><span>P&L</span>
+                    </div>
+                    @for (m of result.monthlyStats; track m) {
+                      <div class="mh-row"
+                        [class.pos]="m.pnlPct>=0" [class.neg]="m.pnlPct<0">
+                        <span class="mh-month">{{m.month}}</span>
+                        <span>{{m.trades}}</span>
+                        <span [style.color]="m.winRate>=55?'#00FF88':m.winRate>=45?'#FFB800':'#FF3B5C'">{{m.winRate}}%</span>
+                        <span [style.color]="pnlColor(m.pnlPct)">{{m.pnlPct>=0?'+':''}}{{m.pnlPct}}%</span>
+                      </div>
+                    }
+                  </div>
+                </div>
+              }
+              <!-- Regime Tab -->
+              @if (activeTab==='regime') {
+                <div class="tab-content">
+                  <div class="regime-grid">
+                    <div class="rg-header">
+                      <span>Regime</span><span>Trades</span><span>Win%</span><span>Avg R</span>
+                    </div>
+                    @for (r of result.regimeStats; track r) {
+                      <div class="rg-row">
+                        <span class="rg-name">{{fmt(r.regime)}}</span>
+                        <span>{{r.trades}}</span>
+                        <span [style.color]="r.winRate>=55?'#00FF88':r.winRate>=45?'#FFB800':'#FF3B5C'">{{r.winRate}}%</span>
+                        <span [style.color]="r.avgR>=0?'#00FF88':'#FF3B5C'">{{r.avgR>=0?'+':''}}{{r.avgR}}R</span>
+                      </div>
+                    }
+                  </div>
+                </div>
+              }
+              <!-- Trades Tab -->
+              @if (activeTab==='trades') {
+                <div class="tab-content trades-tab">
+                  <div class="trades-table">
+                    <div class="tt-header">
+                      <span>Date</span><span>Dir</span><span>Conf</span><span>Result</span><span>P&L%</span><span>R</span><span>Bars</span>
+                    </div>
+                    @for (t of result.trades.slice(0,50); track t) {
+                      <div class="tt-row">
+                        <span class="tt-date">{{formatTime(t.entryTime)}}</span>
+                        <span class="tt-dir" [class.long]="t.direction==='LONG'" [class.short]="t.direction==='SHORT'">{{t.direction}}</span>
+                        <span class="tt-conf">{{t.confidence}}%</span>
+                        <span class="tt-res" [style.color]="resultColor(t.result)">{{t.result.replace('_',' ')}}</span>
+                        <span [style.color]="pnlColor(t.pnlPct)">{{t.pnlPct>=0?'+':''}}{{t.pnlPct}}%</span>
+                        <span [style.color]="pnlColor(t.pnlR)">{{t.pnlR>=0?'+':''}}{{t.pnlR}}R</span>
+                        <span class="tt-bars">{{t.holdBars}}</span>
+                      </div>
+                    }
+                    @if (result.trades.length>50) {
+                      <div class="tt-more">...and {{result.trades.length-50}} more trades</div>
+                    }
+                  </div>
+                </div>
+              }
+            </div>
+          }
         </div>
       </div>
-
-      <!-- Monthly Tab -->
-      <div class="tab-content" *ngIf="activeTab==='monthly'">
-        <div class="monthly-grid">
-          <div class="mh-row header">
-            <span>Month</span><span>Trades</span><span>Win%</span><span>P&L</span>
-          </div>
-          <div class="mh-row" *ngFor="let m of result.monthlyStats"
-               [class.pos]="m.pnlPct>=0" [class.neg]="m.pnlPct<0">
-            <span class="mh-month">{{m.month}}</span>
-            <span>{{m.trades}}</span>
-            <span [style.color]="m.winRate>=55?'#00FF88':m.winRate>=45?'#FFB800':'#FF3B5C'">{{m.winRate}}%</span>
-            <span [style.color]="pnlColor(m.pnlPct)">{{m.pnlPct>=0?'+':''}}{{m.pnlPct}}%</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Regime Tab -->
-      <div class="tab-content" *ngIf="activeTab==='regime'">
-        <div class="regime-grid">
-          <div class="rg-header">
-            <span>Regime</span><span>Trades</span><span>Win%</span><span>Avg R</span>
-          </div>
-          <div class="rg-row" *ngFor="let r of result.regimeStats">
-            <span class="rg-name">{{fmt(r.regime)}}</span>
-            <span>{{r.trades}}</span>
-            <span [style.color]="r.winRate>=55?'#00FF88':r.winRate>=45?'#FFB800':'#FF3B5C'">{{r.winRate}}%</span>
-            <span [style.color]="r.avgR>=0?'#00FF88':'#FF3B5C'">{{r.avgR>=0?'+':''}}{{r.avgR}}R</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Trades Tab -->
-      <div class="tab-content trades-tab" *ngIf="activeTab==='trades'">
-        <div class="trades-table">
-          <div class="tt-header">
-            <span>Date</span><span>Dir</span><span>Conf</span><span>Result</span><span>P&L%</span><span>R</span><span>Bars</span>
-          </div>
-          <div class="tt-row" *ngFor="let t of result.trades.slice(0,50)">
-            <span class="tt-date">{{formatTime(t.entryTime)}}</span>
-            <span class="tt-dir" [class.long]="t.direction==='LONG'" [class.short]="t.direction==='SHORT'">{{t.direction}}</span>
-            <span class="tt-conf">{{t.confidence}}%</span>
-            <span class="tt-res" [style.color]="resultColor(t.result)">{{t.result.replace('_',' ')}}</span>
-            <span [style.color]="pnlColor(t.pnlPct)">{{t.pnlPct>=0?'+':''}}{{t.pnlPct}}%</span>
-            <span [style.color]="pnlColor(t.pnlR)">{{t.pnlR>=0?'+':''}}{{t.pnlR}}R</span>
-            <span class="tt-bars">{{t.holdBars}}</span>
-          </div>
-          <div class="tt-more" *ngIf="result.trades.length>50">...and {{result.trades.length-50}} more trades</div>
-        </div>
-      </div>
-
-    </div>
-  </div>
-</div>

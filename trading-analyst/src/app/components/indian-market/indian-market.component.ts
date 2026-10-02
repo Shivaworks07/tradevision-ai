@@ -21,11 +21,10 @@ import { OptionChainComponent } from '../option-chain/option-chain.component';
 import { TradeHistoryService } from '../../services/trade-history.service';
 
 @Component({
-  selector: 'app-indian-market',
-  standalone: true,
-  imports: [CommonModule, FeaturedTradesComponent, SkeletonCardComponent, EmptyStateComponent, ErrorStateComponent, FormsModule, AnalysisModalComponent, CallHistoryComponent, StockChartComponent, OptionChainComponent],
-  templateUrl: './indian-market.component.html',
-  styleUrls: ['./indian-market.component.scss']
+    selector: 'app-indian-market',
+    imports: [CommonModule, FeaturedTradesComponent, SkeletonCardComponent, EmptyStateComponent, ErrorStateComponent, FormsModule, AnalysisModalComponent, CallHistoryComponent, StockChartComponent, OptionChainComponent],
+    templateUrl: './indian-market.component.html',
+    styleUrls: ['./indian-market.component.scss']
 })
 export class IndianMarketComponent implements OnInit, OnDestroy {
   private liveData = inject(LiveDataService);

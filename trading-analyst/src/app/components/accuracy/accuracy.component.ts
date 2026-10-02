@@ -16,11 +16,10 @@ interface PeriodStats {
 }
 
 @Component({
-  selector: 'app-accuracy',
-  standalone: true,
-  imports: [CommonModule],
-  templateUrl: './accuracy.component.html',
-  styleUrls: ['./accuracy.component.scss']
+    selector: 'app-accuracy',
+    imports: [CommonModule],
+    templateUrl: './accuracy.component.html',
+    styleUrls: ['./accuracy.component.scss']
 })
 export class AccuracyComponent implements OnInit {
   private history = inject(TradeHistoryService);

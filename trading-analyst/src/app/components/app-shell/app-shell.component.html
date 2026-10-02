@@ -13,12 +13,14 @@
     </div>
 
     <nav class="tb-nav">
-      <button *ngFor="let item of navItems"
-              class="tb-link" [class.active]="isActive(item.route)"
-              (click)="navigate(item.route)">
-        <tv-icon [name]="item.icon" [size]="15"></tv-icon>
-        <span>{{item.label}}</span>
-      </button>
+      @for (item of navItems; track item) {
+        <button
+          class="tb-link" [class.active]="isActive(item.route)"
+          (click)="navigate(item.route)">
+          <tv-icon [name]="item.icon" [size]="15"></tv-icon>
+          <span>{{item.label}}</span>
+        </button>
+      }
     </nav>
 
     <div class="tb-right">
@@ -29,120 +31,140 @@
       </button>
       <div class="notif-wrap">
         <button class="icon-btn notif-btn" (click)="notif.isPermitted ? toggleNotifPanel() : enableNotifications()"
-                [class.active]="notif.isPermitted" [class.has-alerts]="alertHistory.length > 0"
-                [title]="notif.isPermitted ? 'Signal alerts' : 'Enable signal alerts'">
+          [class.active]="notif.isPermitted" [class.has-alerts]="alertHistory.length > 0"
+          [title]="notif.isPermitted ? 'Signal alerts' : 'Enable signal alerts'">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15">
             <path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/>
           </svg>
-          <span class="notif-count" *ngIf="alertHistory.length > 0">{{alertHistory.length}}</span>
+          @if (alertHistory.length > 0) {
+            <span class="notif-count">{{alertHistory.length}}</span>
+          }
         </button>
         <!-- Alert Panel with Preferences -->
-        <div class="notif-panel" *ngIf="showNotifPanel">
-          <div class="np-header">
-            <span>Signal Alerts</span>
-            <button class="np-tab" [class.active]="notifTab==='alerts'" (click)="notifTab='alerts'">Alerts</button>
-            <button class="np-tab" [class.active]="notifTab==='prefs'" (click)="notifTab='prefs'">Prefs</button>
-            <button class="np-clear" (click)="clearAlerts()">Clear</button>
-          </div>
-
-          <!-- Alerts tab -->
-          <ng-container *ngIf="notifTab==='alerts'">
-            <div class="np-empty" *ngIf="alertHistory.length === 0">
-            No alerts yet. Alerts appear when watched signals change.
-            <a routerLink="/app/settings" (click)="showNotifPanel=false" class="np-settings-link">⚙ Configure alerts</a>
-          </div>
-            <div class="np-item" *ngFor="let a of alertHistory">
-              <div class="npi-top">
-                <span class="npi-sym">{{a.symbol}}</span>
-                <span class="npi-market" *ngIf="a.market">{{a.market}}</span>
-                <span class="npi-sig" [class.buy]="a.direction==='LONG'" [class.sell]="a.direction==='SHORT'">{{a.signal}}</span>
-                <span class="npi-conf">{{a.confidence}}%</span>
-              </div>
-              <div class="npi-sub" *ngIf="a.prevSignal">{{a.prevSignal}} → {{a.signal}}</div>
+        @if (showNotifPanel) {
+          <div class="notif-panel">
+            <div class="np-header">
+              <span>Signal Alerts</span>
+              <button class="np-tab" [class.active]="notifTab==='alerts'" (click)="notifTab='alerts'">Alerts</button>
+              <button class="np-tab" [class.active]="notifTab==='prefs'" (click)="notifTab='prefs'">Prefs</button>
+              <button class="np-clear" (click)="clearAlerts()">Clear</button>
             </div>
-          </ng-container>
-
-          <!-- Preferences tab -->
-          <div class="np-prefs" *ngIf="notifTab==='prefs'">
-            <div class="npp-row">
-              <span class="npp-label">Enable alerts</span>
-              <label class="npp-toggle">
-                <input type="checkbox" [checked]="notifPrefs.enabled" (change)="updatePref('enabled', $any($event.target).checked)">
-                <span class="npp-slider"></span>
-              </label>
-            </div>
-            <div class="npp-row">
-              <span class="npp-label">Min confidence</span>
-              <span class="npp-val">{{notifPrefs.minConfidence}}%</span>
-            </div>
-            <input class="npp-range" type="range" min="50" max="90" step="5"
-                   [value]="notifPrefs.minConfidence"
-                   (input)="updatePref('minConfidence', +$any($event.target).value)">
-
-            <div class="npp-section">Direction</div>
-            <div class="npp-chips">
-              <button [class.active]="notifPrefs.directions.includes('LONG')"
-                      (click)="togglePrefArr('directions','LONG')">▲ BUY</button>
-              <button [class.active]="notifPrefs.directions.includes('SHORT')"
-                      (click)="togglePrefArr('directions','SHORT')">▼ SELL</button>
-            </div>
-
-            <div class="npp-section">Markets</div>
-            <div class="npp-chips">
-              <button *ngFor="let m of ['CRYPTO','STOCK','FOREX']"
+            <!-- Alerts tab -->
+            @if (notifTab==='alerts') {
+              @if (alertHistory.length === 0) {
+                <div class="np-empty">
+                  No alerts yet. Alerts appear when watched signals change.
+                  <a routerLink="/app/settings" (click)="showNotifPanel=false" class="np-settings-link">⚙ Configure alerts</a>
+                </div>
+              }
+              @for (a of alertHistory; track a) {
+                <div class="np-item">
+                  <div class="npi-top">
+                    <span class="npi-sym">{{a.symbol}}</span>
+                    @if (a.market) {
+                      <span class="npi-market">{{a.market}}</span>
+                    }
+                    <span class="npi-sig" [class.buy]="a.direction==='LONG'" [class.sell]="a.direction==='SHORT'">{{a.signal}}</span>
+                    <span class="npi-conf">{{a.confidence}}%</span>
+                  </div>
+                  @if (a.prevSignal) {
+                    <div class="npi-sub">{{a.prevSignal}} → {{a.signal}}</div>
+                  }
+                </div>
+              }
+            }
+            <!-- Preferences tab -->
+            @if (notifTab==='prefs') {
+              <div class="np-prefs">
+                <div class="npp-row">
+                  <span class="npp-label">Enable alerts</span>
+                  <label class="npp-toggle">
+                    <input type="checkbox" [checked]="notifPrefs.enabled" (change)="updatePref('enabled', $any($event.target).checked)">
+                    <span class="npp-slider"></span>
+                  </label>
+                </div>
+                <div class="npp-row">
+                  <span class="npp-label">Min confidence</span>
+                  <span class="npp-val">{{notifPrefs.minConfidence}}%</span>
+                </div>
+                <input class="npp-range" type="range" min="50" max="90" step="5"
+                  [value]="notifPrefs.minConfidence"
+                  (input)="updatePref('minConfidence', +$any($event.target).value)">
+                <div class="npp-section">Direction</div>
+                <div class="npp-chips">
+                  <button [class.active]="notifPrefs.directions.includes('LONG')"
+                  (click)="togglePrefArr('directions','LONG')">▲ BUY</button>
+                  <button [class.active]="notifPrefs.directions.includes('SHORT')"
+                  (click)="togglePrefArr('directions','SHORT')">▼ SELL</button>
+                </div>
+                <div class="npp-section">Markets</div>
+                <div class="npp-chips">
+                  @for (m of ['CRYPTO','STOCK','FOREX']; track m) {
+                    <button
                       [class.active]="notifPrefs.markets.includes($any(m))"
                       (click)="togglePrefArr('markets',m)">
-                {{m==='CRYPTO'?'₿':m==='STOCK'?'🇮🇳':'💱'}} {{m}}
-              </button>
-            </div>
-
-            <div class="npp-section">Signal types</div>
-            <div class="npp-chips">
-              <button *ngFor="let s of ['STRONG BUY','BUY','STRONG SELL','SELL']"
+                      {{m==='CRYPTO'?'₿':m==='STOCK'?'🇮🇳':'💱'}} {{m}}
+                    </button>
+                  }
+                </div>
+                <div class="npp-section">Signal types</div>
+                <div class="npp-chips">
+                  @for (s of ['STRONG BUY','BUY','STRONG SELL','SELL']; track s) {
+                    <button
                       [class.active]="notifPrefs.signalTypes.includes(s)"
-                      (click)="togglePrefArr('signalTypes',s)">{{s}}</button>
-            </div>
-
-            <div class="npp-row" style="margin-top:8px">
-              <span class="npp-label">Only on change</span>
-              <label class="npp-toggle">
-                <input type="checkbox" [checked]="notifPrefs.onlyOnChange" (change)="updatePref('onlyOnChange', $any($event.target).checked)">
-                <span class="npp-slider"></span>
-              </label>
-            </div>
-            <button class="npp-reset" (click)="notif.resetPrefs()">Reset to defaults</button>
+                    (click)="togglePrefArr('signalTypes',s)">{{s}}</button>
+                  }
+                </div>
+                <div class="npp-row" style="margin-top:8px">
+                  <span class="npp-label">Only on change</span>
+                  <label class="npp-toggle">
+                    <input type="checkbox" [checked]="notifPrefs.onlyOnChange" (change)="updatePref('onlyOnChange', $any($event.target).checked)">
+                    <span class="npp-slider"></span>
+                  </label>
+                </div>
+                <button class="npp-reset" (click)="notif.resetPrefs()">Reset to defaults</button>
+              </div>
+            }
+            <a routerLink="/app/settings" (click)="showNotifPanel=false" class="np-footer-link">⚙ Notification Settings</a>
           </div>
-          <a routerLink="/app/settings" (click)="showNotifPanel=false" class="np-footer-link">⚙ Notification Settings</a>
-        </div>
+        }
       </div>
       <div class="live-pill">
         <span class="live-dot"></span>
         LIVE
       </div>
-      <div class="user-chip" *ngIf="auth.currentUser()">
-        <span class="ua">{{auth.currentUser()?.firstName?.[0]?.toUpperCase() || 'T'}}</span>
-        <span class="un">{{auth.currentUser()?.firstName}}</span>
-      </div>
+      @if (auth.currentUser()) {
+        <div class="user-chip">
+          <span class="ua">{{auth.currentUser()?.firstName?.[0]?.toUpperCase() || 'T'}}</span>
+          <span class="un">{{auth.currentUser()?.firstName}}</span>
+        </div>
+      }
       <button class="icon-btn logout-btn" (click)="logout()" title="Logout">Logout</button>
     </div>
   </header>
 
   <!-- Mobile drawer -->
-  <div class="drawer-backdrop" *ngIf="menuOpen" (click)="menuOpen=false"></div>
+  @if (menuOpen) {
+    <div class="drawer-backdrop" (click)="menuOpen=false"></div>
+  }
   <aside class="drawer" [class.open]="menuOpen">
     <a class="drawer-link" routerLink="/app/settings" (click)="menuOpen=false">⚙ Settings</a>
-    <a class="drawer-link adm" *ngIf="isAdmin" routerLink="/app/admin" (click)="menuOpen=false">🛡 Admin</a>
+    @if (isAdmin) {
+      <a class="drawer-link adm" routerLink="/app/admin" (click)="menuOpen=false">🛡 Admin</a>
+    }
     <div class="drawer-brand">
       <tv-icon name="lightning" [size]="18" style="color:#00D4FF"></tv-icon>
       TradeVision AI
     </div>
     <nav class="drawer-nav">
-      <button *ngFor="let item of navItems"
-              class="dr-link" [class.active]="isActive(item.route)"
-              (click)="navigate(item.route)">
-        <tv-icon [name]="item.icon" [size]="18"></tv-icon>
-        <span>{{item.label}}</span>
-      </button>
+      @for (item of navItems; track item) {
+        <button
+          class="dr-link" [class.active]="isActive(item.route)"
+          (click)="navigate(item.route)">
+          <tv-icon [name]="item.icon" [size]="18"></tv-icon>
+          <span>{{item.label}}</span>
+        </button>
+      }
     </nav>
     <button class="dr-logout" (click)="logout()">
       <tv-icon name="logout" [size]="16"></tv-icon>

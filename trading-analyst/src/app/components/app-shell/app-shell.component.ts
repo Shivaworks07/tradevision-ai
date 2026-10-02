@@ -1,5 +1,5 @@
 import { Component, inject, OnInit } from '@angular/core';
-import { CommonModule } from '@angular/common';
+
 import { RouterModule, Router, NavigationEnd } from '@angular/router';
 import { filter } from 'rxjs/operators';
 import { AuthService } from '../../services/auth.service';
@@ -9,11 +9,10 @@ import { FeedbackComponent } from '../feedback/feedback.component';
 import { NotificationService, NotificationPrefs } from '../../services/notification.service';
 
 @Component({
-  selector: 'app-shell',
-  standalone: true,
-  imports: [CommonModule, RouterModule, IconComponent, FeedbackComponent],
-  templateUrl: './app-shell.component.html',
-  styleUrls: ['./app-shell.component.scss']
+    selector: 'app-shell',
+    imports: [RouterModule, IconComponent, FeedbackComponent],
+    templateUrl: './app-shell.component.html',
+    styleUrls: ['./app-shell.component.scss']
 })
 export class AppShellComponent implements OnInit {
   auth     = inject(AuthService);

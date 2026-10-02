@@ -98,6 +98,20 @@ public class PositionSlotReservationService {
      * nets) only on the specific, recognizable "this deployment doesn't support transactions"
      * error.
      */
+    /**
+     * CI-review fix ("Position slot reservation concurrency" -- external review, fifth pass,
+     * failure 1, confirmed real by direct inspection): the maximum number of times a single
+     * reserve() call retries its own transaction after a genuine MongoDB WriteConflict/
+     * TransientTransactionError -- not an infrastructure failure, just two transactions racing
+     * for the SAME per-credential counter document, which MongoDB resolves by aborting the loser
+     * rather than queuing it. Bounded so a pathological, permanently-overloaded credential can't
+     * spin forever; a tight cap on reserved SLOTS (almost always single digits) means genuine
+     * contention is bounded too -- in the one observed failure (20 concurrent callers racing a
+     * cap of 3), a handful of retries is enough for every caller that can legally succeed to
+     * actually get the chance to.
+     */
+    private static final int MAX_TRANSACTION_RETRIES = 10;
+
     private SlotReserveResult reserveTransactionally(String key, int maxAllowed, String executionId, boolean live) {
         com.mongodb.client.ClientSession session;
         try {
@@ -109,59 +123,93 @@ public class PositionSlotReservationService {
             return reserveSequentially(key, maxAllowed, executionId);
         }
         try {
-            session.startTransaction();
-            var sessionTemplate = mongoTemplate.withSession(session);
-            // Review finding, full context in ensureDocumentExists's own updated javadoc: now
-            // called INSIDE the transaction, on the session-bound template -- the create-if-
-            // missing step and the reservation claim below are genuinely part of the same
-            // transactional snapshot now, closing the fresh-credential visibility gap.
-            ensureDocumentExists(key, sessionTemplate);
+            // CI-review fix ("Position slot reservation concurrency" -- external review, fifth
+            // pass, failure 1, confirmed real by direct inspection: concurrentReserve_realMongo_
+            // enforcesExactCap expected 3 successes out of 20 concurrent callers against a cap of
+            // 3, but only 1 actually succeeded): every one of these 20 transactions does several
+            // writes (ensureDocumentExists, insert the PENDING record, the findAndModify counter
+            // claim, the ACTIVE flip) against the SAME single per-credential counter document --
+            // under real concurrent load, MongoDB resolves that document-level contention by
+            // aborting the loser's transaction with a WriteConflict (error code 112), surfaced to
+            // the driver as a MongoException carrying the "TransientTransactionError" label. That
+            // is NOT the same thing as isStandaloneMongoTransactionError's own, much narrower
+            // signature below (error code 20, "transactions require a replica set") -- it's a
+            // normal, expected, RETRYABLE condition under genuine write contention on one
+            // document, exactly the case MongoDB's own documented transaction-retry pattern
+            // exists for. Before this fix, there was no retry logic anywhere for it: a
+            // WriteConflict fell straight through to `throw e` a few lines below and escaped
+            // reserve() entirely as an uncaught RuntimeException -- which the test's own
+            // `executor.submit(...)` (never calling Future.get()) silently swallowed, so
+            // `successCount` was never incremented for that caller. Only whichever single
+            // transaction happened to win the lock on its very first attempt, with zero retries,
+            // ever actually reached a genuine cap decision -- hence exactly 1 success instead of
+            // the 3 the cap should have allowed. Retrying the WHOLE transaction body (on the same
+            // session, per MongoDB's own documented pattern -- a ClientSession remains valid
+            // across a startTransaction()/abortTransaction() cycle) lets every caller that can
+            // legally fit under the cap actually get the chance to, instead of losing the race
+            // permanently on its first and only attempt.
+            for (int attempt = 1; ; attempt++) {
+                try {
+                    session.startTransaction();
+                    var sessionTemplate = mongoTemplate.withSession(session);
+                    // Review finding, full context in ensureDocumentExists's own updated javadoc: now
+                    // called INSIDE the transaction, on the session-bound template -- the create-if-
+                    // missing step and the reservation claim below are genuinely part of the same
+                    // transactional snapshot now, closing the fresh-credential visibility gap.
+                    ensureDocumentExists(key, sessionTemplate);
 
-            var record = new PositionSlotReservationRecord();
-            record.setKey(key);
-            record.setStatus("PENDING");
-            record.setExecutionId(executionId);
-            record = sessionTemplate.insert(record);
+                    var record = new PositionSlotReservationRecord();
+                    record.setKey(key);
+                    record.setStatus("PENDING");
+                    record.setExecutionId(executionId);
+                    record = sessionTemplate.insert(record);
 
-            Query query = new Query(where("credentialId").is(key).and("reservedCount").lt(maxAllowed));
-            Update update = new Update().inc("reservedCount", 1).set("lastReservedAt", java.time.Instant.now());
-            PositionSlotReservation result = sessionTemplate.findAndModify(
-                query, update, FindAndModifyOptions.options().returnNew(true), PositionSlotReservation.class);
-            if (result == null) {
-                session.abortTransaction();
-                return SlotReserveResult.rejected();
+                    Query query = new Query(where("credentialId").is(key).and("reservedCount").lt(maxAllowed));
+                    Update update = new Update().inc("reservedCount", 1).set("lastReservedAt", java.time.Instant.now());
+                    PositionSlotReservation result = sessionTemplate.findAndModify(
+                        query, update, FindAndModifyOptions.options().returnNew(true), PositionSlotReservation.class);
+                    if (result == null) {
+                        session.abortTransaction();
+                        return SlotReserveResult.rejected();
+                    }
+
+                    // No separate activation crash window at all on this path -- see
+                    // ExposureReservationService.reserveTransactionally's own identical comment for why.
+                    sessionTemplate.updateFirst(
+                        new Query(where("id").is(record.getId())),
+                        new Update().set("status", "ACTIVE"),
+                        PositionSlotReservationRecord.class);
+
+                    session.commitTransaction();
+                    return SlotReserveResult.reserved(record.getId());
+                } catch (RuntimeException e) {
+                    try {
+                        if (session.hasActiveTransaction()) session.abortTransaction();
+                    } catch (Exception ignore) {
+                        // Best-effort cleanup only -- the transaction attempt already failed.
+                    }
+                    if (isTransientTransactionError(e) && attempt < MAX_TRANSACTION_RETRIES) {
+                        log.debug("Transient MongoDB transaction error on reserve() attempt {} for key {} ({}) -- retrying.",
+                            attempt, key, e.getMessage());
+                        continue;
+                    }
+                    // Review finding (self-diagnosed, live production bug, full context in
+                    // ExposureReservationService.reserveTransactionally's own identical fix): the same
+                    // real bug -- catching only com.mongodb.MongoException directly never actually
+                    // caught this, since Spring Data's own MongoTemplate wraps the raw driver exception
+                    // into its own DataAccessException hierarchy first. Same fix: catch RuntimeException
+                    // broadly, walk the full cause chain for the real signature.
+                    if (isStandaloneMongoTransactionError(e)) {
+                        if (live) return rejectAndHaltForLive(key, "run the reservation inside a real MongoDB transaction (standalone "
+                            + "deployment, not a replica set/mongos)", e.getMessage());
+                        log.warn("MongoDB transactions are not supported by this deployment (standalone, not a replica set/mongos) -- falling "
+                            + "back to the sequential, non-transactional reserve approach for key {}. Configure a MongoDB replica set to close "
+                            + "the crash window fully.", key);
+                        return reserveSequentially(key, maxAllowed, executionId);
+                    }
+                    throw e;
+                }
             }
-
-            // No separate activation crash window at all on this path -- see
-            // ExposureReservationService.reserveTransactionally's own identical comment for why.
-            sessionTemplate.updateFirst(
-                new Query(where("id").is(record.getId())),
-                new Update().set("status", "ACTIVE"),
-                PositionSlotReservationRecord.class);
-
-            session.commitTransaction();
-            return SlotReserveResult.reserved(record.getId());
-        } catch (RuntimeException e) {
-            try {
-                if (session.hasActiveTransaction()) session.abortTransaction();
-            } catch (Exception ignore) {
-                // Best-effort cleanup only -- the transaction attempt already failed.
-            }
-            // Review finding (self-diagnosed, live production bug, full context in
-            // ExposureReservationService.reserveTransactionally's own identical fix): the same
-            // real bug -- catching only com.mongodb.MongoException directly never actually
-            // caught this, since Spring Data's own MongoTemplate wraps the raw driver exception
-            // into its own DataAccessException hierarchy first. Same fix: catch RuntimeException
-            // broadly, walk the full cause chain for the real signature.
-            if (isStandaloneMongoTransactionError(e)) {
-                if (live) return rejectAndHaltForLive(key, "run the reservation inside a real MongoDB transaction (standalone "
-                    + "deployment, not a replica set/mongos)", e.getMessage());
-                log.warn("MongoDB transactions are not supported by this deployment (standalone, not a replica set/mongos) -- falling "
-                    + "back to the sequential, non-transactional reserve approach for key {}. Configure a MongoDB replica set to close "
-                    + "the crash window fully.", key);
-                return reserveSequentially(key, maxAllowed, executionId);
-            }
-            throw e;
         } finally {
             session.close();
         }
@@ -459,6 +507,32 @@ public class PositionSlotReservationService {
         while (current != null && depth < 10) {
             if (current instanceof com.mongodb.MongoException mongoEx && mongoEx.getCode() == 20) return true;
             if (current.getMessage() != null && current.getMessage().contains("Transaction numbers are only allowed")) return true;
+            current = current.getCause();
+            depth++;
+        }
+        return false;
+    }
+
+    /**
+     * CI-review fix ("Position slot reservation concurrency" -- external review, fifth pass,
+     * failure 1, full context in reserveTransactionally's own updated javadoc): recognizes a
+     * genuine, expected, RETRYABLE write-conflict under real concurrent transactions against the
+     * same document -- distinct from isStandaloneMongoTransactionError above, which recognizes
+     * the opposite case (this deployment can't run transactions AT ALL, never retryable). Checks
+     * the official MongoDB driver "TransientTransactionError" error label first (the documented,
+     * forward-compatible way to detect this -- covers WriteConflict, NoSuchTransaction after a
+     * stepdown, and other transient conditions the driver already classifies), then falls back to
+     * the raw WriteConflict error code (112) directly in case a wrapped/translated exception lost
+     * the label along the way, same full-cause-chain-walk pattern as isStandaloneMongoTransactionError.
+     */
+    private boolean isTransientTransactionError(Throwable e) {
+        Throwable current = e;
+        int depth = 0;
+        while (current != null && depth < 10) {
+            if (current instanceof com.mongodb.MongoException mongoEx) {
+                if (mongoEx.hasErrorLabel("TransientTransactionError")) return true;
+                if (mongoEx.getCode() == 112) return true; // WriteConflict
+            }
             current = current.getCause();
             depth++;
         }

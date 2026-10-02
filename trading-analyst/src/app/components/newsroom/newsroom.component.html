@@ -7,86 +7,110 @@
         <h2>📰 Newsroom</h2>
         <p>Live market news from trusted sources · Updates every 5 minutes</p>
       </div>
-      <div class="nr-live" *ngIf="lastUpdated">
-        <span class="nr-live-dot"></span>
-        Updated {{lastUpdated}}
-      </div>
+      @if (lastUpdated) {
+        <div class="nr-live">
+          <span class="nr-live-dot"></span>
+          Updated {{lastUpdated}}
+        </div>
+      }
     </div>
 
     <!-- Category tabs -->
     <div class="nr-tabs">
-      <button *ngFor="let t of tabs"
-              [class.active]="activeTab===t.value"
-              (click)="setTab(t.value)">
-        <span class="tab-icon">{{t.icon}}</span>
-        <span class="tab-label">{{t.label}}</span>
-      </button>
+      @for (t of tabs; track t) {
+        <button
+          [class.active]="activeTab===t.value"
+          (click)="setTab(t.value)">
+          <span class="tab-icon">{{t.icon}}</span>
+          <span class="tab-label">{{t.label}}</span>
+        </button>
+      }
     </div>
   </div>
 
   <!-- Loading -->
-  <div class="nr-loading" *ngIf="loading">
-    <div class="nr-skeleton" *ngFor="let i of [1,2,3,4,5,6]"></div>
-  </div>
+  @if (loading) {
+    <div class="nr-loading">
+      @for (i of [1,2,3,4,5,6]; track i) {
+        <div class="nr-skeleton"></div>
+      }
+    </div>
+  }
 
   <!-- Error -->
-  <div class="nr-error" *ngIf="error && !loading">
-    <span>⚠ {{error}}</span>
-    <button (click)="setTab(activeTab)">Retry</button>
-  </div>
+  @if (error && !loading) {
+    <div class="nr-error">
+      <span>⚠ {{error}}</span>
+      <button (click)="setTab(activeTab)">Retry</button>
+    </div>
+  }
 
   <!-- News Grid -->
-  <div class="nr-grid" *ngIf="!loading && !error">
-
-    <!-- Featured (first article) -->
-    <a class="nr-featured" *ngIf="articles[0]"
-       [href]="articles[0].url" target="_blank" rel="noopener">
-      <div class="nrf-img" *ngIf="articles[0].imageUrl"
-           [style.background-image]="'url('+articles[0].imageUrl+')'"></div>
-      <div class="nrf-img nrf-no-img" *ngIf="!articles[0].imageUrl">
-        <span>{{articles[0].source[0]}}</span>
-      </div>
-      <div class="nrf-body">
-        <div class="nrf-meta">
-          <span class="nr-cat-badge" [style.color]="catColor(articles[0].category)"
+  @if (!loading && !error) {
+    <div class="nr-grid">
+      <!-- Featured (first article) -->
+      @if (articles[0]) {
+        <a class="nr-featured"
+          [href]="articles[0].url" target="_blank" rel="noopener">
+          @if (articles[0].imageUrl) {
+            <div class="nrf-img"
+            [style.background-image]="'url('+articles[0].imageUrl+')'"></div>
+          }
+          @if (!articles[0].imageUrl) {
+            <div class="nrf-img nrf-no-img">
+              <span>{{articles[0].source[0]}}</span>
+            </div>
+          }
+          <div class="nrf-body">
+            <div class="nrf-meta">
+              <span class="nr-cat-badge" [style.color]="catColor(articles[0].category)"
                 [style.border-color]="catColor(articles[0].category)+'33'">
-            {{articles[0].category}}
-          </span>
-          <span class="nr-source">{{articles[0].source}}</span>
-          <span class="nr-time">{{timeAgo(articles[0].publishedMs)}}</span>
-        </div>
-        <h3 class="nrf-title">{{articles[0].title}}</h3>
-        <p class="nrf-summary" *ngIf="articles[0].summary">{{articles[0].summary}}</p>
-      </div>
-    </a>
-
-    <!-- Article cards -->
-    <a class="nr-card" *ngFor="let a of articles.slice(1); trackBy: trackById"
-       [href]="a.url" target="_blank" rel="noopener">
-      <div class="nrc-img" *ngIf="a.imageUrl"
-           [style.background-image]="'url('+a.imageUrl+')'"></div>
-      <div class="nrc-img nrc-no-img" *ngIf="!a.imageUrl">
-        <span>{{a.source[0]}}</span>
-      </div>
-      <div class="nrc-body">
-        <div class="nrc-meta">
-          <span class="nr-cat-badge" [style.color]="catColor(a.category)"
+                {{articles[0].category}}
+              </span>
+              <span class="nr-source">{{articles[0].source}}</span>
+              <span class="nr-time">{{timeAgo(articles[0].publishedMs)}}</span>
+            </div>
+            <h3 class="nrf-title">{{articles[0].title}}</h3>
+            @if (articles[0].summary) {
+              <p class="nrf-summary">{{articles[0].summary}}</p>
+            }
+          </div>
+        </a>
+      }
+      <!-- Article cards -->
+      @for (a of articles.slice(1); track trackById($index, a)) {
+        <a class="nr-card"
+          [href]="a.url" target="_blank" rel="noopener">
+          @if (a.imageUrl) {
+            <div class="nrc-img"
+            [style.background-image]="'url('+a.imageUrl+')'"></div>
+          }
+          @if (!a.imageUrl) {
+            <div class="nrc-img nrc-no-img">
+              <span>{{a.source[0]}}</span>
+            </div>
+          }
+          <div class="nrc-body">
+            <div class="nrc-meta">
+              <span class="nr-cat-badge" [style.color]="catColor(a.category)"
                 [style.border-color]="catColor(a.category)+'33'">
-            {{a.category}}
-          </span>
-          <span class="nr-time">{{timeAgo(a.publishedMs)}}</span>
+                {{a.category}}
+              </span>
+              <span class="nr-time">{{timeAgo(a.publishedMs)}}</span>
+            </div>
+            <h4 class="nrc-title">{{a.title}}</h4>
+            <p class="nrc-source">{{a.source}}</p>
+          </div>
+        </a>
+      }
+      <!-- Empty state -->
+      @if (articles.length === 0) {
+        <div class="nr-empty">
+          <div class="ne-icon">📰</div>
+          <div class="ne-title">No news yet</div>
+          <div class="ne-sub">News is being fetched. Check back in a moment.</div>
         </div>
-        <h4 class="nrc-title">{{a.title}}</h4>
-        <p class="nrc-source">{{a.source}}</p>
-      </div>
-    </a>
-
-    <!-- Empty state -->
-    <div class="nr-empty" *ngIf="articles.length === 0">
-      <div class="ne-icon">📰</div>
-      <div class="ne-title">No news yet</div>
-      <div class="ne-sub">News is being fetched. Check back in a moment.</div>
+      }
     </div>
-
-  </div>
+  }
 </div>

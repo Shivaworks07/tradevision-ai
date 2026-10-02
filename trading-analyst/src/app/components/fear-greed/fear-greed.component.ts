@@ -1,13 +1,12 @@
 import { Component, OnInit, inject } from '@angular/core';
-import { CommonModule } from '@angular/common';
+
 import { FearGreedService, FearGreedData } from '../../services/fear-greed.service';
 
 @Component({
-  selector: 'app-fear-greed',
-  standalone: true,
-  imports: [CommonModule],
-  templateUrl: './fear-greed.component.html',
-  styleUrls: ['./fear-greed.component.scss']
+    selector: 'app-fear-greed',
+    imports: [],
+    templateUrl: './fear-greed.component.html',
+    styleUrls: ['./fear-greed.component.scss']
 })
 export class FearGreedComponent implements OnInit {
   fgSvc = inject(FearGreedService);

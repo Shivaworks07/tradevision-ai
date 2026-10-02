@@ -1,80 +1,96 @@
 <!-- Floating trigger button -->
 <button class="fb-trigger" (click)="toggle()" [class.open]="open" title="Send feedback or report a bug">
-  <svg *ngIf="!open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-    <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
-  </svg>
-  <span *ngIf="!open">Feedback</span>
-  <svg *ngIf="open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-  </svg>
+  @if (!open) {
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+      <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+    </svg>
+  }
+  @if (!open) {
+    <span>Feedback</span>
+  }
+  @if (open) {
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+      <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+    </svg>
+  }
 </button>
 
 <!-- Feedback panel -->
-<div class="fb-panel" *ngIf="open">
-
-  <!-- Success -->
-  <div class="fb-success" *ngIf="sent">
-    <div class="fbs-icon">✓</div>
-    <div class="fbs-title">Thank you!</div>
-    <div class="fbs-sub">Your feedback has been received.</div>
-  </div>
-
-  <div *ngIf="!sent">
-    <div class="fb-header">
-      <span class="fbh-title">Send Feedback</span>
-      <span class="fbh-sub">Bug report, suggestion or idea</span>
-    </div>
-
-    <!-- Type -->
-    <div class="fb-field">
-      <label>Type</label>
-      <div class="type-chips">
-        <button *ngFor="let t of types"
+@if (open) {
+  <div class="fb-panel">
+    <!-- Success -->
+    @if (sent) {
+      <div class="fb-success">
+        <div class="fbs-icon">✓</div>
+        <div class="fbs-title">Thank you!</div>
+        <div class="fbs-sub">Your feedback has been received.</div>
+      </div>
+    }
+    @if (!sent) {
+      <div>
+        <div class="fb-header">
+          <span class="fbh-title">Send Feedback</span>
+          <span class="fbh-sub">Bug report, suggestion or idea</span>
+        </div>
+        <!-- Type -->
+        <div class="fb-field">
+          <label>Type</label>
+          <div class="type-chips">
+            @for (t of types; track t) {
+              <button
                 [class.active]="form.type === t.value"
-                (click)="form.type = t.value">{{t.label}}</button>
+              (click)="form.type = t.value">{{t.label}}</button>
+            }
+          </div>
+        </div>
+        <!-- Title -->
+        <div class="fb-field">
+          <label>Title <span class="req">*</span></label>
+          <input [(ngModel)]="form.title" placeholder="Short description of the issue or idea" maxlength="200">
+        </div>
+        <!-- Description -->
+        <div class="fb-field">
+          <label>Details <span class="req">*</span></label>
+          <textarea [(ngModel)]="form.description"
+            placeholder="What happened? What did you expect? Steps to reproduce…"
+          rows="4" maxlength="2000"></textarea>
+        </div>
+        <!-- Screenshot upload -->
+        <div class="fb-field">
+          <label>Screenshot <span class="opt">(optional)</span></label>
+          @if (!screenshot) {
+            <div class="screenshot-area">
+              <label class="ss-upload">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
+                  <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/>
+                  <polyline points="21 15 16 10 5 21"/>
+                </svg>
+                <span>Click to attach screenshot</span>
+                <input type="file" accept="image/*" (change)="onFileChange($event)" style="display:none">
+              </label>
+            </div>
+          }
+          @if (screenshot) {
+            <div class="screenshot-preview">
+              <span>✓ Screenshot attached</span>
+              <button (click)="removeScreenshot()">Remove</button>
+            </div>
+          }
+        </div>
+        <!-- Error -->
+        @if (error) {
+          <div class="fb-error">⚠ {{error}}</div>
+        }
+        <!-- Submit -->
+        <button class="fb-submit" (click)="submit()" [disabled]="sending">
+          @if (!sending) {
+            <span>Send Feedback →</span>
+          }
+          @if (sending) {
+            <span class="sending">Sending…</span>
+          }
+        </button>
       </div>
-    </div>
-
-    <!-- Title -->
-    <div class="fb-field">
-      <label>Title <span class="req">*</span></label>
-      <input [(ngModel)]="form.title" placeholder="Short description of the issue or idea" maxlength="200">
-    </div>
-
-    <!-- Description -->
-    <div class="fb-field">
-      <label>Details <span class="req">*</span></label>
-      <textarea [(ngModel)]="form.description"
-                placeholder="What happened? What did you expect? Steps to reproduce…"
-                rows="4" maxlength="2000"></textarea>
-    </div>
-
-    <!-- Screenshot upload -->
-    <div class="fb-field">
-      <label>Screenshot <span class="opt">(optional)</span></label>
-      <div class="screenshot-area" *ngIf="!screenshot">
-        <label class="ss-upload">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
-            <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/>
-            <polyline points="21 15 16 10 5 21"/>
-          </svg>
-          <span>Click to attach screenshot</span>
-          <input type="file" accept="image/*" (change)="onFileChange($event)" style="display:none">
-        </label>
-      </div>
-      <div class="screenshot-preview" *ngIf="screenshot">
-        <span>✓ Screenshot attached</span>
-        <button (click)="removeScreenshot()">Remove</button>
-      </div>
-    </div>
-
-    <!-- Error -->
-    <div class="fb-error" *ngIf="error">⚠ {{error}}</div>
-
-    <!-- Submit -->
-    <button class="fb-submit" (click)="submit()" [disabled]="sending">
-      <span *ngIf="!sending">Send Feedback →</span>
-      <span *ngIf="sending" class="sending">Sending…</span>
-    </button>
+    }
   </div>
-</div>
+}

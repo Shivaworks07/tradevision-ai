@@ -1,29 +1,32 @@
 import { Component, Input } from '@angular/core';
-import { CommonModule } from '@angular/common';
+
 
 @Component({
-  selector: 'app-analytics-table',
-  standalone: true,
-  imports: [CommonModule],
-  template: `
+    selector: 'app-analytics-table',
+    imports: [],
+    template: `
     <div class="at-wrap">
       <div class="at-header">
         <span>Name</span><span>Trades</span><span>Win %</span><span>Profit Factor</span><span>Avg R</span><span>Bar</span>
       </div>
-      <div class="at-row" *ngFor="let r of rows">
-        <span class="at-name">{{fmt(r.label)}}</span>
-        <span class="at-num">{{r.trades}}</span>
-        <span [style.color]="wrColor(r.winRate)">{{r.winRate}}%</span>
-        <span class="at-pf" [style.color]="pfColor(r.profitFactor)">{{r.profitFactor}}</span>
-        <span [style.color]="r.avgR>=0?'#00FF88':'#FF3B5C'">{{r.avgR>=0?'+':''}}{{r.avgR}}R</span>
-        <div class="at-bar-wrap">
-          <div class="at-bar" [style.width.%]="pfBar(r.profitFactor)" [style.background]="pfColor(r.profitFactor)"></div>
+      @for (r of rows; track r) {
+        <div class="at-row">
+          <span class="at-name">{{fmt(r.label)}}</span>
+          <span class="at-num">{{r.trades}}</span>
+          <span [style.color]="wrColor(r.winRate)">{{r.winRate}}%</span>
+          <span class="at-pf" [style.color]="pfColor(r.profitFactor)">{{r.profitFactor}}</span>
+          <span [style.color]="r.avgR>=0?'#00FF88':'#FF3B5C'">{{r.avgR>=0?'+':''}}{{r.avgR}}R</span>
+          <div class="at-bar-wrap">
+            <div class="at-bar" [style.width.%]="pfBar(r.profitFactor)" [style.background]="pfColor(r.profitFactor)"></div>
+          </div>
         </div>
-      </div>
-      <div class="at-empty" *ngIf="!rows?.length">No data yet for this breakdown.</div>
+      }
+      @if (!rows?.length) {
+        <div class="at-empty">No data yet for this breakdown.</div>
+      }
     </div>
-  `,
-  styles: [`
+    `,
+    styles: [`
     .at-wrap { border:1px solid #1E2D4A; border-radius:10px; overflow:hidden; }
     .at-header { display:grid; grid-template-columns:1.5fr 70px 70px 110px 70px 120px; gap:8px; padding:8px 14px; background:#080C18; font-size:9px; color:#4A5568; text-transform:uppercase; letter-spacing:0.5px; }
     .at-row { display:grid; grid-template-columns:1.5fr 70px 70px 110px 70px 120px; gap:8px; padding:8px 14px; font-size:11px; border-bottom:1px solid #0D1424; align-items:center; transition:background 0.1s;

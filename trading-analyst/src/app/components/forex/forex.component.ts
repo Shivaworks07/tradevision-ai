@@ -11,11 +11,10 @@ import { TradeHistoryService } from '../../services/trade-history.service';
 import { AuthService } from '../../services/auth.service';
 
 @Component({
-  selector: 'app-forex',
-  standalone: true,
-  imports: [CommonModule, FormsModule, AnalysisModalComponent, CallHistoryComponent],
-  templateUrl: './forex.component.html',
-  styleUrls: ['./forex.component.scss']
+    selector: 'app-forex',
+    imports: [CommonModule, FormsModule, AnalysisModalComponent, CallHistoryComponent],
+    templateUrl: './forex.component.html',
+    styleUrls: ['./forex.component.scss']
 })
 export class ForexComponent implements OnInit, OnDestroy {
   private liveData     = inject(LiveDataService);

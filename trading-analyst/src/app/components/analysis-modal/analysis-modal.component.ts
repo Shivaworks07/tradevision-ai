@@ -6,11 +6,10 @@ import { TradeHistoryService } from '../../services/trade-history.service';
 import { AuthService } from '../../services/auth.service';
 
 @Component({
-  selector: 'app-analysis-modal',
-  standalone: true,
-  imports: [CommonModule],
-  templateUrl: './analysis-modal.component.html',
-  styleUrls: ['./analysis-modal.component.scss']
+    selector: 'app-analysis-modal',
+    imports: [CommonModule],
+    templateUrl: './analysis-modal.component.html',
+    styleUrls: ['./analysis-modal.component.scss']
 })
 export class AnalysisModalComponent {
   @Input() result: TradeCall | null = null;

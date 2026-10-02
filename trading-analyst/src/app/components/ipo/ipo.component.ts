@@ -17,11 +17,10 @@ interface IpoAnalysis {
 }
 
 @Component({
-  selector: 'app-ipo',
-  standalone: true,
-  imports: [CommonModule, FormsModule, IpoCountPipe, SkeletonCardComponent, EmptyStateComponent],
-  templateUrl: './ipo.component.html',
-  styleUrls: ['./ipo.component.scss']
+    selector: 'app-ipo',
+    imports: [CommonModule, FormsModule, IpoCountPipe, SkeletonCardComponent, EmptyStateComponent],
+    templateUrl: './ipo.component.html',
+    styleUrls: ['./ipo.component.scss']
 })
 export class IpoComponent implements OnInit, OnDestroy {
   private liveData = inject(LiveDataService);

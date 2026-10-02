@@ -192,6 +192,15 @@ public class ExposureReservationService {
      * loud-not-silent-activation-failure safety nets. Never silently swallow a genuine, different
      * MongoDB error into a fallback that wouldn't actually address it.
      */
+    /**
+     * CI-review fix ("Multi-plan combined exposure reservation" -- external review, fifth pass,
+     * failure 2, full context in reserveTransactionally's own updated javadoc): same bounded
+     * retry budget as PositionSlotReservationService's own identical constant, for the same
+     * reasoning -- a genuine WriteConflict under real concurrent transactions against the same
+     * document is expected and retryable, not an infrastructure failure.
+     */
+    private static final int MAX_TRANSACTION_RETRIES = 10;
+
     private ExposureReserveResult reserveTransactionally(String credentialId, String symbol, BigDecimal orderQuoteValue,
                                           BigDecimal maxTotal, BigDecimal maxSymbol,
                                           java.util.Map<String, java.util.Set<String>> correlationGroups,
@@ -227,124 +236,152 @@ public class ExposureReservationService {
                 correlationGroups, correlationGroupCaps, executionId);
         }
         try {
-            session.startTransaction();
-            var sessionTemplate = mongoTemplate.withSession(session);
-            // Review finding (self-diagnosed, live production bug, full context in
-            // ensureDocumentExists's own updated javadoc): all three setup calls now run INSIDE
-            // the transaction, on the session-bound template -- genuinely part of the same
-            // transactional snapshot as the counter claims that follow, closing the
-            // fresh-credential visibility gap that could wrongly reject a first-ever reservation
-            // with zero real competition.
-            ensureDocumentExists(credentialId, sessionTemplate);
-            ensureSymbolFieldExists(credentialId, symbol, sessionTemplate);
-            for (String groupName : groupsToReserve) ensureGroupFieldExists(credentialId, groupName, sessionTemplate);
+            // CI-review fix ("Multi-plan combined exposure reservation" -- external review, fifth
+            // pass, failure 2, confirmed real by direct inspection: threeConcurrentPlansSameSymbol_
+            // combinedExposureNeverExceedsAccountCap expected 2 successes out of 3 concurrent
+            // callers, but got 0): this method's own transaction touches the SAME per-credential
+            // ExposureReservation document even more times than PositionSlotReservationService's
+            // equivalent (ensureDocumentExists, ensureSymbolFieldExists, optional group-field
+            // setup, insert, then up to one findAndModify per total/symbol/group cap) -- more
+            // writes per transaction against one shared document means more exposure to a
+            // WriteConflict (MongoDB error code 112, a "TransientTransactionError") under real
+            // concurrent load, and with only 3 racing callers in that test, all 3 collided before
+            // any of them reached a clean commit. Before this fix there was no retry logic for
+            // that specific, expected, retryable condition anywhere in this method -- it fell
+            // straight through to `throw e` below and escaped reserve() as an uncaught exception,
+            // which the test's own `executor.submit(...)` (never checking the returned Future)
+            // silently swallowed, so `successCount` never got incremented for any of the 3.
+            // Retrying the whole transaction body on the same session (MongoDB's own documented
+            // retry pattern -- a ClientSession stays valid across a startTransaction()/
+            // abortTransaction() cycle) lets every caller that can legally fit under the cap
+            // actually get the chance to, instead of losing its only attempt to contention.
+            for (int attempt = 1; ; attempt++) {
+                try {
+                    session.startTransaction();
+                    var sessionTemplate = mongoTemplate.withSession(session);
+                    // Review finding (self-diagnosed, live production bug, full context in
+                    // ensureDocumentExists's own updated javadoc): all three setup calls now run INSIDE
+                    // the transaction, on the session-bound template -- genuinely part of the same
+                    // transactional snapshot as the counter claims that follow, closing the
+                    // fresh-credential visibility gap that could wrongly reject a first-ever reservation
+                    // with zero real competition.
+                    ensureDocumentExists(credentialId, sessionTemplate);
+                    ensureSymbolFieldExists(credentialId, symbol, sessionTemplate);
+                    for (String groupName : groupsToReserve) ensureGroupFieldExists(credentialId, groupName, sessionTemplate);
 
-            var record = new ExposureReservationRecord();
-            record.setCredentialId(credentialId);
-            record.setSymbol(symbol);
-            record.setStatus("PENDING");
-            record.setExecutionId(executionId);
-            if (totalCapConfigured) record.setTotalAmountReserved(orderQuoteValue);
-            if (symbolCapConfigured) record.setSymbolAmountReserved(orderQuoteValue);
-            if (!groupsToReserve.isEmpty()) {
-                var groupAmounts = new java.util.HashMap<String, BigDecimal>();
-                for (String g : groupsToReserve) groupAmounts.put(g, orderQuoteValue);
-                record.setGroupAmountsReserved(groupAmounts);
-            }
-            record = sessionTemplate.insert(record);
+                    var record = new ExposureReservationRecord();
+                    record.setCredentialId(credentialId);
+                    record.setSymbol(symbol);
+                    record.setStatus("PENDING");
+                    record.setExecutionId(executionId);
+                    if (totalCapConfigured) record.setTotalAmountReserved(orderQuoteValue);
+                    if (symbolCapConfigured) record.setSymbolAmountReserved(orderQuoteValue);
+                    if (!groupsToReserve.isEmpty()) {
+                        var groupAmounts = new java.util.HashMap<String, BigDecimal>();
+                        for (String g : groupsToReserve) groupAmounts.put(g, orderQuoteValue);
+                        record.setGroupAmountsReserved(groupAmounts);
+                    }
+                    record = sessionTemplate.insert(record);
 
-            if (totalCapConfigured) {
-                Query totalQuery = new Query(where("credentialId").is(credentialId)
-                    .and("reservedTotalExposureQuote").lte(maxTotal.subtract(orderQuoteValue)));
-                Update totalInc = new Update().inc("reservedTotalExposureQuote", toDecimal128(orderQuoteValue)).set("lastReservedAt", Instant.now());
-                var totalResult = sessionTemplate.findAndModify(
-                    totalQuery, totalInc, FindAndModifyOptions.options().returnNew(true), ExposureReservation.class);
-                if (totalResult == null) {
-                    session.abortTransaction();
-                    return ExposureReserveResult.reject("Would exceed total exposure cap of " + maxTotal);
+                    if (totalCapConfigured) {
+                        Query totalQuery = new Query(where("credentialId").is(credentialId)
+                            .and("reservedTotalExposureQuote").lte(maxTotal.subtract(orderQuoteValue)));
+                        Update totalInc = new Update().inc("reservedTotalExposureQuote", toDecimal128(orderQuoteValue)).set("lastReservedAt", Instant.now());
+                        var totalResult = sessionTemplate.findAndModify(
+                            totalQuery, totalInc, FindAndModifyOptions.options().returnNew(true), ExposureReservation.class);
+                        if (totalResult == null) {
+                            session.abortTransaction();
+                            return ExposureReserveResult.reject("Would exceed total exposure cap of " + maxTotal);
+                        }
+                    }
+
+                    if (symbolCapConfigured) {
+                        String symbolField = "reservedSymbolExposure." + symbol;
+                        Query symbolQuery = new Query(where("credentialId").is(credentialId)
+                            .and(symbolField).lte(maxSymbol.subtract(orderQuoteValue)));
+                        Update symbolInc = new Update().inc(symbolField, toDecimal128(orderQuoteValue)).set("lastReservedAt", Instant.now());
+                        var symbolResult = sessionTemplate.findAndModify(
+                            symbolQuery, symbolInc, FindAndModifyOptions.options().returnNew(true), ExposureReservation.class);
+                        if (symbolResult == null) {
+                            session.abortTransaction(); // undoes the total-cap increment above too -- the whole transaction, atomically
+                            return ExposureReserveResult.reject("Would exceed per-symbol exposure cap of " + maxSymbol + " for " + symbol);
+                        }
+                    }
+
+                    for (String groupName : groupsToReserve) {
+                        BigDecimal groupCap = correlationGroupCaps.get(groupName);
+                        String groupField = "reservedGroupExposure." + groupName;
+                        Query groupQuery = new Query(where("credentialId").is(credentialId)
+                            .and(groupField).lte(groupCap.subtract(orderQuoteValue)));
+                        Update groupInc = new Update().inc(groupField, toDecimal128(orderQuoteValue)).set("lastReservedAt", Instant.now());
+                        var groupResult = sessionTemplate.findAndModify(
+                            groupQuery, groupInc, FindAndModifyOptions.options().returnNew(true), ExposureReservation.class);
+                        if (groupResult == null) {
+                            session.abortTransaction(); // undoes total, symbol, AND every group claim already made in this same transaction
+                            return ExposureReserveResult.reject("Would exceed correlation-group exposure cap of " + groupCap + " for group " + groupName);
+                        }
+                    }
+
+                    // No separate "activate" step needed at all -- unlike the sequential fallback, which
+                    // must handle a real window between "counters claimed" and "record marked ACTIVE"
+                    // because those are genuinely separate operations there, a transaction makes this
+                    // moot: the record is inserted as PENDING and every counter claim happens together,
+                    // atomically, so flipping it to ACTIVE in the SAME transaction, right here, commits
+                    // or rolls back as one indivisible unit with everything above it. There is no crash
+                    // window between them at all on a deployment where this transactional path runs.
+                    sessionTemplate.updateFirst(
+                        new Query(where("id").is(record.getId())),
+                        new Update().set("status", "ACTIVE"),
+                        ExposureReservationRecord.class);
+
+                    session.commitTransaction();
+                    return ExposureReserveResult.ok(record.getId());
+                } catch (RuntimeException e) {
+                    try {
+                        if (session.hasActiveTransaction()) session.abortTransaction();
+                    } catch (Exception ignore) {
+                        // Best-effort cleanup only -- the transaction attempt already failed.
+                    }
+                    if (isTransientTransactionError(e) && attempt < MAX_TRANSACTION_RETRIES) {
+                        log.debug("Transient MongoDB transaction error on reserve() attempt {} for credential {} symbol {} ({}) -- retrying.",
+                            attempt, credentialId, symbol, e.getMessage());
+                        continue;
+                    }
+                    // Review finding (self-diagnosed, live production bug: this exact catch clause was
+                    // catching ONLY com.mongodb.MongoException directly -- but confirmed real by direct
+                    // inspection of a real production log, that's not actually what escapes here.
+                    // sessionTemplate.insert/findAndModify/updateFirst all go through Spring Data's own
+                    // MongoTemplate, which applies Spring's own exception translation -- wrapping the raw
+                    // driver exception (com.mongodb.MongoCommandException, error code 20 on a standalone
+                    // instance) into org.springframework.dao.DataAccessException (specifically
+                    // UncategorizedMongoDbException for an error Spring doesn't have a specific
+                    // translation for), a completely different type hierarchy that a catch on
+                    // com.mongodb.MongoException never matches at all. That meant this fallback branch
+                    // never actually ran on a standalone Mongo instance -- the real exception escaped
+                    // this method entirely, propagated up through several unrelated call frames, and was
+                    // ultimately caught and badly mislabeled by a much higher, generic catch block in
+                    // PositionMonitorService.reconcileEntryOrders as "Could not fetch order status," which
+                    // repeated on every single reconciliation pass since the position this reservation was
+                    // for could then never actually get created. The actual fix: catch RuntimeException
+                    // broadly (this session/transaction code's own thrown types are all unchecked, so this
+                    // narrows to real failures here, not a silent catch-all), and walk the FULL cause
+                    // chain -- not just the top-level exception -- for the actual standalone-instance
+                    // signature, since that raw signature can be buried one or more levels down inside
+                    // Spring's own wrapper.
+                    if (isStandaloneMongoTransactionError(e)) {
+                        if (live) return rejectAndHaltForLive(credentialId, symbol, "run the reservation inside a real MongoDB transaction "
+                            + "(standalone deployment, not a replica set/mongos)", e.getMessage());
+                        log.warn("MongoDB transactions are not supported by this deployment (standalone, not a replica set/mongos) -- falling "
+                            + "back to the sequential, non-transactional reserve approach for credential {}. The full atomic-lifecycle guarantee "
+                            + "this transactional path provides is not in effect on this deployment -- configure a MongoDB replica set to close "
+                            + "it. The sequential fallback's own independent safety nets (rollback-on-failure, loud-not-silent activation "
+                            + "failure) still apply.", credentialId);
+                        return reserveSequentially(credentialId, symbol, orderQuoteValue, maxTotal, maxSymbol,
+                            correlationGroups, correlationGroupCaps, executionId);
+                    }
+                    throw e;
                 }
             }
-
-            if (symbolCapConfigured) {
-                String symbolField = "reservedSymbolExposure." + symbol;
-                Query symbolQuery = new Query(where("credentialId").is(credentialId)
-                    .and(symbolField).lte(maxSymbol.subtract(orderQuoteValue)));
-                Update symbolInc = new Update().inc(symbolField, toDecimal128(orderQuoteValue)).set("lastReservedAt", Instant.now());
-                var symbolResult = sessionTemplate.findAndModify(
-                    symbolQuery, symbolInc, FindAndModifyOptions.options().returnNew(true), ExposureReservation.class);
-                if (symbolResult == null) {
-                    session.abortTransaction(); // undoes the total-cap increment above too -- the whole transaction, atomically
-                    return ExposureReserveResult.reject("Would exceed per-symbol exposure cap of " + maxSymbol + " for " + symbol);
-                }
-            }
-
-            for (String groupName : groupsToReserve) {
-                BigDecimal groupCap = correlationGroupCaps.get(groupName);
-                String groupField = "reservedGroupExposure." + groupName;
-                Query groupQuery = new Query(where("credentialId").is(credentialId)
-                    .and(groupField).lte(groupCap.subtract(orderQuoteValue)));
-                Update groupInc = new Update().inc(groupField, toDecimal128(orderQuoteValue)).set("lastReservedAt", Instant.now());
-                var groupResult = sessionTemplate.findAndModify(
-                    groupQuery, groupInc, FindAndModifyOptions.options().returnNew(true), ExposureReservation.class);
-                if (groupResult == null) {
-                    session.abortTransaction(); // undoes total, symbol, AND every group claim already made in this same transaction
-                    return ExposureReserveResult.reject("Would exceed correlation-group exposure cap of " + groupCap + " for group " + groupName);
-                }
-            }
-
-            // No separate "activate" step needed at all -- unlike the sequential fallback, which
-            // must handle a real window between "counters claimed" and "record marked ACTIVE"
-            // because those are genuinely separate operations there, a transaction makes this
-            // moot: the record is inserted as PENDING and every counter claim happens together,
-            // atomically, so flipping it to ACTIVE in the SAME transaction, right here, commits
-            // or rolls back as one indivisible unit with everything above it. There is no crash
-            // window between them at all on a deployment where this transactional path runs.
-            sessionTemplate.updateFirst(
-                new Query(where("id").is(record.getId())),
-                new Update().set("status", "ACTIVE"),
-                ExposureReservationRecord.class);
-
-            session.commitTransaction();
-            return ExposureReserveResult.ok(record.getId());
-        } catch (RuntimeException e) {
-            try {
-                if (session.hasActiveTransaction()) session.abortTransaction();
-            } catch (Exception ignore) {
-                // Best-effort cleanup only -- the transaction attempt already failed.
-            }
-            // Review finding (self-diagnosed, live production bug: this exact catch clause was
-            // catching ONLY com.mongodb.MongoException directly -- but confirmed real by direct
-            // inspection of a real production log, that's not actually what escapes here.
-            // sessionTemplate.insert/findAndModify/updateFirst all go through Spring Data's own
-            // MongoTemplate, which applies Spring's own exception translation -- wrapping the raw
-            // driver exception (com.mongodb.MongoCommandException, error code 20 on a standalone
-            // instance) into org.springframework.dao.DataAccessException (specifically
-            // UncategorizedMongoDbException for an error Spring doesn't have a specific
-            // translation for), a completely different type hierarchy that a catch on
-            // com.mongodb.MongoException never matches at all. That meant this fallback branch
-            // never actually ran on a standalone Mongo instance -- the real exception escaped
-            // this method entirely, propagated up through several unrelated call frames, and was
-            // ultimately caught and badly mislabeled by a much higher, generic catch block in
-            // PositionMonitorService.reconcileEntryOrders as "Could not fetch order status," which
-            // repeated on every single reconciliation pass since the position this reservation was
-            // for could then never actually get created. The actual fix: catch RuntimeException
-            // broadly (this session/transaction code's own thrown types are all unchecked, so this
-            // narrows to real failures here, not a silent catch-all), and walk the FULL cause
-            // chain -- not just the top-level exception -- for the actual standalone-instance
-            // signature, since that raw signature can be buried one or more levels down inside
-            // Spring's own wrapper.
-            if (isStandaloneMongoTransactionError(e)) {
-                if (live) return rejectAndHaltForLive(credentialId, symbol, "run the reservation inside a real MongoDB transaction "
-                    + "(standalone deployment, not a replica set/mongos)", e.getMessage());
-                log.warn("MongoDB transactions are not supported by this deployment (standalone, not a replica set/mongos) -- falling "
-                    + "back to the sequential, non-transactional reserve approach for credential {}. The full atomic-lifecycle guarantee "
-                    + "this transactional path provides is not in effect on this deployment -- configure a MongoDB replica set to close "
-                    + "it. The sequential fallback's own independent safety nets (rollback-on-failure, loud-not-silent activation "
-                    + "failure) still apply.", credentialId);
-                return reserveSequentially(credentialId, symbol, orderQuoteValue, maxTotal, maxSymbol,
-                    correlationGroups, correlationGroupCaps, executionId);
-            }
-            throw e;
         } finally {
             session.close();
         }
@@ -901,6 +938,29 @@ public class ExposureReservationService {
         while (current != null && depth < 10) { // bounded -- a real cause chain is never this deep; just a defensive stop against a malformed cyclic chain
             if (current instanceof com.mongodb.MongoException mongoEx && mongoEx.getCode() == 20) return true;
             if (current.getMessage() != null && current.getMessage().contains("Transaction numbers are only allowed")) return true;
+            current = current.getCause();
+            depth++;
+        }
+        return false;
+    }
+
+    /**
+     * CI-review fix ("Multi-plan combined exposure reservation" -- external review, fifth pass,
+     * failure 2, full context in reserveTransactionally's own updated javadoc): the same helper
+     * as PositionSlotReservationService's own identical fix -- recognizes a genuine, expected,
+     * RETRYABLE write-conflict under real concurrent transactions against the same document,
+     * distinct from isStandaloneMongoTransactionError above (which means transactions aren't
+     * supported AT ALL, never retryable). Checks the driver's own "TransientTransactionError"
+     * label first, then falls back to the raw WriteConflict code (112) directly.
+     */
+    private boolean isTransientTransactionError(Throwable e) {
+        Throwable current = e;
+        int depth = 0;
+        while (current != null && depth < 10) {
+            if (current instanceof com.mongodb.MongoException mongoEx) {
+                if (mongoEx.hasErrorLabel("TransientTransactionError")) return true;
+                if (mongoEx.getCode() == 112) return true; // WriteConflict
+            }
             current = current.getCause();
             depth++;
         }

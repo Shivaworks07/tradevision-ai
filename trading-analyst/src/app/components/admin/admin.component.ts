@@ -54,11 +54,10 @@ interface AdminDashboard {
 }
 
 @Component({
-  selector: 'app-admin',
-  standalone: true,
-  imports: [CommonModule, RouterModule],
-  templateUrl: './admin.component.html',
-  styleUrls: ['./admin.component.scss']
+    selector: 'app-admin',
+    imports: [CommonModule, RouterModule],
+    templateUrl: './admin.component.html',
+    styleUrls: ['./admin.component.scss']
 })
 export class AdminComponent implements OnInit, OnDestroy {
   private http   = inject(HttpClient);

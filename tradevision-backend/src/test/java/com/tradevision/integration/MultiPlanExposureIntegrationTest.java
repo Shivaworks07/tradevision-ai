@@ -42,11 +42,33 @@ import static org.assertj.core.api.Assertions.assertThat;
  * MongoDB's own atomic findAndModify genuinely serializes three concurrent reservations against
  * the same document correctly.
  *
- * HONEST LIMITATION, same as every other integration test in this package: `docker ps` fails
- * outright in this sandbox -- no Docker daemon is available here, so I have not executed this
- * test and cannot confirm it passes. Run
- * `mvn test -Dtest=MultiPlanExposureIntegrationTest` on a machine with Docker available to
- * actually confirm this before trusting it.
+ * CI-review fix ("threeConcurrentPlansSameSymbol_combinedExposureNeverExceedsAccountCap:
+ * expected 2, actual 0" -- external review, GitHub Actions integration-test failures, failure
+ * 2): the identical root cause and identical fix as PositionSlotReservationIntegrationTest's own
+ * updated javadoc describes for failure 1 -- ExposureReservationService.reserveTransactionally
+ * had the same missing WriteConflict/TransientTransactionError retry case, so of 3 threads
+ * racing for the exposure cap, only the single first-attempt winner ever committed and every
+ * other thread's transaction aborted on its first WriteConflict with no retry -- landing at 0
+ * successes instead of 2 (the actual account-level cap allows exactly 2 of the 3 attempts
+ * through). Per this review's own explicit instruction ("Do not weaken the account-level
+ * exposure limit"), the fix is in ExposureReservationService itself, not this test: the same
+ * bounded (MAX_TRANSACTION_RETRIES=10), same-ClientSession retry-on-WriteConflict pattern,
+ * scoped only to the genuinely-retryable MongoDB error code 112 / TransientTransactionError
+ * condition. This test's own existing assertions (exactly 2 of 3 succeed; the real persisted
+ * total never exceeds the cap; the exact-remainder boundary case) are unchanged and already
+ * constitute the regression test for this fix -- the exact 3-concurrent-attempts-same-symbol
+ * scenario the review itself asked be tested is what exposed the bug, so no separate regression
+ * test is added here.
+ *
+ * HONEST LIMITATION, same as every other integration test in this package: `docker ps` succeeds
+ * in this sandbox (the Docker daemon itself runs), but every container registry and direct
+ * MongoDB binary download are blocked by this sandbox's own egress policy (confirmed via
+ * repeated 403 Forbidden responses, not a transient failure) -- so no real MongoDB instance can
+ * actually be started here, and I have not executed this test and cannot confirm it passes. The
+ * fix above is supported by direct source-level tracing of MongoDB's own documented
+ * WriteConflict/TransientTransactionError retry contract and successful compilation only. Run
+ * `mvn test -Dtest=MultiPlanExposureIntegrationTest` on a machine with real registry/Docker
+ * access to actually confirm this before trusting it.
  */
 @Testcontainers(disabledWithoutDocker = true)
 // P1-16 fix: spring.profiles.active now defaults to "prod" (fail-closed), which has no default

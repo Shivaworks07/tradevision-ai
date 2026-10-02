@@ -14,11 +14,10 @@ import { environment } from '../../../environments/environment';
  * deliberately left out rather than added alongside them.
  */
 @Component({
-  selector: 'app-positions',
-  standalone: true,
-  imports: [CommonModule, FormsModule],
-  templateUrl: './positions.component.html',
-  styleUrl: './positions.component.scss'
+    selector: 'app-positions',
+    imports: [CommonModule, FormsModule],
+    templateUrl: './positions.component.html',
+    styleUrl: './positions.component.scss'
 })
 export class PositionsComponent implements OnInit, OnDestroy {
   credentials: BrokerCredentialResponse[] = [];

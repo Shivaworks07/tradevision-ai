@@ -1,13 +1,12 @@
 import { Component, Input, OnInit, OnDestroy, inject } from '@angular/core';
-import { CommonModule } from '@angular/common';
+
 import { FeaturedTradesService, FeaturedTrade } from '../../services/featured-trades.service';
 
 @Component({
-  selector: 'app-featured-trades',
-  standalone: true,
-  imports: [CommonModule],
-  templateUrl: './featured-trades.component.html',
-  styleUrls: ['./featured-trades.component.scss']
+    selector: 'app-featured-trades',
+    imports: [],
+    templateUrl: './featured-trades.component.html',
+    styleUrls: ['./featured-trades.component.scss']
 })
 export class FeaturedTradesComponent implements OnInit, OnDestroy {
   @Input() market: 'CRYPTO' | 'STOCK' = 'CRYPTO';

@@ -1,12 +1,11 @@
 import { Component, Input } from '@angular/core';
-import { CommonModule } from '@angular/common';
+
 
 @Component({
-  selector: 'tv-icon',
-  standalone: true,
-  imports: [CommonModule],
-  template: `<span class="tv-icon" [style.width.px]="size" [style.height.px]="size" [innerHTML]="svg"></span>`,
-  styles: [`.tv-icon{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;} svg{width:100%;height:100%;}`]
+    selector: 'tv-icon',
+    imports: [],
+    template: `<span class="tv-icon" [style.width.px]="size" [style.height.px]="size" [innerHTML]="svg"></span>`,
+    styles: [`.tv-icon{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;} svg{width:100%;height:100%;}`]
 })
 export class IconComponent {
   @Input() name = '';

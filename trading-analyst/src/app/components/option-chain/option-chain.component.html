@@ -3,119 +3,144 @@
   <div class="oc-header" (click)="expanded=!expanded">
     <div class="och-left">
       <span class="och-title">Option Chain Analysis</span>
-      <span class="och-sub" *ngIf="data">PCR: <strong [style.color]="pcrColor(data.pcr)">{{data.pcr}}</strong> · {{data.pcrSignal}}</span>
+      @if (data) {
+        <span class="och-sub">PCR: <strong [style.color]="pcrColor(data.pcr)">{{data.pcr}}</strong> · {{data.pcrSignal}}</span>
+      }
     </div>
     <div class="och-right">
-      <div class="pcr-badge" *ngIf="data" [style.color]="pcrColor(data.pcr)" [style.border-color]="pcrColor(data.pcr)+'44'">
-        {{data.bias}}
-      </div>
+      @if (data) {
+        <div class="pcr-badge" [style.color]="pcrColor(data.pcr)" [style.border-color]="pcrColor(data.pcr)+'44'">
+          {{data.bias}}
+        </div>
+      }
       <span class="expand-btn">{{expanded?'▲':'▼'}}</span>
     </div>
   </div>
 
-  <div class="oc-body" *ngIf="expanded">
-    <!-- Controls -->
-    <div class="oc-controls">
-      <div class="oc-ctrl">
-        <label>Symbol</label>
-        <select [(ngModel)]="selectedSymbol" (ngModelChange)="onSymbolChange()">
-          <option *ngFor="let s of SYMBOLS" [value]="s">{{s}}</option>
-        </select>
-      </div>
-      <div class="oc-ctrl" *ngIf="data?.expiryDates?.length">
-        <label>Expiry</label>
-        <select [(ngModel)]="selectedExpiry" (ngModelChange)="onExpiryChange()">
-          <option *ngFor="let e of data!.expiryDates.slice(0,5)" [value]="e">{{e}}</option>
-        </select>
-      </div>
-      <button class="oc-refresh" (click)="load()" [disabled]="loading">
-        <span *ngIf="!loading">↻ Refresh</span>
-        <span *ngIf="loading">Loading…</span>
-      </button>
-    </div>
-
-    <div class="oc-error" *ngIf="error">{{error}} — NSE option chain requires VPN or direct network access</div>
-
-    <div *ngIf="data && !error">
-      <!-- Summary row -->
-      <div class="oc-summary">
-        <div class="os-card">
-          <span class="os-l">Spot Price</span>
-          <span class="os-v">{{data.spotPrice | number:'1.2-2'}}</span>
+  @if (expanded) {
+    <div class="oc-body">
+      <!-- Controls -->
+      <div class="oc-controls">
+        <div class="oc-ctrl">
+          <label>Symbol</label>
+          <select [(ngModel)]="selectedSymbol" (ngModelChange)="onSymbolChange()">
+            @for (s of SYMBOLS; track s) {
+              <option [value]="s">{{s}}</option>
+            }
+          </select>
         </div>
-        <div class="os-card">
-          <span class="os-l">PCR</span>
-          <span class="os-v" [style.color]="pcrColor(data.pcr)">{{data.pcr}}</span>
-        </div>
-        <div class="os-card">
-          <span class="os-l">Max Pain</span>
-          <span class="os-v">{{data.maxPain | number:'1.0-0'}} <em>{{data.maxPainDiff>=0?'+':''}}{{data.maxPainDiff}}%</em></span>
-        </div>
-        <div class="os-card">
-          <span class="os-l">Total CE OI</span>
-          <span class="os-v">{{fmt(data.totalCEOI)}}</span>
-        </div>
-        <div class="os-card">
-          <span class="os-l">Total PE OI</span>
-          <span class="os-v">{{fmt(data.totalPEOI)}}</span>
-        </div>
-        <div class="os-card">
-          <span class="os-l">IV</span>
-          <span class="os-v">{{data.ivPercentile}}%</span>
-        </div>
-      </div>
-
-      <!-- PCR Interpretation -->
-      <div class="pcr-box" [style.border-left-color]="pcrColor(data.pcr)">
-        {{data.pcrInterpretation}}
-      </div>
-
-      <!-- Key Levels -->
-      <div class="key-levels" *ngIf="data.strongResistances.length || data.strongSupports.length">
-        <div class="kl-group" *ngIf="data.strongResistances.length">
-          <span class="kl-l resist">CE Resistance</span>
-          <span class="kl-val" *ngFor="let r of data.strongResistances">{{r | number:'1.0-0'}}</span>
-        </div>
-        <div class="kl-group" *ngIf="data.strongSupports.length">
-          <span class="kl-l support">PE Support</span>
-          <span class="kl-val" *ngFor="let s of data.strongSupports">{{s | number:'1.0-0'}}</span>
-        </div>
-      </div>
-
-      <!-- Strike Table -->
-      <div class="strike-table">
-        <div class="st-head">
-          <span>CE OI</span><span>CE Chg</span><span>CE Vol</span><span>CE LTP</span>
-          <span class="strike-col">Strike</span>
-          <span>PE LTP</span><span>PE Vol</span><span>PE Chg</span><span>PE OI</span>
-        </div>
-
-        <div class="st-row" *ngFor="let s of data.strikes"
-             [class.atm]="s.isATM"
-             [class.ce-heavy]="s.ceOiHighlight"
-             [class.pe-heavy]="s.peOiHighlight">
-          <!-- CE side -->
-          <div class="ce-bar-wrap">
-            <div class="oi-bar ce" [style.width.%]="oiBar(s.CE.oi, maxCEOI)"></div>
-            <span>{{fmt(s.CE.oi)}}</span>
+        @if (data?.expiryDates?.length) {
+          <div class="oc-ctrl">
+            <label>Expiry</label>
+            <select [(ngModel)]="selectedExpiry" (ngModelChange)="onExpiryChange()">
+              @for (e of data!.expiryDates.slice(0,5); track e) {
+                <option [value]="e">{{e}}</option>
+              }
+            </select>
           </div>
-          <span [class.up]="s.CE.oiChangeDir==='UP'" [class.dn]="s.CE.oiChangeDir==='DOWN'">{{s.CE.oiChange>=0?'+':''}}{{fmt(s.CE.oiChange)}}</span>
-          <span class="muted">{{fmt(s.CE.volume)}}</span>
-          <span class="ltp">{{s.CE.ltp | number:'1.2-2'}}</span>
-          <!-- Strike -->
-          <span class="strike-col" [class.atm-badge]="s.isATM">{{s.strikePrice | number:'1.0-0'}}</span>
-          <!-- PE side -->
-          <span class="ltp">{{s.PE.ltp | number:'1.2-2'}}</span>
-          <span class="muted">{{fmt(s.PE.volume)}}</span>
-          <span [class.up]="s.PE.oiChangeDir==='UP'" [class.dn]="s.PE.oiChangeDir==='DOWN'">{{s.PE.oiChange>=0?'+':''}}{{fmt(s.PE.oiChange)}}</span>
-          <div class="pe-bar-wrap">
-            <span>{{fmt(s.PE.oi)}}</span>
-            <div class="oi-bar pe" [style.width.%]="oiBar(s.PE.oi, maxPEOI)"></div>
-          </div>
-        </div>
+        }
+        <button class="oc-refresh" (click)="load()" [disabled]="loading">
+          @if (!loading) {
+            <span>↻ Refresh</span>
+          }
+          @if (loading) {
+            <span>Loading…</span>
+          }
+        </button>
       </div>
-
-      <div class="oc-footer">Updated: {{data.lastUpdated}} · {{data.summary}}</div>
+      @if (error) {
+        <div class="oc-error">{{error}} — NSE option chain requires VPN or direct network access</div>
+      }
+      @if (data && !error) {
+        <div>
+          <!-- Summary row -->
+          <div class="oc-summary">
+            <div class="os-card">
+              <span class="os-l">Spot Price</span>
+              <span class="os-v">{{data.spotPrice | number:'1.2-2'}}</span>
+            </div>
+            <div class="os-card">
+              <span class="os-l">PCR</span>
+              <span class="os-v" [style.color]="pcrColor(data.pcr)">{{data.pcr}}</span>
+            </div>
+            <div class="os-card">
+              <span class="os-l">Max Pain</span>
+              <span class="os-v">{{data.maxPain | number:'1.0-0'}} <em>{{data.maxPainDiff>=0?'+':''}}{{data.maxPainDiff}}%</em></span>
+            </div>
+            <div class="os-card">
+              <span class="os-l">Total CE OI</span>
+              <span class="os-v">{{fmt(data.totalCEOI)}}</span>
+            </div>
+            <div class="os-card">
+              <span class="os-l">Total PE OI</span>
+              <span class="os-v">{{fmt(data.totalPEOI)}}</span>
+            </div>
+            <div class="os-card">
+              <span class="os-l">IV</span>
+              <span class="os-v">{{data.ivPercentile}}%</span>
+            </div>
+          </div>
+          <!-- PCR Interpretation -->
+          <div class="pcr-box" [style.border-left-color]="pcrColor(data.pcr)">
+            {{data.pcrInterpretation}}
+          </div>
+          <!-- Key Levels -->
+          @if (data.strongResistances.length || data.strongSupports.length) {
+            <div class="key-levels">
+              @if (data.strongResistances.length) {
+                <div class="kl-group">
+                  <span class="kl-l resist">CE Resistance</span>
+                  @for (r of data.strongResistances; track r) {
+                    <span class="kl-val">{{r | number:'1.0-0'}}</span>
+                  }
+                </div>
+              }
+              @if (data.strongSupports.length) {
+                <div class="kl-group">
+                  <span class="kl-l support">PE Support</span>
+                  @for (s of data.strongSupports; track s) {
+                    <span class="kl-val">{{s | number:'1.0-0'}}</span>
+                  }
+                </div>
+              }
+            </div>
+          }
+          <!-- Strike Table -->
+          <div class="strike-table">
+            <div class="st-head">
+              <span>CE OI</span><span>CE Chg</span><span>CE Vol</span><span>CE LTP</span>
+              <span class="strike-col">Strike</span>
+              <span>PE LTP</span><span>PE Vol</span><span>PE Chg</span><span>PE OI</span>
+            </div>
+            @for (s of data.strikes; track s) {
+              <div class="st-row"
+                [class.atm]="s.isATM"
+                [class.ce-heavy]="s.ceOiHighlight"
+                [class.pe-heavy]="s.peOiHighlight">
+                <!-- CE side -->
+                <div class="ce-bar-wrap">
+                  <div class="oi-bar ce" [style.width.%]="oiBar(s.CE.oi, maxCEOI)"></div>
+                  <span>{{fmt(s.CE.oi)}}</span>
+                </div>
+                <span [class.up]="s.CE.oiChangeDir==='UP'" [class.dn]="s.CE.oiChangeDir==='DOWN'">{{s.CE.oiChange>=0?'+':''}}{{fmt(s.CE.oiChange)}}</span>
+                <span class="muted">{{fmt(s.CE.volume)}}</span>
+                <span class="ltp">{{s.CE.ltp | number:'1.2-2'}}</span>
+                <!-- Strike -->
+                <span class="strike-col" [class.atm-badge]="s.isATM">{{s.strikePrice | number:'1.0-0'}}</span>
+                <!-- PE side -->
+                <span class="ltp">{{s.PE.ltp | number:'1.2-2'}}</span>
+                <span class="muted">{{fmt(s.PE.volume)}}</span>
+                <span [class.up]="s.PE.oiChangeDir==='UP'" [class.dn]="s.PE.oiChangeDir==='DOWN'">{{s.PE.oiChange>=0?'+':''}}{{fmt(s.PE.oiChange)}}</span>
+                <div class="pe-bar-wrap">
+                  <span>{{fmt(s.PE.oi)}}</span>
+                  <div class="oi-bar pe" [style.width.%]="oiBar(s.PE.oi, maxPEOI)"></div>
+                </div>
+              </div>
+            }
+          </div>
+          <div class="oc-footer">Updated: {{data.lastUpdated}} · {{data.summary}}</div>
+        </div>
+      }
     </div>
-  </div>
+  }
 </div>

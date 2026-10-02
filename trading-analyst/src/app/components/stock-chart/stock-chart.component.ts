@@ -1,5 +1,5 @@
 import { Component, Input, OnChanges, SimpleChanges, ViewChild, ElementRef, AfterViewInit, OnDestroy, inject, effect } from '@angular/core';
-import { CommonModule } from '@angular/common';
+
 import { createChart, IChartApi, ISeriesApi, CandlestickSeries, LineSeries, ColorType, Time, IPriceLine } from 'lightweight-charts';
 import { LiveDataService } from '../../services/live-data.service';
 import { TaEngineService } from '../../services/ta-engine.service';
@@ -22,36 +22,51 @@ export interface ChartTradeLevels {
 }
 
 @Component({
-  selector: 'app-stock-chart',
-  standalone: true,
-  imports: [CommonModule],
-  template: `
+    selector: 'app-stock-chart',
+    imports: [],
+    template: `
     <div class="sc-wrap">
       <div class="sc-header">
         <span class="sc-sym">{{symbol}} · {{ isIntraday() ? intervalLabel() + ' Intraday' : rangeLabel() + ' Daily' }} Chart</span>
         <div class="sc-tfs">
           <span class="sc-tf-group-label">Intraday</span>
-          <button *ngFor="let t of intradayTfs" [class.active]="activeTf===t.key" (click)="setTimeframe(t.key)">{{t.label}}</button>
+          @for (t of intradayTfs; track t) {
+            <button [class.active]="activeTf===t.key" (click)="setTimeframe(t.key)">{{t.label}}</button>
+          }
           <span class="sc-tf-divider"></span>
           <span class="sc-tf-group-label">Daily</span>
-          <button *ngFor="let r of dailyRanges" [class.active]="activeTf===r.key" (click)="setTimeframe(r.key)">{{r.label}}</button>
+          @for (r of dailyRanges; track r) {
+            <button [class.active]="activeTf===r.key" (click)="setTimeframe(r.key)">{{r.label}}</button>
+          }
         </div>
         <button class="sc-close" (click)="close()">✕</button>
       </div>
-      <div class="sc-loading" *ngIf="loading"><div class="sc-spin"></div> Loading chart…</div>
-      <div class="sc-error" *ngIf="error">{{error}}</div>
+      @if (loading) {
+        <div class="sc-loading"><div class="sc-spin"></div> Loading chart…</div>
+      }
+      @if (error) {
+        <div class="sc-error">{{error}}</div>
+      }
       <div #chartEl class="sc-canvas" [style.display]="loading||error?'none':'block'"></div>
-      <div class="sc-legend" *ngIf="!loading && !error">
-        <span class="le ema9">EMA9</span>
-        <span class="le ema20">EMA20</span>
-        <span class="le ema50">EMA50</span>
-        <span class="le entry" *ngIf="tradeLevels?.entry">— Entry</span>
-        <span class="le sl" *ngIf="tradeLevels?.stopLoss">— Stop Loss</span>
-        <span class="le tgt" *ngIf="tradeLevels?.target1">— Targets</span>
-      </div>
+      @if (!loading && !error) {
+        <div class="sc-legend">
+          <span class="le ema9">EMA9</span>
+          <span class="le ema20">EMA20</span>
+          <span class="le ema50">EMA50</span>
+          @if (tradeLevels?.entry) {
+            <span class="le entry">— Entry</span>
+          }
+          @if (tradeLevels?.stopLoss) {
+            <span class="le sl">— Stop Loss</span>
+          }
+          @if (tradeLevels?.target1) {
+            <span class="le tgt">— Targets</span>
+          }
+        </div>
+      }
     </div>
-  `,
-  styles: [`
+    `,
+    styles: [`
     .sc-wrap { background:#0A0E1A; border:1px solid #1E2D4A; border-radius:12px; overflow:hidden; margin-top:10px; }
     .sc-header { display:flex; align-items:center; gap:10px; padding:10px 14px; background:#0F1525; border-bottom:1px solid #1E2D4A; flex-wrap:wrap; }
     .sc-sym { font-size:11px; font-weight:700; color:#E8EDF5; flex:1; min-width:160px; }

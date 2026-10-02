@@ -1,73 +1,79 @@
-<div class="fg-widget" *ngIf="!loading && data && data.available">
-  <div class="fg-header">
+@if (!loading && data && data.available) {
+  <div class="fg-widget">
+    <div class="fg-header">
+      <span class="fg-title">Crypto Fear & Greed Index</span>
+      <span class="fg-signal" [style.color]="data.color">{{data.emoji}}</span>
+    </div>
+    <!-- Gauge -->
+    <div class="fg-gauge">
+      <svg viewBox="0 0 180 100" class="gauge-svg">
+        <!-- Background arc -->
+        <path d="M20,90 A70,70 0 0,1 160,90" fill="none" stroke="#1E2D4A" stroke-width="16" stroke-linecap="round"/>
+        <!-- Colored arc -->
+        <path [attr.d]="gaugeArc" fill="none" [attr.stroke]="data.color" stroke-width="16" stroke-linecap="round"/>
+        <!-- Zone labels -->
+        <text x="18" y="108" font-size="8" fill="#4A5568">Fear</text>
+        <text x="148" y="108" font-size="8" fill="#4A5568">Greed</text>
+        <!-- Value -->
+        <text x="90" y="82" text-anchor="middle" font-size="32" font-weight="800" [attr.fill]="data.color">{{data.value}}</text>
+        <text x="90" y="96" text-anchor="middle" font-size="9" fill="#8895B3">{{data.emoji}}</text>
+      </svg>
+    </div>
+    <!-- History -->
+    <div class="fg-history">
+      <div class="fh-row">
+        <span class="fh-l">Yesterday</span>
+        <span class="fh-v" [style.color]="getZoneColor(data.yesterday)">{{data.yesterday}} — {{fgSvc.getEmoji(data.yesterday)}}</span>
+        <span class="fh-delta" [style.color]="data.value>data.yesterday?'#00FF88':'#FF3B5C'">{{data.value>data.yesterday?'+':''}}{{data.value-data.yesterday}}</span>
+      </div>
+      <div class="fh-row">
+        <span class="fh-l">Last Week</span>
+        <span class="fh-v" [style.color]="getZoneColor(data.lastWeek)">{{data.lastWeek}} — {{fgSvc.getEmoji(data.lastWeek)}}</span>
+        <span class="fh-delta" [style.color]="data.value>data.lastWeek?'#00FF88':'#FF3B5C'">{{data.value>data.lastWeek?'+':''}}{{data.value-data.lastWeek}}</span>
+      </div>
+      <div class="fh-row">
+        <span class="fh-l">Last Month</span>
+        <span class="fh-v" [style.color]="getZoneColor(data.lastMonth)">{{data.lastMonth}} — {{fgSvc.getEmoji(data.lastMonth)}}</span>
+        <span class="fh-delta" [style.color]="data.value>data.lastMonth?'#00FF88':'#FF3B5C'">{{data.value>data.lastMonth?'+':''}}{{data.value-data.lastMonth}}</span>
+      </div>
+    </div>
+    <!-- Signal -->
+    <div class="fg-signal-box" [style.border-color]="data.color + '44'">
+      <div class="fsb-signal" [style.color]="data.color">{{data.signal.replace('_',' ')}}</div>
+      <div class="fsb-reason">{{data.signalReason}}</div>
+    </div>
+    <!-- Mini chart -->
+    @if (data.history.length) {
+      <div class="fg-chart">
+        <div class="fc-label">30-Day History</div>
+        <svg viewBox="0 0 300 50" class="fc-svg" preserveAspectRatio="none">
+          @for (h of data.history; track h; let i = $index) {
+            <ng-container>
+              <rect [attr.x]="(data.history.length-1-i)*(300/(data.history.length||1))"
+                y="0" [attr.width]="300/data.history.length - 1"
+                [attr.height]="50" [attr.fill]="getZoneColor(h.value)"
+                [attr.opacity]="h.value/100*0.6+0.1"/>
+              <line [attr.x1]="(data.history.length-1-i)*(300/(data.history.length||1)) + 300/(data.history.length*2)"
+                [attr.y1]="50 - h.value/100*45"
+                [attr.x2]="(data.history.length-1-i)*(300/(data.history.length||1)) + 300/(data.history.length*2)"
+                y2="50" [attr.stroke]="getZoneColor(h.value)" stroke-width="1.5" opacity="0.8"/>
+            </ng-container>
+          }
+        </svg>
+      </div>
+    }
+  </div>
+}
+
+@if (loading) {
+  <div class="fg-loading">
+    <div class="fg-spin"></div> Loading Fear & Greed…
+  </div>
+}
+
+@if (!loading && data && !data.available) {
+  <div class="fg-unavailable">
     <span class="fg-title">Crypto Fear & Greed Index</span>
-    <span class="fg-signal" [style.color]="data.color">{{data.emoji}}</span>
+    <div class="fg-unavailable-msg">Data unavailable — source did not respond. Not shown as a fabricated reading.</div>
   </div>
-
-  <!-- Gauge -->
-  <div class="fg-gauge">
-    <svg viewBox="0 0 180 100" class="gauge-svg">
-      <!-- Background arc -->
-      <path d="M20,90 A70,70 0 0,1 160,90" fill="none" stroke="#1E2D4A" stroke-width="16" stroke-linecap="round"/>
-      <!-- Colored arc -->
-      <path [attr.d]="gaugeArc" fill="none" [attr.stroke]="data.color" stroke-width="16" stroke-linecap="round"/>
-      <!-- Zone labels -->
-      <text x="18" y="108" font-size="8" fill="#4A5568">Fear</text>
-      <text x="148" y="108" font-size="8" fill="#4A5568">Greed</text>
-      <!-- Value -->
-      <text x="90" y="82" text-anchor="middle" font-size="32" font-weight="800" [attr.fill]="data.color">{{data.value}}</text>
-      <text x="90" y="96" text-anchor="middle" font-size="9" fill="#8895B3">{{data.emoji}}</text>
-    </svg>
-  </div>
-
-  <!-- History -->
-  <div class="fg-history">
-    <div class="fh-row">
-      <span class="fh-l">Yesterday</span>
-      <span class="fh-v" [style.color]="getZoneColor(data.yesterday)">{{data.yesterday}} — {{fgSvc.getEmoji(data.yesterday)}}</span>
-      <span class="fh-delta" [style.color]="data.value>data.yesterday?'#00FF88':'#FF3B5C'">{{data.value>data.yesterday?'+':''}}{{data.value-data.yesterday}}</span>
-    </div>
-    <div class="fh-row">
-      <span class="fh-l">Last Week</span>
-      <span class="fh-v" [style.color]="getZoneColor(data.lastWeek)">{{data.lastWeek}} — {{fgSvc.getEmoji(data.lastWeek)}}</span>
-      <span class="fh-delta" [style.color]="data.value>data.lastWeek?'#00FF88':'#FF3B5C'">{{data.value>data.lastWeek?'+':''}}{{data.value-data.lastWeek}}</span>
-    </div>
-    <div class="fh-row">
-      <span class="fh-l">Last Month</span>
-      <span class="fh-v" [style.color]="getZoneColor(data.lastMonth)">{{data.lastMonth}} — {{fgSvc.getEmoji(data.lastMonth)}}</span>
-      <span class="fh-delta" [style.color]="data.value>data.lastMonth?'#00FF88':'#FF3B5C'">{{data.value>data.lastMonth?'+':''}}{{data.value-data.lastMonth}}</span>
-    </div>
-  </div>
-
-  <!-- Signal -->
-  <div class="fg-signal-box" [style.border-color]="data.color + '44'">
-    <div class="fsb-signal" [style.color]="data.color">{{data.signal.replace('_',' ')}}</div>
-    <div class="fsb-reason">{{data.signalReason}}</div>
-  </div>
-
-  <!-- Mini chart -->
-  <div class="fg-chart" *ngIf="data.history.length">
-    <div class="fc-label">30-Day History</div>
-    <svg viewBox="0 0 300 50" class="fc-svg" preserveAspectRatio="none">
-      <ng-container *ngFor="let h of data.history; let i = index">
-        <rect [attr.x]="(data.history.length-1-i)*(300/(data.history.length||1))"
-              y="0" [attr.width]="300/data.history.length - 1"
-              [attr.height]="50" [attr.fill]="getZoneColor(h.value)"
-              [attr.opacity]="h.value/100*0.6+0.1"/>
-        <line [attr.x1]="(data.history.length-1-i)*(300/(data.history.length||1)) + 300/(data.history.length*2)"
-              [attr.y1]="50 - h.value/100*45"
-              [attr.x2]="(data.history.length-1-i)*(300/(data.history.length||1)) + 300/(data.history.length*2)"
-              y2="50" [attr.stroke]="getZoneColor(h.value)" stroke-width="1.5" opacity="0.8"/>
-      </ng-container>
-    </svg>
-  </div>
-</div>
-
-<div class="fg-loading" *ngIf="loading">
-  <div class="fg-spin"></div> Loading Fear & Greed…
-</div>
-
-<div class="fg-unavailable" *ngIf="!loading && data && !data.available">
-  <span class="fg-title">Crypto Fear & Greed Index</span>
-  <div class="fg-unavailable-msg">Data unavailable — source did not respond. Not shown as a fabricated reading.</div>
-</div>
+}

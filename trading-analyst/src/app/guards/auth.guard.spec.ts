@@ -1,10 +1,11 @@
 import { TestBed } from '@angular/core/testing';
-import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { RouterTestingModule } from '@angular/router/testing';
 import { Router } from '@angular/router';
 import { environment } from '../../environments/environment';
 import { AuthService } from '../services/auth.service';
 import { authGuard } from './auth.guard';
+import { provideHttpClient, withInterceptorsFromDi } from '@angular/common/http';
 
 /**
  * Review finding ("Frontend still caches non-secret user profile in localStorage; residual XSS
@@ -28,9 +29,9 @@ describe('authGuard', () => {
 
   beforeEach(() => {
     TestBed.configureTestingModule({
-      imports: [HttpClientTestingModule, RouterTestingModule],
-      providers: [AuthService]
-    });
+    imports: [RouterTestingModule],
+    providers: [AuthService, provideHttpClient(withInterceptorsFromDi()), provideHttpClientTesting()]
+});
     http = TestBed.inject(HttpTestingController);
     router = TestBed.inject(Router);
   });

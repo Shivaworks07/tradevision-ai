@@ -1,5 +1,5 @@
 import { Component, OnInit, OnDestroy, inject } from '@angular/core';
-import { CommonModule } from '@angular/common';
+
 import { HttpClient } from '@angular/common/http';
 import { Subscription } from 'rxjs';
 import { catchError } from 'rxjs/operators';
@@ -13,11 +13,10 @@ interface NewsItem {
 }
 
 @Component({
-  selector: 'app-newsroom',
-  standalone: true,
-  imports: [CommonModule],
-  templateUrl: './newsroom.component.html',
-  styleUrls: ['./newsroom.component.scss']
+    selector: 'app-newsroom',
+    imports: [],
+    templateUrl: './newsroom.component.html',
+    styleUrls: ['./newsroom.component.scss']
 })
 export class NewsroomComponent implements OnInit, OnDestroy {
   private http = inject(HttpClient);

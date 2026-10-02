@@ -4,11 +4,10 @@ import { AnalyticsTableComponent } from '../analytics-table/analytics-table.comp
 import { AnalyticsService } from '../../services/analytics.service';
 
 @Component({
-  selector: 'app-analytics',
-  standalone: true,
-  imports: [CommonModule, AnalyticsTableComponent],
-  templateUrl: './analytics.component.html',
-  styleUrls: ['./analytics.component.scss']
+    selector: 'app-analytics',
+    imports: [CommonModule, AnalyticsTableComponent],
+    templateUrl: './analytics.component.html',
+    styleUrls: ['./analytics.component.scss']
 })
 export class AnalyticsComponent implements OnInit {
   Math = Math;

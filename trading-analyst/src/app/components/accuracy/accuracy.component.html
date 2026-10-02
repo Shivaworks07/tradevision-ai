@@ -4,113 +4,146 @@
       <h2 class="gradient-text">Track Record</h2>
       <p>Live accuracy data from your AI signal history</p>
     </div>
-    <div class="acc-badge" *ngIf="allTimeStats && allTimeStats.total > 0">
-      <span class="ab-num" [style.color]="wrColor(allTimeStats!.winRate)">{{allTimeStats!.winRate}}%</span>
-      <span class="ab-label">All-Time Win Rate</span>
-    </div>
+    @if (allTimeStats && allTimeStats.total > 0) {
+      <div class="acc-badge">
+        <span class="ab-num" [style.color]="wrColor(allTimeStats!.winRate)">{{allTimeStats!.winRate}}%</span>
+        <span class="ab-label">All-Time Win Rate</span>
+      </div>
+    }
   </div>
 
   <!-- Loading -->
-  <div class="acc-loading" *ngIf="loading">
-    <div class="ls-spin"></div> Loading your signal history…
-  </div>
+  @if (loading) {
+    <div class="acc-loading">
+      <div class="ls-spin"></div> Loading your signal history…
+    </div>
+  }
 
   <!-- Not logged in -->
-  <div class="acc-empty" *ngIf="!auth.isLoggedIn && !loading">
-    <div class="ae-icon">🔐</div>
-    <div class="ae-title">Sign in to see your track record</div>
-    <div class="ae-desc">Your signal accuracy is tracked automatically across all markets.</div>
-  </div>
-
-  <div *ngIf="!loading && auth.isLoggedIn">
-    <!-- No data yet -->
-    <div class="acc-empty" *ngIf="allCalls.length === 0">
-      <div class="ae-icon">📊</div>
-      <div class="ae-title">No signals yet</div>
-      <div class="ae-desc">Start generating trade calls. Your accuracy will appear here as you mark results.</div>
+  @if (!auth.isLoggedIn && !loading) {
+    <div class="acc-empty">
+      <div class="ae-icon">🔐</div>
+      <div class="ae-title">Sign in to see your track record</div>
+      <div class="ae-desc">Your signal accuracy is tracked automatically across all markets.</div>
     </div>
+  }
 
-    <div *ngIf="allCalls.length > 0">
-      <!-- Period breakdown -->
-      <div class="period-grid">
-        <div class="period-card" *ngFor="let p of periods" [class.highlight]="p.label==='30 Days'">
-          <div class="pc-label">{{p.label}}</div>
-          <div class="pc-winrate" [style.color]="wrColor(p.winRate)">{{p.winRate}}%</div>
-          <div class="pc-sub">Win Rate</div>
-          <div class="pc-stats">
-            <div class="pcs-row"><span>Signals</span><strong>{{p.total}}</strong></div>
-            <div class="pcs-row win"><span>Winners</span><strong>{{p.wins}}</strong></div>
-            <div class="pcs-row loss"><span>Losers</span><strong>{{p.losses}}</strong></div>
-            <div class="pcs-row" *ngIf="p.avgGain>0"><span>Avg Gain</span><strong class="green">+{{p.avgGain}}%</strong></div>
-            <div class="pcs-row" *ngIf="p.avgLoss>0"><span>Avg Loss</span><strong class="red">-{{p.avgLoss}}%</strong></div>
-            <div class="pcs-row"><span>Prof. Factor</span><strong [style.color]="pfColor(p.profitFactor)">{{p.profitFactor}}</strong></div>
+  @if (!loading && auth.isLoggedIn) {
+    <div>
+      <!-- No data yet -->
+      @if (allCalls.length === 0) {
+        <div class="acc-empty">
+          <div class="ae-icon">📊</div>
+          <div class="ae-title">No signals yet</div>
+          <div class="ae-desc">Start generating trade calls. Your accuracy will appear here as you mark results.</div>
+        </div>
+      }
+      @if (allCalls.length > 0) {
+        <div>
+          <!-- Period breakdown -->
+          <div class="period-grid">
+            @for (p of periods; track p) {
+              <div class="period-card" [class.highlight]="p.label==='30 Days'">
+                <div class="pc-label">{{p.label}}</div>
+                <div class="pc-winrate" [style.color]="wrColor(p.winRate)">{{p.winRate}}%</div>
+                <div class="pc-sub">Win Rate</div>
+                <div class="pc-stats">
+                  <div class="pcs-row"><span>Signals</span><strong>{{p.total}}</strong></div>
+                  <div class="pcs-row win"><span>Winners</span><strong>{{p.wins}}</strong></div>
+                  <div class="pcs-row loss"><span>Losers</span><strong>{{p.losses}}</strong></div>
+                  @if (p.avgGain>0) {
+                    <div class="pcs-row"><span>Avg Gain</span><strong class="green">+{{p.avgGain}}%</strong></div>
+                  }
+                  @if (p.avgLoss>0) {
+                    <div class="pcs-row"><span>Avg Loss</span><strong class="red">-{{p.avgLoss}}%</strong></div>
+                  }
+                  <div class="pcs-row"><span>Prof. Factor</span><strong [style.color]="pfColor(p.profitFactor)">{{p.profitFactor}}</strong></div>
+                </div>
+              </div>
+            }
           </div>
-        </div>
-      </div>
-
-      <!-- By Signal Type -->
-      <div class="section-title">Performance by Signal Type</div>
-      <div class="signal-table" *ngIf="bySignal.length">
-        <div class="st-header">
-          <span>Signal</span><span>Calls</span><span>Wins</span><span>Win%</span><span>Avg R</span>
-        </div>
-        <div class="st-row" *ngFor="let s of bySignal">
-          <span class="st-sig" [class.buy]="s.signal.includes('BUY')" [class.sell]="s.signal.includes('SELL')">{{s.signal}}</span>
-          <span>{{s.total}}</span>
-          <span class="green">{{s.wins}}</span>
-          <span [style.color]="wrColor(s.winRate)">{{s.winRate}}%</span>
-          <span [style.color]="s.avgR>=0?'#00FF88':'#FF3B5C'">{{s.avgR>=0?'+':''}}{{s.avgR}}R</span>
-        </div>
-      </div>
-
-      <!-- Filters -->
-      <div class="tr-filters">
-        <div class="trf-group">
-          <button *ngFor="let f of resultFilters"
+          <!-- By Signal Type -->
+          <div class="section-title">Performance by Signal Type</div>
+          @if (bySignal.length) {
+            <div class="signal-table">
+              <div class="st-header">
+                <span>Signal</span><span>Calls</span><span>Wins</span><span>Win%</span><span>Avg R</span>
+              </div>
+              @for (s of bySignal; track s) {
+                <div class="st-row">
+                  <span class="st-sig" [class.buy]="s.signal.includes('BUY')" [class.sell]="s.signal.includes('SELL')">{{s.signal}}</span>
+                  <span>{{s.total}}</span>
+                  <span class="green">{{s.wins}}</span>
+                  <span [style.color]="wrColor(s.winRate)">{{s.winRate}}%</span>
+                  <span [style.color]="s.avgR>=0?'#00FF88':'#FF3B5C'">{{s.avgR>=0?'+':''}}{{s.avgR}}R</span>
+                </div>
+              }
+            </div>
+          }
+          <!-- Filters -->
+          <div class="tr-filters">
+            <div class="trf-group">
+              @for (f of resultFilters; track f) {
+                <button
                   [class.active]="filterResult===f.value"
-                  (click)="filterResult=f.value; applyFilters()">{{f.label}}</button>
-        </div>
-        <div class="trf-group">
-          <button *ngFor="let f of marketFilters"
+                (click)="filterResult=f.value; applyFilters()">{{f.label}}</button>
+              }
+            </div>
+            <div class="trf-group">
+              @for (f of marketFilters; track f) {
+                <button
                   [class.active]="filterMarket===f.value"
-                  (click)="filterMarket=f.value; applyFilters()">{{f.label}}</button>
+                (click)="filterMarket=f.value; applyFilters()">{{f.label}}</button>
+              }
+            </div>
+            <span class="trf-count">{{filteredCalls.length}} signals</span>
+          </div>
+          <!-- Track Record Table -->
+          <div class="section-title">Recent Signals — Track Record</div>
+          <div class="track-table">
+            <div class="tt-header">
+              <span>Symbol</span><span>Signal</span><span>Confidence</span>
+              <span>Result</span><span>P&L</span><span>When</span>
+            </div>
+            @for (c of filteredCalls; track c) {
+              <div class="tt-row" [class]="resultClass(c.result)">
+                <span class="tt-sym">{{c.symbol}}</span>
+                <span class="tt-sig" [class.buy]="c.signal?.includes('BUY')" [class.sell]="c.signal?.includes('SELL')">{{c.signal || c.direction}}</span>
+                <span class="tt-conf">{{c.confidence}}%</span>
+                <span class="tt-result" [class]="resultClass(c.result)">{{resultLabel(c.result)}}</span>
+                @if (c.pnlPct != null) {
+                  <span class="tt-pnl" [class.green]="c.pnlPct>0" [class.red]="c.pnlPct<0">
+                    {{c.pnlPct>=0?'+':''}}{{c.pnlPct | number:'1.1-1'}}%
+                  </span>
+                }
+                @if (c.pnlPct == null) {
+                  <span class="tt-pnl">—</span>
+                }
+                <span class="tt-time">{{timeAgo(c.calledAt)}}</span>
+              </div>
+            }
+          </div>
+          <!-- Trust section -->
+          @if (allTimeStats && allTimeStats.total >= 10) {
+            <div class="trust-section">
+              <div class="ts-title">Transparency</div>
+              <div class="ts-grid">
+                <div class="ts-item"><div class="tsi-v" [style.color]="wrColor(allTimeStats!.winRate)">{{allTimeStats!.winRate}}%</div><div class="tsi-l">Accuracy</div></div>
+                <div class="ts-item"><div class="tsi-v" style="color:#00D4FF">{{allTimeStats!.wins}}</div><div class="tsi-l">Winners</div></div>
+                <div class="ts-item"><div class="tsi-v" style="color:#FF3B5C">{{allTimeStats!.losses}}</div><div class="tsi-l">Losers</div></div>
+                <div class="ts-item"><div class="tsi-v" [style.color]="pfColor(allTimeStats!.profitFactor)">{{allTimeStats!.profitFactor}}</div><div class="tsi-l">Prof. Factor</div></div>
+                @if (allTimeStats!.avgGain > 0) {
+                  <div class="ts-item"><div class="tsi-v" style="color:#00FF88">+{{allTimeStats!.avgGain}}%</div><div class="tsi-l">Avg Gain</div></div>
+                }
+                @if (allTimeStats!.avgLoss > 0) {
+                  <div class="ts-item"><div class="tsi-v" style="color:#FF3B5C">-{{allTimeStats!.avgLoss}}%</div><div class="tsi-l">Avg Loss</div></div>
+                }
+              </div>
+              <div class="ts-note">Based on {{allTimeStats!.total}} signals with marked outcomes. Past performance does not guarantee future results.</div>
+            </div>
+          }
         </div>
-        <span class="trf-count">{{filteredCalls.length}} signals</span>
-      </div>
-
-      <!-- Track Record Table -->
-      <div class="section-title">Recent Signals — Track Record</div>
-      <div class="track-table">
-        <div class="tt-header">
-          <span>Symbol</span><span>Signal</span><span>Confidence</span>
-          <span>Result</span><span>P&L</span><span>When</span>
-        </div>
-        <div class="tt-row" *ngFor="let c of filteredCalls" [class]="resultClass(c.result)">
-          <span class="tt-sym">{{c.symbol}}</span>
-          <span class="tt-sig" [class.buy]="c.signal?.includes('BUY')" [class.sell]="c.signal?.includes('SELL')">{{c.signal || c.direction}}</span>
-          <span class="tt-conf">{{c.confidence}}%</span>
-          <span class="tt-result" [class]="resultClass(c.result)">{{resultLabel(c.result)}}</span>
-          <span class="tt-pnl" *ngIf="c.pnlPct != null" [class.green]="c.pnlPct>0" [class.red]="c.pnlPct<0">
-            {{c.pnlPct>=0?'+':''}}{{c.pnlPct | number:'1.1-1'}}%
-          </span>
-          <span class="tt-pnl" *ngIf="c.pnlPct == null">—</span>
-          <span class="tt-time">{{timeAgo(c.calledAt)}}</span>
-        </div>
-      </div>
-
-      <!-- Trust section -->
-      <div class="trust-section" *ngIf="allTimeStats && allTimeStats.total >= 10">
-        <div class="ts-title">Transparency</div>
-        <div class="ts-grid">
-          <div class="ts-item"><div class="tsi-v" [style.color]="wrColor(allTimeStats!.winRate)">{{allTimeStats!.winRate}}%</div><div class="tsi-l">Accuracy</div></div>
-          <div class="ts-item"><div class="tsi-v" style="color:#00D4FF">{{allTimeStats!.wins}}</div><div class="tsi-l">Winners</div></div>
-          <div class="ts-item"><div class="tsi-v" style="color:#FF3B5C">{{allTimeStats!.losses}}</div><div class="tsi-l">Losers</div></div>
-          <div class="ts-item"><div class="tsi-v" [style.color]="pfColor(allTimeStats!.profitFactor)">{{allTimeStats!.profitFactor}}</div><div class="tsi-l">Prof. Factor</div></div>
-          <div class="ts-item" *ngIf="allTimeStats!.avgGain > 0"><div class="tsi-v" style="color:#00FF88">+{{allTimeStats!.avgGain}}%</div><div class="tsi-l">Avg Gain</div></div>
-          <div class="ts-item" *ngIf="allTimeStats!.avgLoss > 0"><div class="tsi-v" style="color:#FF3B5C">-{{allTimeStats!.avgLoss}}%</div><div class="tsi-l">Avg Loss</div></div>
-        </div>
-        <div class="ts-note">Based on {{allTimeStats!.total}} signals with marked outcomes. Past performance does not guarantee future results.</div>
-      </div>
+      }
     </div>
-  </div>
+  }
 </div>

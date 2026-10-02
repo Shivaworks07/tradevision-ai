@@ -4,11 +4,10 @@ import { FormsModule } from '@angular/forms';
 import { OptionChainService, OptionChainData } from '../../services/option-chain.service';
 
 @Component({
-  selector: 'app-option-chain',
-  standalone: true,
-  imports: [CommonModule, FormsModule],
-  templateUrl: './option-chain.component.html',
-  styleUrls: ['./option-chain.component.scss']
+    selector: 'app-option-chain',
+    imports: [CommonModule, FormsModule],
+    templateUrl: './option-chain.component.html',
+    styleUrls: ['./option-chain.component.scss']
 })
 export class OptionChainComponent implements OnInit {
   private ocSvc = inject(OptionChainService);

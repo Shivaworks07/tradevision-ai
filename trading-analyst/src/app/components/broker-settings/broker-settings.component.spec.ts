@@ -1,8 +1,9 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { RouterTestingModule } from '@angular/router/testing';
 import { environment } from '../../../environments/environment';
 import { BrokerSettingsComponent } from './broker-settings.component';
+import { provideHttpClient, withInterceptorsFromDi } from '@angular/common/http';
 
 /**
  * P1-20 fix ("Frontend risk-profile save silently wipes fields" -- external review, confirmed
@@ -29,8 +30,9 @@ describe('BrokerSettingsComponent', () => {
 
   beforeEach(async () => {
     await TestBed.configureTestingModule({
-      imports: [BrokerSettingsComponent, HttpClientTestingModule, RouterTestingModule]
-    }).compileComponents();
+    imports: [BrokerSettingsComponent, RouterTestingModule],
+    providers: [provideHttpClient(withInterceptorsFromDi()), provideHttpClientTesting()]
+}).compileComponents();
     fixture = TestBed.createComponent(BrokerSettingsComponent);
     component = fixture.componentInstance;
     http = TestBed.inject(HttpTestingController);

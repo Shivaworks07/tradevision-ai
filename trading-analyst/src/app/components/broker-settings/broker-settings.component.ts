@@ -11,11 +11,10 @@ import { BrokerService, BrokerCredentialResponse, AssetBalance, RiskProfile, Exe
  * matching /api/broker/** endpoint and shows whatever it says back, including rejections.
  */
 @Component({
-  selector: 'app-broker-settings',
-  standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink],
-  templateUrl: './broker-settings.component.html',
-  styleUrls: ['./broker-settings.component.scss']
+    selector: 'app-broker-settings',
+    imports: [CommonModule, FormsModule, RouterLink],
+    templateUrl: './broker-settings.component.html',
+    styleUrls: ['./broker-settings.component.scss']
 })
 export class BrokerSettingsComponent implements OnInit {
   broker = inject(BrokerService);

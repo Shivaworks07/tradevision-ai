@@ -8,88 +8,109 @@
   </div>
 
   <!-- Not logged in -->
-  <div class="wl-empty" *ngIf="!auth.isLoggedIn">
-    <div class="we-icon">🔐</div>
-    <div class="we-title">Sign in to use Watchlist</div>
-    <div class="we-desc">Star any stock, crypto, or forex pair to track it here.</div>
-  </div>
+  @if (!auth.isLoggedIn) {
+    <div class="wl-empty">
+      <div class="we-icon">🔐</div>
+      <div class="we-title">Sign in to use Watchlist</div>
+      <div class="we-desc">Star any stock, crypto, or forex pair to track it here.</div>
+    </div>
+  }
 
   <!-- Empty watchlist -->
-  <div class="wl-empty" *ngIf="auth.isLoggedIn && !loading && items.length === 0">
-    <div class="we-icon">⭐</div>
-    <div class="we-title">Your watchlist is empty</div>
-    <div class="we-desc">
-      Go to Indian Stocks, Crypto, or Forex pages and tap the ★ icon on any symbol to add it here.
-      You'll see live signals for all watched symbols in one place.
+  @if (auth.isLoggedIn && !loading && items.length === 0) {
+    <div class="wl-empty">
+      <div class="we-icon">⭐</div>
+      <div class="we-title">Your watchlist is empty</div>
+      <div class="we-desc">
+        Go to Indian Stocks, Crypto, or Forex pages and tap the ★ icon on any symbol to add it here.
+        You'll see live signals for all watched symbols in one place.
+      </div>
+      <a routerLink="/app/stocks" class="we-btn">Browse Indian Stocks</a>
+      <a routerLink="/app/crypto" class="we-btn">Browse Crypto</a>
     </div>
-    <a routerLink="/app/stocks" class="we-btn">Browse Indian Stocks</a>
-    <a routerLink="/app/crypto" class="we-btn">Browse Crypto</a>
-  </div>
+  }
 
   <!-- Watchlist items -->
-  <div class="wl-grid" *ngIf="auth.isLoggedIn && items.length > 0">
-    <div class="wl-card" *ngFor="let item of items"
-         [class.changed]="item.changed" [class.loading]="item.loading">
-
-      <!-- Changed signal alert -->
-      <div class="wl-alert" *ngIf="item.changed">
-        ⚡ Signal changed: {{item.prevSignal}} → {{item.call?.signal}}
-      </div>
-
-      <div class="wl-card-top">
-        <div class="wlc-left">
-          <div class="wlc-sym">{{item.symbol}}</div>
-          <div class="wlc-type" [class]="item.type.toLowerCase()">{{item.type}}</div>
-        </div>
-        <div class="wlc-price" *ngIf="item.price">
-          <div class="wlcp-val">{{priceStr(item.price)}}</div>
-          <div class="wlcp-chg" [class.pos]="(item.changePct||0)>=0" [class.neg]="(item.changePct||0)<0">
-            {{(item.changePct||0)>=0?'+':''}}{{item.changePct | number:'1.2-2'}}%
+  @if (auth.isLoggedIn && items.length > 0) {
+    <div class="wl-grid">
+      @for (item of items; track item) {
+        <div class="wl-card"
+          [class.changed]="item.changed" [class.loading]="item.loading">
+          <!-- Changed signal alert -->
+          @if (item.changed) {
+            <div class="wl-alert">
+              ⚡ Signal changed: {{item.prevSignal}} → {{item.call?.signal}}
+            </div>
+          }
+          <div class="wl-card-top">
+            <div class="wlc-left">
+              <div class="wlc-sym">{{item.symbol}}</div>
+              <div class="wlc-type" [class]="item.type.toLowerCase()">{{item.type}}</div>
+            </div>
+            @if (item.price) {
+              <div class="wlc-price">
+                <div class="wlcp-val">{{priceStr(item.price)}}</div>
+                <div class="wlcp-chg" [class.pos]="(item.changePct||0)>=0" [class.neg]="(item.changePct||0)<0">
+                  {{(item.changePct||0)>=0?'+':''}}{{item.changePct | number:'1.2-2'}}%
+                </div>
+              </div>
+            }
+            <button class="wlc-remove" (click)="remove(item)" title="Remove from watchlist">✕</button>
           </div>
+          <!-- Loading state -->
+          @if (item.loading) {
+            <div class="wlc-loading">
+              <div class="mini-spin"></div> Analyzing…
+            </div>
+          }
+          <!-- Signal (crypto only for now) -->
+          @if (!item.loading && item.call) {
+            <div class="wlc-signal">
+              <div class="wlcs-dir" [class]="sigClass(item.call)">
+                {{item.call.direction === 'LONG' ? '▲ LONG' : item.call.direction === 'SHORT' ? '▼ SHORT' : '⏸ WAIT'}}
+              </div>
+              <div class="wlcs-conf" [style.color]="confColor(item.call.confidence)">
+                {{item.call.confidence}}%
+              </div>
+              @if (item.call.signalStrength) {
+                <div class="wlcs-strength">{{item.call.signalStrength}}</div>
+              }
+            </div>
+          }
+          <!-- Quick levels (crypto only) -->
+          @if (!item.loading && item.call && item.call.direction !== 'WAIT') {
+            <div class="wlc-levels">
+              <div class="wlcl-row entry"><span>Entry</span><strong>{{priceStr(item.call.entry)}}</strong></div>
+              <div class="wlcl-row sl"><span>SL</span><strong>{{priceStr(item.call.stopLoss)}}</strong></div>
+              <div class="wlcl-row t1"><span>T1</span><strong>{{priceStr(item.call.target1)}}</strong></div>
+              <div class="wlcl-row rr"><span>R:R</span><strong>{{item.call.rrRatio}}</strong></div>
+            </div>
+          }
+          <!-- Top 3 reasons -->
+          @if (!item.loading && item.call) {
+            <div class="wlc-reasons">
+              @for (r of (item.call.direction==='LONG' ? item.call.bullReasons : item.call.bearReasons).slice(0,3); track r) {
+                <div class="wlcr-item">
+                  <span [class]="item.call.direction==='LONG'?'bull':'bear'">{{item.call.direction==='LONG'?'✓':'✗'}}</span>
+                  {{r}}
+                </div>
+              }
+              @if (item.call.direction==='WAIT') {
+                <div class="wlcr-item wait">
+                  {{(item.call.bearReasons || []).slice(0,2).join(' · ')}}
+                </div>
+              }
+            </div>
+          }
+          <!-- Risk badge -->
+          @if (item.call && item.call.direction !== 'WAIT') {
+            <div class="wlc-risk"
+              [class]="'risk-'+item.call.risk.toLowerCase()">
+              {{item.call.risk}} RISK
+            </div>
+          }
         </div>
-        <button class="wlc-remove" (click)="remove(item)" title="Remove from watchlist">✕</button>
-      </div>
-
-      <!-- Loading state -->
-      <div class="wlc-loading" *ngIf="item.loading">
-        <div class="mini-spin"></div> Analyzing…
-      </div>
-
-      <!-- Signal (crypto only for now) -->
-      <div class="wlc-signal" *ngIf="!item.loading && item.call">
-        <div class="wlcs-dir" [class]="sigClass(item.call)">
-          {{item.call.direction === 'LONG' ? '▲ LONG' : item.call.direction === 'SHORT' ? '▼ SHORT' : '⏸ WAIT'}}
-        </div>
-        <div class="wlcs-conf" [style.color]="confColor(item.call.confidence)">
-          {{item.call.confidence}}%
-        </div>
-        <div class="wlcs-strength" *ngIf="item.call.signalStrength">{{item.call.signalStrength}}</div>
-      </div>
-
-      <!-- Quick levels (crypto only) -->
-      <div class="wlc-levels" *ngIf="!item.loading && item.call && item.call.direction !== 'WAIT'">
-        <div class="wlcl-row entry"><span>Entry</span><strong>{{priceStr(item.call.entry)}}</strong></div>
-        <div class="wlcl-row sl"><span>SL</span><strong>{{priceStr(item.call.stopLoss)}}</strong></div>
-        <div class="wlcl-row t1"><span>T1</span><strong>{{priceStr(item.call.target1)}}</strong></div>
-        <div class="wlcl-row rr"><span>R:R</span><strong>{{item.call.rrRatio}}</strong></div>
-      </div>
-
-      <!-- Top 3 reasons -->
-      <div class="wlc-reasons" *ngIf="!item.loading && item.call">
-        <div class="wlcr-item" *ngFor="let r of (item.call.direction==='LONG' ? item.call.bullReasons : item.call.bearReasons).slice(0,3)">
-          <span [class]="item.call.direction==='LONG'?'bull':'bear'">{{item.call.direction==='LONG'?'✓':'✗'}}</span>
-          {{r}}
-        </div>
-        <div class="wlcr-item wait" *ngIf="item.call.direction==='WAIT'">
-          {{(item.call.bearReasons || []).slice(0,2).join(' · ')}}
-        </div>
-      </div>
-
-      <!-- Risk badge -->
-      <div class="wlc-risk" *ngIf="item.call && item.call.direction !== 'WAIT'"
-           [class]="'risk-'+item.call.risk.toLowerCase()">
-        {{item.call.risk}} RISK
-      </div>
+      }
     </div>
-  </div>
+  }
 </div>

@@ -18,9 +18,11 @@
             <strong [style.color]="permColor">{{browserPermission | titlecase}}</strong>
           </span>
         </div>
-        <button class="btn-enable" *ngIf="browserPermission !== 'granted'" (click)="enableBrowserNotifs()">
-          Enable Notifications
-        </button>
+        @if (browserPermission !== 'granted') {
+          <button class="btn-enable" (click)="enableBrowserNotifs()">
+            Enable Notifications
+          </button>
+        }
       </div>
 
       <!-- Master switch -->
@@ -45,9 +47,11 @@
       <div class="pref-row">
         <div class="pr-label">Minimum confidence</div>
         <div class="chip-group">
-          <button *ngFor="let c of minConfOptions"
-                  [class.active]="prefs.minConfidence===c"
-                  (click)="prefs.minConfidence=c">{{c}}%</button>
+          @for (c of minConfOptions; track c) {
+            <button
+              [class.active]="prefs.minConfidence===c"
+            (click)="prefs.minConfidence=c">{{c}}%</button>
+          }
         </div>
       </div>
 
@@ -64,9 +68,11 @@
       <div class="pref-row">
         <div class="pr-label">Signal strength</div>
         <div class="chip-group">
-          <button *ngFor="let s of signalOptions"
-                  [class.active]="hasSig(s.value)"
-                  (click)="toggleSignal(s.value)">{{s.label}}</button>
+          @for (s of signalOptions; track s) {
+            <button
+              [class.active]="hasSig(s.value)"
+            (click)="toggleSignal(s.value)">{{s.label}}</button>
+          }
         </div>
       </div>
 
@@ -74,9 +80,11 @@
       <div class="pref-row">
         <div class="pr-label">Markets</div>
         <div class="chip-group">
-          <button *ngFor="let m of marketOptions"
-                  [class.active]="hasMkt(m.value)"
-                  (click)="toggleMarket(m.value)">{{m.label}}</button>
+          @for (m of marketOptions; track m) {
+            <button
+              [class.active]="hasMkt(m.value)"
+            (click)="toggleMarket(m.value)">{{m.label}}</button>
+          }
         </div>
       </div>
 
@@ -104,7 +112,9 @@
         <strong>{{hasDir('LONG')&&hasDir('SHORT')?'BUY or SELL':hasDir('LONG')?'BUY only':'SELL only'}}</strong>
         with strength
         <strong>{{prefs.signalTypes.join(' / ')}}</strong>
-        <span *ngIf="prefs.onlyOnChange"> — only when the signal changes.</span>
+        @if (prefs.onlyOnChange) {
+          <span> — only when the signal changes.</span>
+        }
       </div>
     </div>
 
@@ -112,8 +122,12 @@
     <div class="set-actions">
       <button class="btn-reset" (click)="reset()">↺ Reset to defaults</button>
       <button class="btn-save" (click)="save()">
-        <span *ngIf="!saved">Save Preferences</span>
-        <span *ngIf="saved">✓ Saved!</span>
+        @if (!saved) {
+          <span>Save Preferences</span>
+        }
+        @if (saved) {
+          <span>✓ Saved!</span>
+        }
       </button>
     </div>
 

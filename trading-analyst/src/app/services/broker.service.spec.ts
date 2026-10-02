@@ -1,7 +1,8 @@
 import { environment } from '../../environments/environment';
 import { TestBed } from '@angular/core/testing';
-import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { BrokerService } from './broker.service';
+import { provideHttpClient, withInterceptorsFromDi } from '@angular/common/http';
 
 /**
  * Review finding (P1/🟠 #12 — "Frontend has only 3 spec files"): the review's own named gaps —
@@ -17,9 +18,9 @@ describe('BrokerService', () => {
 
   beforeEach(() => {
     TestBed.configureTestingModule({
-      imports: [HttpClientTestingModule],
-      providers: [BrokerService]
-    });
+    imports: [],
+    providers: [BrokerService, provideHttpClient(withInterceptorsFromDi()), provideHttpClientTesting()]
+});
     service = TestBed.inject(BrokerService);
     http    = TestBed.inject(HttpTestingController);
     localStorage.setItem('tv_token', 'test-token');

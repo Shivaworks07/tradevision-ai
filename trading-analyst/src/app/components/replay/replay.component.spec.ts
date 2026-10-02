@@ -1,7 +1,8 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ReplayComponent } from './replay.component';
-import { HttpClientTestingModule } from '@angular/common/http/testing';
+import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { RouterTestingModule } from '@angular/router/testing';
+import { provideHttpClient, withInterceptorsFromDi } from '@angular/common/http';
 
 describe('ReplayComponent', () => {
   let component: ReplayComponent;
@@ -9,8 +10,9 @@ describe('ReplayComponent', () => {
 
   beforeEach(async () => {
     await TestBed.configureTestingModule({
-      imports: [ReplayComponent, HttpClientTestingModule, RouterTestingModule]
-    }).compileComponents();
+    imports: [ReplayComponent, RouterTestingModule],
+    providers: [provideHttpClient(withInterceptorsFromDi()), provideHttpClientTesting()]
+}).compileComponents();
     fixture = TestBed.createComponent(ReplayComponent);
     component = fixture.componentInstance;
     fixture.detectChanges();

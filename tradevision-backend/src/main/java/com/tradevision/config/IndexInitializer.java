@@ -447,7 +447,26 @@ public class IndexInitializer {
      */
     private void ensureIndex(Class<?> entityClass, String field) {
         try {
-            mongoTemplate.indexOps(entityClass).ensureIndex(new Index().on(field, org.springframework.data.domain.Sort.Direction.ASC));
+            // CI-review fix ("Legacy order/position index migration" -- external review, fifth
+            // pass, failures 4 & 5, confirmed real by direct inspection: LegacyIndexMigrationIntegrationTest
+            // genuinely failed, not a flaky/stale assertion): this plain index used to be created
+            // with NO explicit name via `new Index().on(field, ASC)`, so MongoDB assigned its own
+            // default name, "<field>_1" -- for Order.brokerOrderId and Position.entryOrderId,
+            // THAT IS THE EXACT SAME NAME the legacy single-field unique index being migrated away
+            // in migrateLegacySingleFieldUniqueIndex above already has. So the migration's own
+            // drop-by-real-name ("brokerOrderId_1"/"entryOrderId_1") succeeded, but this very call,
+            // a few lines later in the same startup method, immediately recreated an index under
+            // that identical default name (now non-unique, which does fix the actual P0-5
+            // collision bug) -- so the OLD index's NAME silently came right back, even though its
+            // broken uniqueness semantics genuinely did not. A plain "ensureIndex" call elsewhere
+            // in this file that reuses a name no legacy index ever had is unaffected by this --
+            // this is specific to the two fields that happen to collide with a prior revision's
+            // own default-named unique index. Fixed by giving this plain index its own explicit,
+            // never-previously-used name, so dropping the legacy index by name is a REAL,
+            // permanent migration rather than a drop immediately undone by this method's own next
+            // few lines.
+            mongoTemplate.indexOps(entityClass).ensureIndex(
+                new Index().on(field, org.springframework.data.domain.Sort.Direction.ASC).named(field + "_plain_idx"));
             log.info("Confirmed index on {}.{}", entityClass.getSimpleName(), field);
         } catch (Exception e) {
             log.error("FAILED to confirm index on {}.{} — queries against this field will be slow (full collection scan) "

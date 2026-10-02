@@ -19,11 +19,10 @@ interface WatchItem {
 }
 
 @Component({
-  selector: 'app-watchlist',
-  standalone: true,
-  imports: [CommonModule, RouterModule],
-  templateUrl: './watchlist.component.html',
-  styleUrls: ['./watchlist.component.scss']
+    selector: 'app-watchlist',
+    imports: [CommonModule, RouterModule],
+    templateUrl: './watchlist.component.html',
+    styleUrls: ['./watchlist.component.scss']
 })
 export class WatchlistComponent implements OnInit, OnDestroy {
   auth     = inject(AuthService);

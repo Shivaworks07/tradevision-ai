@@ -1,5 +1,5 @@
 import { Component, inject, OnInit, signal } from '@angular/core';
-import { CommonModule } from '@angular/common';
+
 import { FormsModule } from '@angular/forms';
 import { BrokerService, BrokerCredentialResponse, RiskProfile } from '../../services/broker.service';
 import { StrategyPlanService, StrategyPlan, StrategyPlanRequest, TradeDirection, SessionMode, EndOfSessionAction, DayOfWeek } from '../../services/strategy-plan.service';
@@ -19,11 +19,10 @@ import { StrategyPlanService, StrategyPlan, StrategyPlanRequest, TradeDirection,
  * explicitly asked this session to build on the backend first.
  */
 @Component({
-  selector: 'app-strategy-plans',
-  standalone: true,
-  imports: [CommonModule, FormsModule],
-  templateUrl: './strategy-plans.component.html',
-  styleUrls: ['./strategy-plans.component.scss']
+    selector: 'app-strategy-plans',
+    imports: [FormsModule],
+    templateUrl: './strategy-plans.component.html',
+    styleUrls: ['./strategy-plans.component.scss']
 })
 export class StrategyPlansComponent implements OnInit {
   broker = inject(BrokerService);

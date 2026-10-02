@@ -12,11 +12,10 @@ import { of } from 'rxjs';
 interface TickerItem { label: string; price: string; change: number; }
 
 @Component({
-  selector: 'app-landing',
-  standalone: true,
-  imports: [CommonModule, DecimalPipe, AuthModalComponent],
-  templateUrl: './landing.component.html',
-  styleUrls: ['./landing.component.scss']
+    selector: 'app-landing',
+    imports: [CommonModule, DecimalPipe, AuthModalComponent],
+    templateUrl: './landing.component.html',
+    styleUrls: ['./landing.component.scss']
 })
 export class LandingComponent implements OnInit, OnDestroy {
   auth   = inject(AuthService);

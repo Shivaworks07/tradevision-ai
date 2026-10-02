@@ -113,8 +113,35 @@ class ReleaseTestSuiteIntegrationTest {
         // string here would genuinely throw IllegalStateException("Failed to decrypt credential")
         // the moment any of these tests actually ran, not merely look wrong. Using the real
         // encrypt() method here produces genuinely valid ciphertext instead.
-        credential.setEncryptedApiKey(credentialEncryptionService.encrypt("test-api-key"));
-        credential.setEncryptedApiSecret(credentialEncryptionService.encrypt("test-api-secret"));
+        //
+        // CI-review fix ("OCO protection lifecycle" -- external review, fifth pass, failures
+        // 6/7/8/9, confirmed real by direct inspection: all four shared this one root cause): the
+        // single-argument encrypt(String) overload used here encrypts under
+        // CredentialEncryptionService's own DEFAULT_CONTEXT ("credential"), an AES-GCM
+        // authenticated-encryption AAD value -- but every real production read path
+        // (BrokerCredentialService.decrypt(BrokerCredential, boolean), the only place this
+        // application ever actually decrypts a stored credential) always decrypts with the
+        // field-specific context "apiKey"/"apiSecret" (see BrokerCredentialService.java's own
+        // encrypt() call sites, e.g. its connectCredential method, which always encrypts with
+        // those same two contexts -- never the default). AES-GCM's authentication tag is bound to
+        // the AAD it was encrypted under, so decrypting under a different context than it was
+        // encrypted with doesn't produce garbage plaintext, it throws AEADBadTagException outright
+        // -- caught by CredentialEncryptionService.decrypt and rethrown as
+        // IllegalStateException("Failed to decrypt credential"). That exception, thrown from
+        // PositionMonitorService.recoverStuckProtectionAttempts's own two decrypt() calls (which
+        // sit BEFORE that method's own per-attempt try/catch), propagated all the way up to
+        // reconcileCredentialLocked's single top-level catch and silently aborted the entire
+        // reconciliation pass for the credential before auto-attach, auto-cancel, or escalation
+        // ever ran -- exactly reproducing all four failures (cancelFailureHalts_realMongo,
+        // killAfterOco_autoAttach_realMongo, ocoAutoCancel_realMongo,
+        // restartFullReconciliation_realMongo), none of which ever got past the first decrypt
+        // call. No production code was at fault: BrokerCredentialService's own context-bound
+        // encrypt/decrypt pair is correct and used consistently everywhere else in this
+        // codebase -- this fixture was the one place still using the context-less legacy
+        // overload to manufacture ciphertext for a flow that is always read back through the
+        // context-bound one. Fixed by encrypting with the exact same contexts production uses.
+        credential.setEncryptedApiKey(credentialEncryptionService.encrypt("test-api-key", "apiKey"));
+        credential.setEncryptedApiSecret(credentialEncryptionService.encrypt("test-api-secret", "apiSecret"));
         credentialRepo.save(credential);
         var profile = new RiskProfile();
         profile.setCredentialId(credential.getId());

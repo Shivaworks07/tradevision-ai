@@ -1,14 +1,13 @@
 import { Component, inject, OnDestroy } from '@angular/core';
-import { CommonModule } from '@angular/common';
+
 import { FormsModule } from '@angular/forms';
 import { BacktestService, BacktestConfig, BacktestResult, BacktestTrade } from '../../services/backtest.service';
 
 @Component({
-  selector: 'app-backtest',
-  standalone: true,
-  imports: [CommonModule, FormsModule],
-  templateUrl: './backtest.component.html',
-  styleUrls: ['./backtest.component.scss']
+    selector: 'app-backtest',
+    imports: [FormsModule],
+    templateUrl: './backtest.component.html',
+    styleUrls: ['./backtest.component.scss']
 })
 export class BacktestComponent implements OnDestroy {
   bt = inject(BacktestService);

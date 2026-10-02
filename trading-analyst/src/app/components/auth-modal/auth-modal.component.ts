@@ -1,5 +1,5 @@
 import { Component, Input, Output, EventEmitter, inject, OnDestroy } from '@angular/core';
-import { CommonModule } from '@angular/common';
+
 import { FormsModule } from '@angular/forms';
 import { AuthService } from '../../services/auth.service';
 import { HttpClient } from '@angular/common/http';
@@ -7,11 +7,10 @@ import { interval, Subscription } from 'rxjs';
 import { environment } from '../../../environments/environment';
 
 @Component({
-  selector: 'app-auth-modal',
-  standalone: true,
-  imports: [CommonModule, FormsModule],
-  templateUrl: './auth-modal.component.html',
-  styleUrls: ['./auth-modal.component.scss']
+    selector: 'app-auth-modal',
+    imports: [FormsModule],
+    templateUrl: './auth-modal.component.html',
+    styleUrls: ['./auth-modal.component.scss']
 })
 export class AuthModalComponent implements OnDestroy {
   @Input()  visible  = false;

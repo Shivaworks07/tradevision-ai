@@ -6,23 +6,29 @@
     <p><a routerLink="/app/strategy-plans">Manage strategy plans →</a></p>
   </div>
 
-  <div class="bs-toast" *ngIf="message()" [class.err]="message()?.type === 'error'">
-    {{ message()?.text }}
-  </div>
+  @if (message()) {
+    <div class="bs-toast" [class.err]="message()?.type === 'error'">
+      {{ message()?.text }}
+    </div>
+  }
 
   <div class="bs-body">
 
     <!-- Connect -->
     <!-- P3-10 fix ("PAPER mode requires 'live authorization' and isn't selectable in UI" --
-         external review, confirmed real by direct inspection): PAPER was a fully working backend
-         mode (see BrokerMode's own javadoc on the backend) with no way to actually pick it here --
-         this section always connected TESTNET only. Same form, same key/secret fields (PAPER still
-         validates against Binance testnet for the one-time permission check), just a mode choice
-         added since that's the only thing that was actually missing. -->
+    external review, confirmed real by direct inspection): PAPER was a fully working backend
+    mode (see BrokerMode's own javadoc on the backend) with no way to actually pick it here --
+    this section always connected TESTNET only. Same form, same key/secret fields (PAPER still
+    validates against Binance testnet for the one-time permission check), just a mode choice
+    added since that's the only thing that was actually missing. -->
     <div class="bs-section">
       <div class="ss-title">Connect Binance (testnet / paper)</div>
-      <div class="ss-desc" *ngIf="connectMode === 'TESTNET'">Create a key at testnet.binance.vision with reading + spot trading enabled, withdrawal OFF. Keys with withdrawal permission are rejected automatically. Orders are real testnet orders against Binance's own testnet exchange.</div>
-      <div class="ss-desc" *ngIf="connectMode === 'PAPER'">Same testnet key as above, used only for a one-time permission check — once connected, PAPER never sends another authenticated request to Binance. Every order, balance and fill is simulated in-process against real, public market prices.</div>
+      @if (connectMode === 'TESTNET') {
+        <div class="ss-desc">Create a key at testnet.binance.vision with reading + spot trading enabled, withdrawal OFF. Keys with withdrawal permission are rejected automatically. Orders are real testnet orders against Binance's own testnet exchange.</div>
+      }
+      @if (connectMode === 'PAPER') {
+        <div class="ss-desc">Same testnet key as above, used only for a one-time permission check — once connected, PAPER never sends another authenticated request to Binance. Every order, balance and fill is simulated in-process against real, public market prices.</div>
+      }
       <div class="bs-form-row">
         <select [(ngModel)]="connectMode" aria-label="Connection mode">
           <option value="TESTNET">Testnet (real simulated orders on Binance testnet)</option>
@@ -37,55 +43,64 @@
     </div>
 
     <!-- Review finding ("P0 #1" — "LIVE Binance credential architecture is wrong"): connecting a
-         LIVE credential is now its own standalone flow with its own key/secret fields — never a
-         mode switched on the testnet connection above. Binance testnet and mainnet API keys are
-         genuinely different credentials; using the testnet ones here would simply be rejected by
-         Binance's own LIVE endpoint. -->
+    LIVE credential is now its own standalone flow with its own key/secret fields — never a
+    mode switched on the testnet connection above. Binance testnet and mainnet API keys are
+    genuinely different credentials; using the testnet ones here would simply be rejected by
+    Binance's own LIVE endpoint. -->
     <div class="bs-section danger">
       <div class="ss-title">Connect Binance (LIVE — real funds)</div>
       <div class="ss-desc">Use your actual Binance mainnet API key — not the testnet one above. Validated against Binance's real LIVE endpoint. Withdrawal permission is rejected automatically, same as testnet.</div>
-      <ng-container *ngIf="!awaitingLiveConfirm">
+      @if (!awaitingLiveConfirm) {
         <div class="bs-form-row">
           <input type="text" placeholder="LIVE API Key" [(ngModel)]="liveConnectApiKey" />
           <input type="password" placeholder="LIVE API Secret" [(ngModel)]="liveConnectApiSecret" />
           <button class="btn-danger" (click)="requestLive()">Validate LIVE key</button>
         </div>
-      </ng-container>
-      <div class="bs-form-row" *ngIf="awaitingLiveConfirm">
-        <input type="text" placeholder="Paste confirmation token" [(ngModel)]="liveConfirmToken" />
-        <button class="btn-danger" (click)="confirmLive()">Confirm &amp; save LIVE credential</button>
-      </div>
+      }
+      @if (awaitingLiveConfirm) {
+        <div class="bs-form-row">
+          <input type="text" placeholder="Paste confirmation token" [(ngModel)]="liveConfirmToken" />
+          <button class="btn-danger" (click)="confirmLive()">Confirm &amp; save LIVE credential</button>
+        </div>
+      }
     </div>
 
     <!-- Credential list -->
-    <div class="bs-section" *ngIf="credentials().length">
-      <div class="ss-title">Your broker credentials</div>
-      <div class="bs-cred-list">
-        <div class="bs-cred" *ngFor="let c of credentials()" [class.active]="selected()?.id === c.id" (click)="select(c)">
-          <div class="bc-main">
-            <span class="bc-broker">{{ c.broker }}</span>
-            <span class="bc-mode" [class.live]="c.mode === 'LIVE'">{{ c.mode }}</span>
-            <span class="bc-hint">••••{{ c.keyHint }}</span>
-          </div>
-          <button class="btn-ghost-sm" (click)="removeCredential(c); $event.stopPropagation()">Remove</button>
+    @if (credentials().length) {
+      <div class="bs-section">
+        <div class="ss-title">Your broker credentials</div>
+        <div class="bs-cred-list">
+          @for (c of credentials(); track c) {
+            <div class="bs-cred" [class.active]="selected()?.id === c.id" (click)="select(c)">
+              <div class="bc-main">
+                <span class="bc-broker">{{ c.broker }}</span>
+                <span class="bc-mode" [class.live]="c.mode === 'LIVE'">{{ c.mode }}</span>
+                <span class="bc-hint">••••{{ c.keyHint }}</span>
+              </div>
+              <button class="btn-ghost-sm" (click)="removeCredential(c); $event.stopPropagation()">Remove</button>
+            </div>
+          }
         </div>
       </div>
-    </div>
+    }
 
-    <ng-container *ngIf="selected() as sel">
-
+    @if (selected(); as sel) {
       <!-- Balance -->
       <div class="bs-section">
         <div class="ss-title">Balance — {{ sel.broker }} ({{ sel.mode }})</div>
-        <div class="bs-balances" *ngIf="balances().length; else noBal">
-          <div class="bal-row" *ngFor="let b of balances()">
-            <span>{{ b.asset }}</span>
-            <span>{{ b.free }}</span>
+        @if (balances().length) {
+          <div class="bs-balances">
+            @for (b of balances(); track b) {
+              <div class="bal-row">
+                <span>{{ b.asset }}</span>
+                <span>{{ b.free }}</span>
+              </div>
+            }
           </div>
-        </div>
-        <ng-template #noBal><div class="ss-desc">No non-zero balances (normal on a fresh testnet account).</div></ng-template>
+        } @else {
+          <div class="ss-desc">No non-zero balances (normal on a fresh testnet account).</div>
+        }
       </div>
-
       <!-- Manual test order -->
       <div class="bs-section">
         <div class="ss-title">Place test order (manual, proves the execution path)</div>
@@ -97,16 +112,17 @@
           </select>
           <input type="number" placeholder="Quantity" [(ngModel)]="testQuantity" step="0.0001" />
           <!-- Review finding (P1 — "Manual test-order UI mismatch"): OrderExecutionService
-               hard-rejects manual test orders on LIVE credentials (verified against the actual
-               backend code, not assumed) — this button could never succeed on LIVE, so the old
-               "uses real funds" warning described a scenario that can't happen and implied the
-               order would go through when it never could. Disabled instead, with an accurate
-               reason shown in its place. -->
+          hard-rejects manual test orders on LIVE credentials (verified against the actual
+          backend code, not assumed) — this button could never succeed on LIVE, so the old
+          "uses real funds" warning described a scenario that can't happen and implied the
+          order would go through when it never could. Disabled instead, with an accurate
+          reason shown in its place. -->
           <button class="btn-primary" [disabled]="loading() || sel.mode === 'LIVE'" (click)="placeTestOrder()">Place Test Order</button>
         </div>
-        <div class="ss-desc" *ngIf="sel.mode === 'LIVE'">Manual test orders are TESTNET-only and disabled on LIVE credentials — this proves execution safely without ever risking real funds.</div>
+        @if (sel.mode === 'LIVE') {
+          <div class="ss-desc">Manual test orders are TESTNET-only and disabled on LIVE credentials — this proves execution safely without ever risking real funds.</div>
+        }
       </div>
-
       <!-- Risk profile / auto-trade -->
       <div class="bs-section">
         <div class="ss-title">Auto-trade &amp; risk caps</div>
@@ -120,7 +136,6 @@
             <span class="slider"></span>
           </label>
         </div>
-
         <div class="bs-grid">
           <label>Enabled symbols (comma-separated)
             <input type="text" [(ngModel)]="enabledSymbolsCsv" />
@@ -153,10 +168,10 @@
             <input type="number" [(ngModel)]="maxConsecutiveAutoTradeLosses" min="0" />
           </label>
           <!-- P1-20 fix ("Frontend risk-profile save silently wipes fields" -- full context in
-               BrokerService.saveRiskProfile's own updated javadoc): these three now have real
-               form controls -- before this fix, this form neither showed nor sent them, so a
-               save always reset them to the backend's own bare defaults even for a user who'd
-               deliberately configured something else. -->
+          BrokerService.saveRiskProfile's own updated javadoc): these three now have real
+          form controls -- before this fix, this form neither showed nor sent them, so a
+          save always reset them to the backend's own bare defaults even for a user who'd
+          deliberately configured something else. -->
           <label>Max exposure per symbol (quote, 0 = disabled)
             <input type="number" [(ngModel)]="maxSymbolExposureQuote" min="0" />
           </label>
@@ -172,54 +187,67 @@
           can be authorized for autonomous LIVE trading.
         </div>
         <button class="btn-primary" (click)="saveRiskProfile()">Save risk profile</button>
-
-        <div class="bs-halt-row" *ngIf="riskProfile() as rp">
-          <span class="halt-status" [class.halted]="rp.tradingHalted">
-            {{ rp.tradingHalted ? ('⛔ Halted: ' + (rp.haltReason || 'manually halted')) : '✅ Auto-trading active' }}
-          </span>
-          <button class="btn-ghost-sm" *ngIf="!rp.tradingHalted" (click)="haltThis()">Halt this credential</button>
-          <button class="btn-primary" *ngIf="rp.tradingHalted" (click)="resumeThis()">Resume</button>
-        </div>
+        @if (riskProfile(); as rp) {
+          <div class="bs-halt-row">
+            <span class="halt-status" [class.halted]="rp.tradingHalted">
+              {{ rp.tradingHalted ? ('⛔ Halted: ' + (rp.haltReason || 'manually halted')) : '✅ Auto-trading active' }}
+            </span>
+            @if (!rp.tradingHalted) {
+              <button class="btn-ghost-sm" (click)="haltThis()">Halt this credential</button>
+            }
+            @if (rp.tradingHalted) {
+              <button class="btn-primary" (click)="resumeThis()">Resume</button>
+            }
+          </div>
+        }
       </div>
-
       <!-- Kill switch -->
       <div class="bs-section danger">
         <div class="ss-title">Kill switch</div>
         <div class="ss-desc">Immediately halts auto-trading across every broker credential you have connected. Existing open orders on the broker are not cancelled — this only stops new signal-triggered orders. <strong>An execution already in progress at the exact moment you click this may still reach the exchange</strong> — this stops new submissions, it cannot recall a network request already underway. If that happens, this application automatically reconciles it against the real exchange state right after the halt completes.</div>
         <button class="btn-danger" (click)="killSwitchEverything()">Halt ALL auto-trading now</button>
       </div>
-
       <!-- Live auto-trade authorization — unrelated to which credential row this is; this
-           credential is ALREADY a LIVE credential by construction now (see the standalone LIVE
-           connect section above), so there's no "revert to testnet" here anymore — deleting a
-           LIVE credential (Remove button, above) is the equivalent, and never touches a separate
-           TESTNET credential you may also have. -->
-      <div class="bs-section danger" *ngIf="sel.mode === 'LIVE'">
-        <div class="ss-title">Autonomous LIVE trading</div>
-        <div class="ss-desc">⚠ This credential trades with real funds.</div>
-        <div class="bs-halt-row" *ngIf="riskProfile() as rp2">
-          <span class="halt-status" [class.halted]="!rp2.liveAutoTradeAuthorized">
-            {{ rp2.liveAutoTradeAuthorized ? '✅ Autonomous LIVE trading authorized' : '⛔ Autonomous LIVE trading NOT authorized (auto-trade will skip every signal)' }}
-          </span>
-          <button class="btn-danger" *ngIf="!rp2.liveAutoTradeAuthorized" (click)="authorizeLiveAutoTrade()">Authorize live auto-trade</button>
-          <button class="btn-ghost-sm" *ngIf="rp2.liveAutoTradeAuthorized" (click)="revokeLiveAutoTrade()">Revoke</button>
+      credential is ALREADY a LIVE credential by construction now (see the standalone LIVE
+      connect section above), so there's no "revert to testnet" here anymore — deleting a
+      LIVE credential (Remove button, above) is the equivalent, and never touches a separate
+      TESTNET credential you may also have. -->
+      @if (sel.mode === 'LIVE') {
+        <div class="bs-section danger">
+          <div class="ss-title">Autonomous LIVE trading</div>
+          <div class="ss-desc">⚠ This credential trades with real funds.</div>
+          @if (riskProfile(); as rp2) {
+            <div class="bs-halt-row">
+              <span class="halt-status" [class.halted]="!rp2.liveAutoTradeAuthorized">
+                {{ rp2.liveAutoTradeAuthorized ? '✅ Autonomous LIVE trading authorized' : '⛔ Autonomous LIVE trading NOT authorized (auto-trade will skip every signal)' }}
+              </span>
+              @if (!rp2.liveAutoTradeAuthorized) {
+                <button class="btn-danger" (click)="authorizeLiveAutoTrade()">Authorize live auto-trade</button>
+              }
+              @if (rp2.liveAutoTradeAuthorized) {
+                <button class="btn-ghost-sm" (click)="revokeLiveAutoTrade()">Revoke</button>
+              }
+            </div>
+          }
         </div>
-      </div>
-
+      }
       <!-- Order history -->
-      <div class="bs-section" *ngIf="orders().length">
-        <div class="ss-title">Recent orders</div>
-        <div class="bs-orders">
-          <div class="ord-row" *ngFor="let o of orders()">
-            <span class="ord-side" [class.sell]="o.side === 'SELL'">{{ o.side }}</span>
-            <span>{{ o.quantity }} {{ o.symbol }}</span>
-            <span class="ord-status" [class.err]="o.status === 'REJECTED' || o.status === 'ERROR'">{{ o.status }}</span>
-            <span class="ord-source">{{ o.triggerSource }}</span>
-            <span class="ord-time">{{ o.placedAt | date:'short' }}</span>
+      @if (orders().length) {
+        <div class="bs-section">
+          <div class="ss-title">Recent orders</div>
+          <div class="bs-orders">
+            @for (o of orders(); track o) {
+              <div class="ord-row">
+                <span class="ord-side" [class.sell]="o.side === 'SELL'">{{ o.side }}</span>
+                <span>{{ o.quantity }} {{ o.symbol }}</span>
+                <span class="ord-status" [class.err]="o.status === 'REJECTED' || o.status === 'ERROR'">{{ o.status }}</span>
+                <span class="ord-source">{{ o.triggerSource }}</span>
+                <span class="ord-time">{{ o.placedAt | date:'short' }}</span>
+              </div>
+            }
           </div>
         </div>
-      </div>
-
-    </ng-container>
+      }
+    }
   </div>
 </div>

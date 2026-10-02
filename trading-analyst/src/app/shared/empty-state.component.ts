@@ -1,19 +1,20 @@
 import { Component, Input, Output, EventEmitter } from '@angular/core';
-import { CommonModule } from '@angular/common';
+
 
 @Component({
-  selector: 'tv-empty',
-  standalone: true,
-  imports: [CommonModule],
-  template: `
+    selector: 'tv-empty',
+    imports: [],
+    template: `
     <div class="empty-state">
       <div class="es-icon">{{icon}}</div>
       <div class="es-title">{{title}}</div>
       <div class="es-desc">{{description}}</div>
-      <button *ngIf="actionLabel" class="es-btn" (click)="onAction.emit()">{{actionLabel}}</button>
+      @if (actionLabel) {
+        <button class="es-btn" (click)="onAction.emit()">{{actionLabel}}</button>
+      }
     </div>
-  `,
-  styles: [`
+    `,
+    styles: [`
     .empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px 24px;text-align:center;gap:8px;}
     .es-icon{font-size:40px;margin-bottom:4px;opacity:0.6;}
     .es-title{font-size:16px;font-weight:700;color:#E8EDF5;}
@@ -30,18 +31,19 @@ export class EmptyStateComponent {
 }
 
 @Component({
-  selector: 'tv-error-state',
-  standalone: true,
-  imports: [CommonModule],
-  template: `
+    selector: 'tv-error-state',
+    imports: [],
+    template: `
     <div class="error-state">
       <div class="err-icon">⚠️</div>
       <div class="err-title">{{title || 'Something went wrong'}}</div>
       <div class="err-desc">{{message}}</div>
-      <button *ngIf="retryLabel" class="err-btn" (click)="onRetry.emit()">{{retryLabel}}</button>
+      @if (retryLabel) {
+        <button class="err-btn" (click)="onRetry.emit()">{{retryLabel}}</button>
+      }
     </div>
-  `,
-  styles: [`
+    `,
+    styles: [`
     .error-state{display:flex;flex-direction:column;align-items:center;padding:32px 20px;text-align:center;gap:6px;background:rgba(255,59,92,0.04);border:1px solid rgba(255,59,92,0.15);border-radius:12px;}
     .err-icon{font-size:28px;}
     .err-title{font-size:14px;font-weight:700;color:#FF3B5C;}

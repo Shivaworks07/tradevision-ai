@@ -29,7 +29,7 @@
     "@angular/cli": "^21.2.24",
     "@angular/compiler-cli": "^21.2.25",
     "@playwright/test": "^1.48.0",
-    "@types/jasmine": "~5.1.0",
+    "@types/jasmine": "~6.0.0",
     "jasmine-core": "~5.1.0",
     "karma": "~6.4.0",
     "karma-chrome-launcher": "~3.2.0",

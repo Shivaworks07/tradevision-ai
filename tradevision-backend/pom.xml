@@ -116,6 +116,38 @@
           </execution>
         </executions>
       </plugin>
+      <!-- CI review follow up fix ("MongoDB connection refused errors from scheduled background
+           reconciliation tasks"; full context in TradeVisionApplication's and
+           SchedulingConfig's own javadoc): app.scheduling.enabled=false for every test JVM is
+           now set here, as a Surefire system property, NOT via a src/test/resources/
+           application.properties file.
+
+           That file was tried first and reverted: Spring Boot does not merge a test classpath
+           application.properties with the main one; it loads whichever one the classloader
+           resolves first, and target/test-classes precedes target/classes on Maven's test
+           classpath, so the test only file SILENTLY REPLACED the entire main
+           application.properties for every SpringBootTest, wiping out unrelated properties
+           such as app.jwt.expiration. That broke JwtUtil's construction and, through it, every
+           single integration test's ApplicationContext (confirmed from a real CI run with
+           Testcontainers/Docker actually available: "Tests run: 30, Errors: 30",
+           IllegalArgumentException: Could not resolve placeholder 'app.jwt.expiration';
+           the sandbox this fix was first written in has no Docker/registry access, so this
+           classpath shadowing bug could not be caught before a real CI run surfaced it).
+
+           A Surefire systemPropertyVariable does not touch classpath resource loading at all;
+           it becomes a normal JVM system property, which Spring's property resolution already
+           places above any properties file, so it reliably overrides app.scheduling.enabled's
+           own default (true) for every test fork without the main application.properties being
+           shadowed or merged with anything. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <systemPropertyVariables>
+            <app.scheduling.enabled>false</app.scheduling.enabled>
+          </systemPropertyVariables>
+        </configuration>
+      </plugin>
     </plugins>
   </build>
 </project>

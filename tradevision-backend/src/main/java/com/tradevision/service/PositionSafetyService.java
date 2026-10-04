@@ -1101,8 +1101,22 @@ public class PositionSafetyService {
         // discrepancy, rather than only the generic "protection failure" haltProfile() itself
         // raises -- real, more actionable diagnostic information for whoever investigates, not
         // a second halt (that would be redundant with the one below).
+        //
+        // CI-review fix (full context in PositionLedgerService.reconstructPosition(String,
+        // String)'s own updated javadoc): without the base asset, a fully-closed position whose
+        // entry paid ANY base-asset commission nets to that commission amount, not zero -- a
+        // false mismatch on an ordinary, correct flatten, not just a genuine discrepancy.
+        // Resolved best-effort; a failure here falls back to the old, commission-unaware
+        // comparison rather than skipping the check entirely.
+        String baseAssetForClosedCheck = null;
         try {
-            var reconcileResult = positionLedgerService.reconcilePositionAgainstLedger(position.getId(), BigDecimal.ZERO);
+            baseAssetForClosedCheck = adapter.getSymbolRules(position.getSymbol(), credential.getMode()).baseAsset();
+        } catch (Exception e) {
+            log.debug("Could not resolve base asset for post-flatten ledger reconciliation on {} ({}) -- falling back to the "
+                + "commission-unaware comparison.", position.getSymbol(), e.getMessage());
+        }
+        try {
+            var reconcileResult = positionLedgerService.reconcilePositionAgainstLedger(position.getId(), BigDecimal.ZERO, baseAssetForClosedCheck);
             if (!reconcileResult.matches()) {
                 // Review finding ("Position Ledger is still not authoritative" -- P0, full
                 // context in ReconcileResult.resolvedQuantity's own javadoc): actual derivation,

@@ -78,16 +78,64 @@ public class PositionLedgerService {
      * at all — same "distinguish genuinely zero from nothing to reconstruct from" rule.
      */
     public BigDecimal reconstructPosition(String positionId) {
+        return reconstructPosition(positionId, null);
+    }
+
+    /**
+     * CI-review fix ("PositionPersistenceRecoveryIntegrationTest: Fill ledger mismatch... ledger
+     * reconstructs 0.10, but the caller believes 0.099900" -- real CI run, GitHub Actions log
+     * archive downloaded and inspected directly after two PRIOR fixes to this same test each
+     * resolved a DIFFERENT flatten trigger without touching this one): root-caused by direct
+     * comparison against PositionSafetyService.computeNetQuantity, the method that actually
+     * produces the "believed" quantity every caller of reconcilePositionAgainstLedger passes in.
+     * That method subtracts base-asset commission from the gross filled quantity (Binance's
+     * default BUY commission asset is the base asset itself, unless a BNB fee discount is
+     * enabled) -- but this class's own sumFills (below) summed every FillRecord's raw, GROSS
+     * f.getQuantity(), with no commission deduction at all. Those two numbers are DEFINED
+     * differently: one is "what the exchange says was bought/sold", the other is "what was
+     * actually bought/sold net of the fee taken out of the base asset" -- and they can only ever
+     * agree when base-asset commission happens to be exactly zero. For the test's own fill data
+     * (0.06 BTC + 0.04 BTC bought, with 0.0001 BTC total base-asset commission), gross sums to
+     * 0.10 while the believed, fee-adjusted figure is 0.0999 -- a guaranteed, deterministic
+     * mismatch on every single run, not a timing-dependent flake, which is exactly why the prior
+     * two fixes (which both targeted real but DIFFERENT, timing-shaped bugs earlier in this same
+     * flow) never made this one go away.
+     *
+     * The fix: net out base-asset commission here too, with the exact same rule
+     * PositionSafetyService.computeNetQuantity already uses for the entry side -- a BUY fill's
+     * contribution is reduced by its own commission when (and only when) that fill's commission
+     * was paid in the base asset itself. A SELL's proceeds are paid in the quote asset, so a
+     * SELL's own commission is never denominated in the base asset in practice and never reduces
+     * the base-asset quantity actually sold -- only BUY fills are adjusted, matching
+     * computeNetQuantity's own scope exactly. baseAsset is optional (null is accepted, e.g. from
+     * a call site that genuinely cannot resolve it): when absent, this intentionally falls back
+     * to the old, commission-unaware sum rather than guessing, since guessing which asset is
+     * "base" here would be worse than the honest, pre-existing limitation.
+     */
+    public BigDecimal reconstructPosition(String positionId, String baseAsset) {
         List<FillRecord> fills = fillRecordRepo.findByPositionIdOrderByExecutedAtAsc(positionId);
-        return sumFills(fills);
+        return sumFills(fills, baseAsset);
     }
 
     private BigDecimal sumFills(List<FillRecord> fills) {
+        return sumFills(fills, null);
+    }
+
+    private BigDecimal sumFills(List<FillRecord> fills, String baseAsset) {
         if (fills.isEmpty()) return null;
         BigDecimal net = BigDecimal.ZERO;
         for (FillRecord f : fills) {
             if (f.getQuantity() == null) continue;
-            net = "SELL".equalsIgnoreCase(f.getSide()) ? net.subtract(f.getQuantity()) : net.add(f.getQuantity());
+            if ("SELL".equalsIgnoreCase(f.getSide())) {
+                net = net.subtract(f.getQuantity());
+            } else {
+                BigDecimal qty = f.getQuantity();
+                if (baseAsset != null && f.getCommissionAmount() != null && f.getCommissionAsset() != null
+                        && f.getCommissionAsset().equalsIgnoreCase(baseAsset)) {
+                    qty = qty.subtract(f.getCommissionAmount());
+                }
+                net = net.add(qty);
+            }
         }
         return net;
     }
@@ -183,9 +231,23 @@ public class PositionLedgerService {
      * Same cross-check as reconcileAgainstLedger, but scoped to a whole position\'s fill history
      * (via reconstructPosition) rather than a single order. The natural expected value for a
      * just-closed position is BigDecimal.ZERO (everything bought was eventually sold).
+     *
+     * CI-review fix (full context in reconstructPosition(String, String)\'s own updated javadoc):
+     * baseAsset, when the caller can resolve it, lets reconstructPosition net out base-asset
+     * commission on the BUY side the exact same way the caller\'s own "believed" figure already
+     * does — without it, this comparison is guaranteed to flag a real position as a mismatch
+     * purely because one side of the comparison is fee-adjusted and the other isn\'t, which is
+     * what caused a deterministic (not flaky) real-CI failure for every single position that paid
+     * any base-asset commission at all.
      */
+    public ReconcileResult reconcilePositionAgainstLedger(String positionId, BigDecimal believedQuantity, String baseAsset) {
+        return reconcile(reconstructPosition(positionId, baseAsset), believedQuantity, "position", positionId);
+    }
+
+    /** Back-compat overload for call sites that genuinely cannot resolve a base asset (same
+     *  honest "don't guess" fallback reconstructPosition(String, String) documents). */
     public ReconcileResult reconcilePositionAgainstLedger(String positionId, BigDecimal believedQuantity) {
-        return reconcile(reconstructPosition(positionId), believedQuantity, "position", positionId);
+        return reconcilePositionAgainstLedger(positionId, believedQuantity, null);
     }
 
     private ReconcileResult reconcile(BigDecimal ledgerQuantity, BigDecimal believedQuantity, String kind, String id) {

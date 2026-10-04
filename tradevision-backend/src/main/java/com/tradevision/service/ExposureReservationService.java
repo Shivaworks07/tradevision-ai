@@ -305,6 +305,17 @@ public class ExposureReservationService {
                         var totalResult = sessionTemplate.findAndModify(
                             totalQuery, totalInc, FindAndModifyOptions.options().returnNew(true), ExposureReservation.class);
                         if (totalResult == null) {
+                            // CI-review fix ("same 2 test failures again" -- MultiPlanExposureIntegrationTest
+                            // still expects 2 successes out of 3 concurrent attempts but gets 0, even after the
+                            // retry/backoff fix above landed and was confirmed running in real CI): every reject()
+                            // return in this method was completely silent before this fix -- there was no way to
+                            // tell, from a CI log alone, whether a given attempt lost legitimately to the cap or
+                            // was rejected by some other bug entirely. Logging the actual document state this
+                            // decision was based on (not just "rejected") so the next real CI run finally reveals
+                            // which one this is, instead of another round of guessing.
+                            log.warn("reserve() REJECT (total cap) for credential {} symbol {} attempt {}: requested {}, cap {} "
+                                + "(would need existing reservedTotalExposureQuote <= {} for this to have been allowed).",
+                                credentialId, symbol, attempt, orderQuoteValue, maxTotal, maxTotal.subtract(orderQuoteValue));
                             session.abortTransaction();
                             return ExposureReserveResult.reject("Would exceed total exposure cap of " + maxTotal);
                         }
@@ -318,6 +329,10 @@ public class ExposureReservationService {
                         var symbolResult = sessionTemplate.findAndModify(
                             symbolQuery, symbolInc, FindAndModifyOptions.options().returnNew(true), ExposureReservation.class);
                         if (symbolResult == null) {
+                            // Same diagnostic-visibility fix as the total-cap reject just above.
+                            log.warn("reserve() REJECT (symbol cap) for credential {} symbol {} attempt {}: requested {}, cap {} "
+                                + "(would need existing reservedSymbolExposure.{} <= {} for this to have been allowed).",
+                                credentialId, symbol, attempt, orderQuoteValue, maxSymbol, symbol, maxSymbol.subtract(orderQuoteValue));
                             session.abortTransaction(); // undoes the total-cap increment above too -- the whole transaction, atomically
                             return ExposureReserveResult.reject("Would exceed per-symbol exposure cap of " + maxSymbol + " for " + symbol);
                         }
@@ -350,6 +365,10 @@ public class ExposureReservationService {
                         ExposureReservationRecord.class);
 
                     session.commitTransaction();
+                    // Same diagnostic-visibility fix as the reject() logging above -- a successful
+                    // commit was also completely silent before this fix.
+                    log.debug("reserve() OK for credential {} symbol {} attempt {}: reserved {}, record {}.",
+                        credentialId, symbol, attempt, orderQuoteValue, record.getId());
                     return ExposureReserveResult.ok(record.getId());
                 } catch (RuntimeException e) {
                     try {

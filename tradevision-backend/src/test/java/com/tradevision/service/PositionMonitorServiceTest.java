@@ -205,7 +205,7 @@ class PositionMonitorServiceTest {
         // reconcilePositionAgainstLedger would otherwise return null (an object type, not a
         // boolean), NPEing every existing test that reaches the new position-close reconciliation
         // check. A test that wants the mismatch path overrides this explicitly.
-        when(positionLedgerService.reconcilePositionAgainstLedger(any(), any()))
+        when(positionLedgerService.reconcilePositionAgainstLedger(any(), any(), any()))
             .thenAnswer(invocation -> new PositionLedgerService.ReconcileResult(PositionLedgerService.ReconcileStatus.MATCH, invocation.getArgument(1), invocation.getArgument(1)));
         when(credentialService.decrypt(any(), org.mockito.ArgumentMatchers.eq(true))).thenReturn("key");
         when(credentialService.decrypt(any(), org.mockito.ArgumentMatchers.eq(false))).thenReturn("secret");
@@ -1254,7 +1254,7 @@ class PositionMonitorServiceTest {
         // (Mockito's default empty-list return), contaminating what this test actually verifies.
         when(fillLedgerService.recordFills(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
             .thenReturn(List.of(mock(FillRecord.class)));
-        when(positionLedgerService.reconcilePositionAgainstLedger(any(), any()))
+        when(positionLedgerService.reconcilePositionAgainstLedger(any(), any(), any()))
             .thenReturn(new PositionLedgerService.ReconcileResult(PositionLedgerService.ReconcileStatus.MISMATCH, BigDecimal.valueOf(0.3), BigDecimal.ZERO));
 
         service.reconcileOcoProtectedPosition(credential, adapter, "key", "secret", position, java.util.Optional.of(profile), 1L);
@@ -1349,7 +1349,7 @@ class PositionMonitorServiceTest {
         when(adapter.getSymbolRules("BTCUSDT", BrokerMode.TESTNET)).thenReturn(BTC_RULES);
         when(positionSafetyService.computeNetQuantity(any(), any(), any())).thenReturn(
             new PositionSafetyService.FillAccountingResult(BigDecimal.valueOf(0.999), BigDecimal.ZERO));
-        when(positionLedgerService.reconcilePositionAgainstLedger(any(), any()))
+        when(positionLedgerService.reconcilePositionAgainstLedger(any(), any(), any()))
             .thenReturn(new PositionLedgerService.ReconcileResult(PositionLedgerService.ReconcileStatus.MISMATCH, BigDecimal.valueOf(0.5), BigDecimal.valueOf(0.999)));
 
         var order2 = new Order();

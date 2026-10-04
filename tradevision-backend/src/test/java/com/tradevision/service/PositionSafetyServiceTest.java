@@ -210,7 +210,7 @@ class PositionSafetyServiceTest {
         // reasoning as the recordFills default just above -- an unstubbed
         // reconcilePositionAgainstLedger would otherwise return null, NPEing every existing
         // test that reaches the new position-close reconciliation check.
-        when(positionLedgerService.reconcilePositionAgainstLedger(any(), any()))
+        when(positionLedgerService.reconcilePositionAgainstLedger(any(), any(), any()))
             .thenAnswer(invocation -> new PositionLedgerService.ReconcileResult(PositionLedgerService.ReconcileStatus.MATCH, invocation.getArgument(1), invocation.getArgument(1)));
     }
 
@@ -1107,7 +1107,7 @@ class PositionSafetyServiceTest {
         Position position = openPosition(1.0, 100, 10.0);
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(
             fullSuccess(1.0, 105, List.of(new Fill(BigDecimal.valueOf(105), BigDecimal.ONE, BigDecimal.valueOf(1.5), "USDT"))));
-        when(positionLedgerService.reconcilePositionAgainstLedger(any(), any()))
+        when(positionLedgerService.reconcilePositionAgainstLedger(any(), any(), any()))
             .thenReturn(new PositionLedgerService.ReconcileResult(PositionLedgerService.ReconcileStatus.MISMATCH, BigDecimal.valueOf(0.2), BigDecimal.ZERO));
 
         service.emergencyFlatten(credential, adapter, "key", "secret", position, "test reason");

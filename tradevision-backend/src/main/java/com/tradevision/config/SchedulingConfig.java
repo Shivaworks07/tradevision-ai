@@ -54,20 +54,32 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
  *
  * CI-review fix ("MongoDB connection-refused errors from scheduled background reconciliation
  * tasks" -- external review, GitHub Actions integration-test failures, "Additional issue"; full
- * mechanism explained in TradeVisionApplication's own updated javadoc): this whole configuration
- * class -- the dedicated TaskScheduler pools, not just whether @Scheduled methods run against
- * them -- is now gated behind the same app.scheduling.enabled property (default true everywhere
- * except the test JVM, where tradevision-backend/pom.xml sets it false via a Surefire
- * systemPropertyVariable -- see that file's own comment for why a src/test/resources/
- * application.properties file was tried first and reverted). Gating the pools
- * themselves, not only @EnableScheduling, means a test context doesn't even spin up and later
- * have to shut down four live thread pools it will never use -- purely a resource-cleanliness
- * improvement on top of the actual fix (which is EnableScheduling moving to
- * SchedulingEnablerConfig below); it does not change production behavior, since
- * matchIfMissing = true keeps every pool created exactly as before outside of tests.
+ * mechanism explained in TradeVisionApplication's own updated javadoc): app.scheduling.enabled
+ * turns off REAL @Scheduled timer firing in every Spring-context-backed test (via
+ * SchedulingEnablerConfig below), default true everywhere else (set false only in the test JVM,
+ * by tradevision-backend/pom.xml's Surefire systemPropertyVariable).
+ *
+ * This outer class -- the four dedicated TaskScheduler bean definitions themselves -- is
+ * deliberately NOT gated by that same property, after a real CI run (confirmed via a downloaded
+ * GitHub Actions log archive, same disclosed sandbox-has-no-Docker limitation as everywhere else
+ * in this codebase's tests) showed every integration test's ApplicationContext failing to start
+ * with "Parameter 8 of constructor in BinanceUserDataStreamService required a bean of type
+ * 'org.springframework.scheduling.TaskScheduler' that could not be found." An earlier version of
+ * this fix DID gate the whole class (reasoning: a test context that will never fire a @Scheduled
+ * method doesn't need to spin up, or later shut down, four live thread pools it will never use)
+ * -- but BinanceUserDataStreamService constructor-injects wsReconcileDispatchScheduler directly,
+ * by type/name, to dispatch debounced reconciliation work from its own WebSocket listener thread
+ * (see that class's own javadoc) -- a real, unconditional dependency on the bean existing, which
+ * has nothing to do with whether @Scheduled annotations are being processed anywhere. Gating the
+ * bean definitions broke that dependency the moment app.scheduling.enabled=false, in every single
+ * test, since nothing else in this codebase injects a TaskScheduler by type/name outside a
+ * @Scheduled(scheduler = "...") string reference (which IS a no-op with @EnableScheduling off, so
+ * disabling firing there was always safe). Pools created but briefly idle in a test context is a
+ * real but minor resource cost; a test suite entirely unable to start its ApplicationContext is
+ * not an acceptable trade for it. Production behavior is unchanged either way: matchIfMissing =
+ * true already meant every pool was created in every non-test profile before this correction too.
  */
 @Configuration
-@ConditionalOnProperty(name = "app.scheduling.enabled", havingValue = "true", matchIfMissing = true)
 public class SchedulingConfig {
 
     /**

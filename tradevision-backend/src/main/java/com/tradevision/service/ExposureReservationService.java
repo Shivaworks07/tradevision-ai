@@ -300,7 +300,7 @@ public class ExposureReservationService {
 
                     if (totalCapConfigured) {
                         Query totalQuery = new Query(where("credentialId").is(credentialId)
-                            .and("reservedTotalExposureQuote").lte(maxTotal.subtract(orderQuoteValue)));
+                            .and("reservedTotalExposureQuote").lte(toDecimal128(maxTotal.subtract(orderQuoteValue))));
                         Update totalInc = new Update().inc("reservedTotalExposureQuote", toDecimal128(orderQuoteValue)).set("lastReservedAt", Instant.now());
                         var totalResult = sessionTemplate.findAndModify(
                             totalQuery, totalInc, FindAndModifyOptions.options().returnNew(true), ExposureReservation.class);
@@ -323,8 +323,35 @@ public class ExposureReservationService {
 
                     if (symbolCapConfigured) {
                         String symbolField = "reservedSymbolExposure." + symbol;
+                        // CI-review fix ("same 2 test failures again" -- real root cause, found after
+                        // adding the reject()-visibility logging above and re-running real CI: the
+                        // very FIRST-EVER reservation for a brand-new credential/symbol was being
+                        // rejected, with no concurrency involved at all -- not a race, a structural
+                        // bug. reservedTotalExposureQuote is a literal, @Field(targetType=DECIMAL128)
+                        // -annotated property, so Spring Data's QueryMapper knows to convert a raw
+                        // BigDecimal criteria value to Decimal128 for it automatically -- that's why
+                        // the total-cap check above has always worked. reservedSymbolExposure.<symbol>
+                        // (and reservedGroupExposure.<group>) is a DYNAMIC key inside a
+                        // Map<String,BigDecimal> -- there is no way to annotate a per-key target type
+                        // for a map Spring doesn't know the keys of ahead of time, so QueryMapper has
+                        // no metadata to convert by and falls back to this codebase's own default
+                        // BigDecimal handling, which ExposureReservation's own javadoc already
+                        // documents elsewhere: stored/compared as a STRING, not a number, unless
+                        // explicitly converted first. ensureSymbolFieldExists (and ensureGroupFieldExists)
+                        // already store the zeroed starting value as a real Decimal128 (via this same
+                        // toDecimal128 helper) -- so the stored value was Decimal128(0), the query's
+                        // own comparison value was being sent as a string, and a MongoDB $lte between
+                        // two different BSON types never matches, REGARDLESS of the actual numbers --
+                        // explaining both this test's single-threaded, zero-contention rejection and
+                        // MultiPlanExposureIntegrationTest's successCount-always-0 (every single
+                        // attempt there was failing at this exact, same symbol-cap check, which just
+                        // happened to look concurrency-shaped because three threads were racing to
+                        // reach the SAME broken comparison, not because the comparison itself was ever
+                        // close). Fixed the same way the Update side already converts: wrap the
+                        // comparison value in toDecimal128(...) explicitly rather than relying on
+                        // Spring to infer a type it structurally cannot infer for a dynamic map key.
                         Query symbolQuery = new Query(where("credentialId").is(credentialId)
-                            .and(symbolField).lte(maxSymbol.subtract(orderQuoteValue)));
+                            .and(symbolField).lte(toDecimal128(maxSymbol.subtract(orderQuoteValue))));
                         Update symbolInc = new Update().inc(symbolField, toDecimal128(orderQuoteValue)).set("lastReservedAt", Instant.now());
                         var symbolResult = sessionTemplate.findAndModify(
                             symbolQuery, symbolInc, FindAndModifyOptions.options().returnNew(true), ExposureReservation.class);
@@ -341,8 +368,9 @@ public class ExposureReservationService {
                     for (String groupName : groupsToReserve) {
                         BigDecimal groupCap = correlationGroupCaps.get(groupName);
                         String groupField = "reservedGroupExposure." + groupName;
+                        // Same dynamic-map-key Decimal128 fix as the symbol-cap query just above.
                         Query groupQuery = new Query(where("credentialId").is(credentialId)
-                            .and(groupField).lte(groupCap.subtract(orderQuoteValue)));
+                            .and(groupField).lte(toDecimal128(groupCap.subtract(orderQuoteValue))));
                         Update groupInc = new Update().inc(groupField, toDecimal128(orderQuoteValue)).set("lastReservedAt", Instant.now());
                         var groupResult = sessionTemplate.findAndModify(
                             groupQuery, groupInc, FindAndModifyOptions.options().returnNew(true), ExposureReservation.class);
@@ -555,7 +583,7 @@ public class ExposureReservationService {
 
         if (totalCapConfigured) {
             Query totalQuery = new Query(where("credentialId").is(credentialId)
-                .and("reservedTotalExposureQuote").lte(maxTotal.subtract(orderQuoteValue)));
+                .and("reservedTotalExposureQuote").lte(toDecimal128(maxTotal.subtract(orderQuoteValue))));
             Update totalInc = new Update().inc("reservedTotalExposureQuote", toDecimal128(orderQuoteValue)).set("lastReservedAt", Instant.now());
             ExposureReservation totalResult = mongoTemplate.findAndModify(
                 totalQuery, totalInc, FindAndModifyOptions.options().returnNew(true), ExposureReservation.class);
@@ -567,8 +595,11 @@ public class ExposureReservationService {
 
         if (symbolCapConfigured) {
             String symbolField = "reservedSymbolExposure." + symbol;
+            // Same dynamic-map-key Decimal128 fix as reserveTransactionally's own identical query
+            // (full context in that method's own updated comment) -- this sequential fallback path
+            // has the exact same bug for the exact same reason.
             Query symbolQuery = new Query(where("credentialId").is(credentialId)
-                .and(symbolField).lte(maxSymbol.subtract(orderQuoteValue)));
+                .and(symbolField).lte(toDecimal128(maxSymbol.subtract(orderQuoteValue))));
             Update symbolInc = new Update().inc(symbolField, toDecimal128(orderQuoteValue)).set("lastReservedAt", Instant.now());
             ExposureReservation symbolResult = mongoTemplate.findAndModify(
                 symbolQuery, symbolInc, FindAndModifyOptions.options().returnNew(true), ExposureReservation.class);
@@ -594,8 +625,9 @@ public class ExposureReservationService {
             BigDecimal groupCap = correlationGroupCaps.get(groupName);
             ensureGroupFieldExists(credentialId, groupName, mongoTemplate);
             String groupField = "reservedGroupExposure." + groupName;
+            // Same dynamic-map-key Decimal128 fix as above.
             Query groupQuery = new Query(where("credentialId").is(credentialId)
-                .and(groupField).lte(groupCap.subtract(orderQuoteValue)));
+                .and(groupField).lte(toDecimal128(groupCap.subtract(orderQuoteValue))));
             Update groupInc = new Update().inc(groupField, toDecimal128(orderQuoteValue)).set("lastReservedAt", Instant.now());
             ExposureReservation groupResult = mongoTemplate.findAndModify(
                 groupQuery, groupInc, FindAndModifyOptions.options().returnNew(true), ExposureReservation.class);
@@ -759,8 +791,13 @@ public class ExposureReservationService {
      * conditional decrement succeeds, or the explicit clamp-to-zero does.
      */
     private void releaseFloored(String credentialId, String field, BigDecimal amount) {
+        // Same dynamic-map-key Decimal128 fix as reserveTransactionally's own symbol/group cap
+        // queries (full context there) -- this is called for "reservedTotalExposureQuote" (a
+        // literal, annotated field, where this was never broken) AND for
+        // "reservedSymbolExposure.<symbol>" / "reservedGroupExposure.<group>" (dynamic map keys,
+        // where it was) -- converting unconditionally here is correct and safe for both.
         var decremented = mongoTemplate.findAndModify(
-            new Query(where("credentialId").is(credentialId).and(field).gte(amount)),
+            new Query(where("credentialId").is(credentialId).and(field).gte(toDecimal128(amount))),
             new Update().inc(field, toDecimal128(amount.negate())),
             ExposureReservation.class);
         if (decremented == null) {
@@ -781,14 +818,17 @@ public class ExposureReservationService {
      */
     public void release(String credentialId, String symbol, BigDecimal orderQuoteValue) {
         if (orderQuoteValue == null || orderQuoteValue.signum() <= 0) return;
+        // Same dynamic-map-key Decimal128 fix as reserveTransactionally's own symbol/group cap
+        // queries (full context there) -- the total-field comparison below was never broken
+        // (it's a literal, annotated field), but every symbol/group comparison in this method was.
         mongoTemplate.updateFirst(
-            new Query(where("credentialId").is(credentialId).and("reservedTotalExposureQuote").gte(orderQuoteValue)),
+            new Query(where("credentialId").is(credentialId).and("reservedTotalExposureQuote").gte(toDecimal128(orderQuoteValue))),
             new Update().inc("reservedTotalExposureQuote", toDecimal128(orderQuoteValue.negate())),
             ExposureReservation.class);
         if (symbol != null) {
             String symbolField = "reservedSymbolExposure." + symbol;
             mongoTemplate.updateFirst(
-                new Query(where("credentialId").is(credentialId).and(symbolField).gte(orderQuoteValue)),
+                new Query(where("credentialId").is(credentialId).and(symbolField).gte(toDecimal128(orderQuoteValue))),
                 new Update().inc(symbolField, toDecimal128(orderQuoteValue.negate())),
                 ExposureReservation.class);
         }
@@ -800,7 +840,7 @@ public class ExposureReservationService {
                         if (entry.getValue() != null && entry.getValue().contains(symbol)) {
                             String groupField = "reservedGroupExposure." + entry.getKey();
                             mongoTemplate.updateFirst(
-                                new Query(where("credentialId").is(credentialId).and(groupField).gte(orderQuoteValue)),
+                                new Query(where("credentialId").is(credentialId).and(groupField).gte(toDecimal128(orderQuoteValue))),
                                 new Update().inc(groupField, toDecimal128(orderQuoteValue.negate())),
                                 ExposureReservation.class);
                         }

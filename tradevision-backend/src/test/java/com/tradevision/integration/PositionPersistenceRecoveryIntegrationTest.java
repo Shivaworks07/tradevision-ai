@@ -192,8 +192,35 @@ class PositionPersistenceRecoveryIntegrationTest {
         // 0.04*50100) / 0.1 = 50040, not either individual fill's own price.
         assertThat(recovered.get().getAvgEntryPrice()).isEqualByComparingTo(BigDecimal.valueOf(50040));
 
-        // Invariant 3: total commission across both fills is captured, not just the first.
-        assertThat(recovered.get().getEntryFeeQuote()).isNotNull();
+        // CI-review fix ("same 1 test failure now" -- real CI run, finally reached after the
+        // Decimal128 exposure-reservation fix above resolved the layer that was masking this one:
+        // the test got all the way to this assertion for the first time and failed with
+        // "Expecting actual not to be null"): this fixture's own fills pay commission in BTC (the
+        // base asset -- see both Fill entries above, commissionAsset = "BTC"), not USDT (the
+        // quote asset), and that's deliberate -- it's exactly what makes Invariant 2's
+        // quantity-weighted-average-price assertion and the exposure reservation's own 4998.996
+        // amount meaningful at all (both depend on PositionSafetyService.computeNetQuantity
+        // deducting base-asset commission from the gross fill, per that method's own javadoc).
+        // PositionSafetyService.sumCommissionInQuoteAsset -- the method that actually populates
+        // entryFeeQuote -- deliberately returns null (not a fabricated, un-converted number)
+        // whenever a fill's commission was paid in anything other than the quote asset, per that
+        // method's own documented "don't fabricate what you don't know" rule. For THIS fixture's
+        // own fee data, entryFeeQuote being null is the correct, intended result, not a bug --
+        // asserting isNotNull() here was simply wrong for a fixture that pays commission in the
+        // base asset, and nothing before this round of fixes ever actually reached this line to
+        // catch it.
+        assertThat(recovered.get().getEntryFeeQuote()).isNull();
+
+        // The review's own actual concern here ("total commission across both fills is captured,
+        // not just the first") is still real and still worth testing -- just via the metric this
+        // fixture's own fee data actually populates: netQuantity. 0.06 + 0.04 = 0.10 gross, minus
+        // BOTH fills' own base-asset commission (0.00006 + 0.00004 = 0.0001 total -- a bug that
+        // only summed the FIRST fill's commission would produce 0.099940, not 0.099900) gives
+        // 0.0999. This is the same quantity PositionLedgerService.reconcilePositionAgainstLedger
+        // now also independently reconstructs from the fill ledger and agrees with (see that
+        // class's own updated javadoc) -- so this single assertion is corroborated by two
+        // independent computations arriving at the same number, not just one.
+        assertThat(recovered.get().getQuantity()).isEqualByComparingTo(BigDecimal.valueOf(0.0999));
 
         // Invariant 4: a genuine, atomic reservation was taken for this recovered position --
         // not created with no reservation at all, which the review's own P1 #4 finding (already

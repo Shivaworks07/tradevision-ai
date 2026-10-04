@@ -3,10 +3,21 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
+  <!-- P1-21 follow-up (full context in SETUP.md's own P1-21 section, and in its newer
+       dated follow-up below that): real CI's OWASP Dependency-Check job started hard-failing
+       (-DfailBuildOnCVSS=8) on a long list of accumulated CVEs against Spring Boot 3.2.5's own
+       pinned transitive versions; Spring Framework (CVSS 9.8, dozens of CVEs), Tomcat (dozens
+       more, some CVSS 9.8), Jackson, Spring Data MongoDB, Spring Security, the MongoDB driver,
+       Hibernate Validator, Log4j, and others, all of which move together with this one parent
+       version. 3.2.x itself is out of free/OSS support (confirmed in SETUP.md's own P1-21
+       section), so no patched 3.2.x release exists to move to; this bump goes to 3.5.16, the
+       latest patch of the 3.5.x line, a MINOR version bump within Spring Boot 3 (no jakarta/
+       javax namespace change, no Spring Framework major-version jump to 7.x the way Spring Boot
+       4.x would require), explicitly the lower-risk upgrade path for exactly this situation. -->
   <parent>
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-parent</artifactId>
-    <version>3.2.5</version>
+    <version>3.5.16</version>
   </parent>
   <groupId>com.tradevision</groupId>
   <artifactId>tradevision-backend</artifactId>
@@ -92,10 +103,17 @@
     </dependency>
 
     <!-- OpenAPI / Swagger UI -->
+    <!-- P1-21 follow-up (full context on spring-boot-starter-parent's own updated comment
+         above): 2.3.0 is the OWASP scan's actual source for the swagger-ui-5.10.3.jar DOMPurify
+         findings (its own CVEs, not Spring Boot's); springdoc-openapi is versioned
+         independently of Spring Boot and was never managed by that parent's own BOM, so bumping
+         the parent alone does not move this. 2.8.6 is confirmed Spring Boot 3.5.x-compatible
+         (springdoc explicitly tracks Spring Boot's own minor-version lines) and bundles a current
+         swagger-ui with a patched DOMPurify. -->
     <dependency>
       <groupId>org.springdoc</groupId>
       <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
-      <version>2.3.0</version>
+      <version>2.8.6</version>
     </dependency>
   </dependencies>
 

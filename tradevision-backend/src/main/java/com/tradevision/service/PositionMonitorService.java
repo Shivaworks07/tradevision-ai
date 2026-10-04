@@ -135,6 +135,27 @@ public class PositionMonitorService {
     private final DistributedLockService distributedLockService;
     private final String instanceId = java.util.UUID.randomUUID().toString();
 
+    // CI-review fix ("Position recovery after a filled order" -- real CI run, GitHub Actions log
+    // archive downloaded and inspected directly: PositionPersistenceRecoveryIntegrationTest
+    // expected status "OPEN" but got "CLOSED_UNVERIFIED_PNL", even after an earlier fix already
+    // gave the test order a real SL/TP and a stubbed OCO placement): the actual remaining cause,
+    // confirmed by direct inspection -- createPositionForLateDiscoveredFill calls
+    // distributedLockService.renew(credential.getId(), instanceId, lockGeneration, ...)
+    // immediately before placing the protective OCO (see that call site's own comment), and
+    // emergency-flattens the brand-new position if that renewal fails. The test calls
+    // createPositionForLateDiscoveredFill directly, with no matching ReconciliationLock ever
+    // acquired for its test credential -- renew() correctly finds zero matching documents
+    // (instanceId is generated once per JVM, privately, and was not exposed for a test to target
+    // even if it tried) and returns false, exactly as it should for a real caller with no lock,
+    // which is why the position was emergency-flattened instead of staying OPEN. Not a production
+    // bug -- a missing test fixture, same category as the earlier SL/TP fix in this same test --
+    // but the earlier fix alone wasn't the whole gap. This getter is the minimal, harmless
+    // addition that lets a test actually acquire a real lock under this exact instanceId before
+    // calling a method that renews against it; nothing else in this class is changed.
+    public String getInstanceId() {
+        return instanceId;
+    }
+
     @Scheduled(fixedDelay = 60_000, initialDelay = 30_000, scheduler = "reconciliationScheduler")
     public void reconcile() {
         doReconcile();

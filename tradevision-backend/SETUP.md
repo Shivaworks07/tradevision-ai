@@ -170,3 +170,72 @@ Testcontainers 1.19.0 → current). Two independent reasons, both real:
    real (non-offline) build environment — is real, concrete follow-up work this fix makes
    visible and trackable (every Dependabot PR against `spring-boot-starter-parent`/`@angular/*`
    going forward), rather than a gap that silently persists unnoticed.
+
+## Follow-up: Spring Boot 3.2.5 → 3.5.16 (the P1-21 upgrade this section deferred, now done)
+
+The OWASP Dependency-Check job this P1-21 pass added started doing exactly the job it was meant
+for: a real CI run hard-failed it (`-DfailBuildOnCVSS=8`) against a long list of CVEs accumulated
+against Spring Boot 3.2.5's own pinned versions — Spring Framework (CVSS up to 9.8, dozens of
+CVEs), Tomcat (dozens more, several CVSS 9.8), Jackson, Spring Data MongoDB, Spring Security, the
+MongoDB driver, Hibernate Validator, Log4j, and the bundled Swagger UI's own DOMPurify. None of
+this is new risk this pass introduced — it is 3.2.5 being out of free/OSS support, exactly as
+flagged above, finally showing up as a hard gate instead of a documented risk.
+
+**What changed**: `spring-boot-starter-parent` 3.2.5 → **3.5.16** (the latest patch of the 3.5.x
+line) — a minor version bump within Spring Boot 3 (no jakarta/javax namespace change, no Spring
+Framework major-version jump to 7.x the way Spring Boot 4.x would require), the lower-risk upgrade
+path for closing out-of-date transitive CVEs without the larger migration surface a Boot 4 jump
+would carry. `springdoc-openapi-starter-webmvc-ui` 2.3.0 → **2.8.6** separately, since that
+dependency is pinned independently of Spring Boot's own BOM and was the actual source of the
+bundled Swagger UI's DOMPurify CVEs — bumping the parent alone does not move it.
+
+**Honest limitation, same mechanism as reason 1 above and every other fix in this repo's CI
+history that needed real dependency resolution**: this sandbox still has no Maven Central access
+(`mvn` here still runs `-o`), so `mvn -o compile` against the bumped parent fails immediately on
+`Cannot access central ... in offline mode` — not a real compile problem, but it does mean this
+exact version combination has not been compiled or test-run from inside this session. What *was*
+verified here: the POM is valid XML and resolves the dependency graph shape correctly up to the
+network boundary; and every other code change landing in this same pass (the exposure-reservation
+retry/backoff fix and the position-recovery test fix immediately below) was independently verified
+against the *old*, resolvable 3.2.5 parent first (`mvn -o test -Dtest='!*IntegrationTest'` →
+1164/1164, BUILD SUCCESS), so a failure after this bump lands specifically on the version change
+itself, not on code this pass also touched. The next real CI run is what actually confirms this
+upgrade compiles, the full test suite (including the Testcontainers-backed integration suite this
+sandbox has never been able to run either) still passes, and the OWASP gate is actually green.
+
+## Follow-up: two further real-CI-only bugs fixed in the same pass as the Spring Boot bump above
+
+Two more real CI failures came in from the same run that surfaced the CVE gate above, both found
+by downloading and reading the Actions log archive directly (the same honest-limitation pattern
+as every other integration-test fix in this repository's history — no Docker/Testcontainers in
+this sandbox, so neither could be caught here before a real run exposed it):
+
+- **`MultiPlanExposureIntegrationTest`**: `threeConcurrentPlansSameSymbol_combinedExposureNeverExceedsAccountCap`
+  expected 2 of 3 concurrent reservations to succeed, got 0. The retry loop
+  `ExposureReservationService.reserveTransactionally` already added for this exact scenario was
+  retrying real `WriteConflict`s back-to-back with zero delay — this document touches more fields
+  per transaction than `PositionSlotReservationService`'s own equivalent (which does pass under
+  the same concurrency), so it has more surface for repeated collision, and immediate lockstep
+  retries maximize the odds of the same threads re-colliding rather than letting whichever one is
+  ahead actually commit. Fixed with a short, randomized backoff before each retry (standard MongoDB
+  guidance for this exact pattern), and — separately — the final non-retryable exception is now
+  logged before it propagates, since the test's own `executor.submit(...)` never checks its
+  `Future` and was silently swallowing whatever actually failed; the log line is the only way a
+  future real CI run (if this doesn't fully resolve it) leaves an actual diagnosable trace instead
+  of the near-total silence this failure showed here.
+- **`PositionPersistenceRecoveryIntegrationTest.orderFilledWithMissingPosition_reconstructedCorrectly_noDuplicateBuy`**:
+  expected status `OPEN`, got `CLOSED_UNVERIFIED_PNL` — again, after an earlier fix in this same
+  test (giving the order a real SL/TP and a stubbed OCO placement) had already addressed one real
+  flatten trigger but not the actual remaining one. `createPositionForLateDiscoveredFill` renews
+  the reconciliation lock (`distributedLockService.renew(credentialId, instanceId, lockGeneration,
+  ...)`) immediately before placing the protective OCO, and emergency-flattens if that renewal
+  fails — the test called it directly with a hardcoded `lockGeneration=1L` and no matching
+  `ReconciliationLock` ever acquired, so the renewal correctly found zero matching documents and
+  returned false, exactly as it should for a caller with no real lock. Not a production bug — a
+  missing test fixture, same category as the earlier SL/TP gap in this same test. Fixed by adding
+  a `getInstanceId()` getter to `PositionMonitorService` (the field was private with no accessor,
+  so a test could not even target the right lock to begin with) and having the test actually
+  acquire a real lock, under that same instanceId, via `DistributedLockService.tryAcquireWithDiagnosis`
+  before calling the method under test — verified via `mvn -o test -Dtest='!*IntegrationTest'`
+  (1164/1164 unit tests, unaffected) and `mvn -o test-compile` (clean); the integration test itself
+  still needs a real CI run to confirm, same limitation as everywhere else in this file.

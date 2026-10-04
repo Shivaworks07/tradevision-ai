@@ -85,6 +85,10 @@ class PositionPersistenceRecoveryIntegrationTest {
     @Autowired private ExposureReservationRecordRepository exposureReservationRecordRepo;
     @Autowired private PositionSlotReservationRecordRepository slotReservationRecordRepo;
     @Autowired private RiskProfileRepository riskProfileRepo;
+    // CI-review fix (full context on createPositionForLateDiscoveredFill's own instanceId/
+    // getInstanceId() comments): needed to acquire a real ReconciliationLock below, under the
+    // SAME instanceId the method under test will itself use to renew it.
+    @Autowired private com.tradevision.service.DistributedLockService distributedLockService;
 
     @Test
     @DisplayName("createPositionForLateDiscoveredFill: an Order that reached FILLED with genuinely no Position ever created for it (Position.save() failed, or the process crashed before it ran) is reconstructed against a real MongoDB with the correct quantity-weighted average price, total commission, a genuine atomic reservation, OPEN status -- and never places a second BUY order")
@@ -163,10 +167,21 @@ class PositionPersistenceRecoveryIntegrationTest {
             .thenReturn(new com.tradevision.service.broker.dto.OcoOrderResult(
                 true, "test-oco-list-id", "{}", null, BigDecimal.valueOf(0.1)));
 
+        // CI-review fix ("Position recovery after a filled order" -- real CI run, full context in
+        // PositionMonitorService.getInstanceId()'s own javadoc): createPositionForLateDiscoveredFill
+        // renews the reconciliation lock under this exact instanceId/generation immediately before
+        // placing the protective OCO, and emergency-flattens if that renewal fails -- so a real
+        // lock, acquired under the SAME instanceId the method itself will renew against, must exist
+        // first. A hardcoded generation (1L) with no lock ever acquired was always going to fail
+        // that renewal and silently flatten the position this test means to verify stays OPEN.
+        var lockLease = distributedLockService.tryAcquireWithDiagnosis(
+            credentialId, positionMonitorService.getInstanceId(), java.time.Duration.ofSeconds(90));
+        assertThat(lockLease.acquired()).isTrue();
+
         // The actual recovery call -- this is what a real reconciliation pass calls when it
         // finds a FILLED order with no matching Position.
         positionMonitorService.createPositionForLateDiscoveredFill(
-            credential, adapter, "test-api-key", "test-api-secret", order, BigDecimal.valueOf(0.1), 1L);
+            credential, adapter, "test-api-key", "test-api-secret", order, BigDecimal.valueOf(0.1), lockLease.generation());
 
         // Invariant 1: a real Position now exists, OPEN, for this exact order.
         var recovered = positionRepo.findByEntryOrderId(order.getBrokerOrderId());

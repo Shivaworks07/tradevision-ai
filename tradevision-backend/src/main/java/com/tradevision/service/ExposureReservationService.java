@@ -201,6 +201,21 @@ public class ExposureReservationService {
      */
     private static final int MAX_TRANSACTION_RETRIES = 10;
 
+    /**
+     * CI-review fix, same context as the retry-backoff comment at this method's own WriteConflict
+     * retry call site: a short, randomized (jittered) delay before each retry, growing slightly
+     * with the attempt number but capped low -- this is a real database transaction on the hot
+     * order-placement path, not a background job, so even the worst case (attempt 10) adds at
+     * most tens of milliseconds, not seconds. Randomized specifically so that when multiple
+     * threads collide and all back off, they don't then retry in lockstep and collide again on
+     * the very next attempt -- a fixed, identical delay would just shift the same collision
+     * forward in time rather than actually reducing it.
+     */
+    private static long sleepMillisBeforeRetry(int attempt) {
+        int baseMillis = Math.min(attempt * 2, 20);
+        return baseMillis + java.util.concurrent.ThreadLocalRandom.current().nextInt(10);
+    }
+
     private ExposureReserveResult reserveTransactionally(String credentialId, String symbol, BigDecimal orderQuoteValue,
                                           BigDecimal maxTotal, BigDecimal maxSymbol,
                                           java.util.Map<String, java.util.Set<String>> correlationGroups,
@@ -345,8 +360,45 @@ public class ExposureReservationService {
                     if (isTransientTransactionError(e) && attempt < MAX_TRANSACTION_RETRIES) {
                         log.debug("Transient MongoDB transaction error on reserve() attempt {} for credential {} symbol {} ({}) -- retrying.",
                             attempt, credentialId, symbol, e.getMessage());
+                        // CI-review fix ("Multi-plan combined exposure reservation" -- real CI run,
+                        // GitHub Actions log archive downloaded and inspected directly: with real
+                        // concurrent threads racing this credential's SAME document, successCount
+                        // came back 0 of 3, not the 2 the account-level cap should allow, even
+                        // though this retry loop already existed and real WriteConflict retries
+                        // were visibly happening in the log): this specific document sees MORE
+                        // writes per transaction than PositionSlotReservationService's own
+                        // equivalent (ensureDocumentExists, ensureSymbolFieldExists, insert, then
+                        // up to two findAndModify calls -- total AND symbol, both configured in
+                        // this exact test), so it has more surface for a WriteConflict under real
+                        // concurrent load, and retrying every attempt back-to-back with ZERO delay
+                        // (as this loop did before this fix) maximizes the odds of the SAME threads
+                        // immediately re-colliding on their very next attempt instead of letting
+                        // whichever one is already ahead actually commit. A short, randomized sleep
+                        // before each retry -- MongoDB's own documented guidance for exactly this
+                        // scenario -- breaks that lockstep without meaningfully slowing down the
+                        // common, uncontended case (most reserve() calls never retry at all).
+                        try {
+                            Thread.sleep(sleepMillisBeforeRetry(attempt));
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                        }
                         continue;
                     }
+                    // CI-review fix, same context as the retry-backoff comment just above: if every
+                    // retry is exhausted, or this isn't a transient error at all, this exception
+                    // used to fall straight through to `throw e` below with no log line of its
+                    // own -- and since this method's only real caller in the failing test submits
+                    // to an ExecutorService without ever checking the returned Future, a thrown
+                    // exception here is silently swallowed with NO trace anywhere in the log. That
+                    // made the real CI failure genuinely undiagnosable from the log alone (confirmed
+                    // directly: a downloaded GitHub Actions log archive for this exact failure shows
+                    // only the first few retry attempts and then nothing -- no stack trace, no
+                    // further detail, for any of the 3 threads). Logging here, unconditionally,
+                    // before this method's own control flow decides what to do next, means the next
+                    // real CI run that hits this path leaves an actual diagnosable trace instead of
+                    // silence.
+                    log.warn("reserve() for credential {} symbol {} giving up after attempt {} ({}): {}",
+                        credentialId, symbol, attempt, e.getClass().getName(), e.getMessage(), e);
                     // Review finding (self-diagnosed, live production bug: this exact catch clause was
                     // catching ONLY com.mongodb.MongoException directly -- but confirmed real by direct
                     // inspection of a real production log, that's not actually what escapes here.

@@ -170,3 +170,44 @@ Testcontainers 1.19.0 → current). Two independent reasons, both real:
    real (non-offline) build environment — is real, concrete follow-up work this fix makes
    visible and trackable (every Dependabot PR against `spring-boot-starter-parent`/`@angular/*`
    going forward), rather than a gap that silently persists unnoticed.
+
+## Follow-up: Angular upgrade done; a residual, currently unfixable frontend audit finding
+
+The Angular major-version bump P1-21 above deliberately deferred has since been done
+(`@angular/core` 17.3 → 21.2.25, and the rest of `trading-analyst/package.json` with it) and
+merged, closing the XSS-class `@angular/core`/`@angular/compiler` advisories this section
+originally flagged.
+
+That upgrade's own follow-up CI run then failed the `Frontend — npm audit` job with 12 new
+high-severity findings. Direct investigation against this repo's real `package-lock.json`
+(`npm audit --json`, cross-checked against each advisory's own GitHub page) found exactly two
+distinct causes, not twelve independent problems:
+
+- **`http-cache-semantics` <=4.2.0 (GHSA-ch52-4w7c-c8xp)** — a real, fixable finding. `npm audit
+  fix` (no `--force`) bumped it to 4.3.0: a non-breaking devDependency-only patch. Fixed.
+- **`braces` <=3.0.3 (GHSA-vfj7-8cjw-p6xm, stack-exhaustion DoS)** — confirmed by reading the
+  advisory itself that, as of this pass, 3.0.3 is braces' own latest version published to npm, and
+  the advisory's own "patched versions" field is listed as unknown: there is currently no fixed
+  version to move to, from anyone, not a version this repo failed to pick up. `npm audit fix
+  --force`'s only available "fix" is downgrading `karma` to `4.0.0` — years out of date, a
+  semver-major break never tested against this repo's new Angular 21 toolchain, and (confirmed by
+  checking `karma@4.0.0`'s own dependency tree) it still resolves to `chokidar@2.x` →
+  `braces@2.3.2`, which is *also* `<=3.0.3` and therefore still vulnerable under the advisory's own
+  range — so forcing it would trade a working, current build for a broken, outdated one that still
+  reports this exact same open finding. Per this project's own standing instruction not to run
+  `npm audit fix --force` blindly, it was not applied. The other 10 reported findings
+  (`chokidar`, `karma`, `karma-jasmine`, `karma-jasmine-html-reporter`, `webpack-dev-server`,
+  `micromatch`, `http-proxy-middleware`, `@angular-devkit/build-angular`,
+  `@angular-devkit/build-webpack`, `@angular/build`) are all only reachable *through* this same
+  unfixed `braces`, not independent issues of their own.
+
+Confirmed via `npm audit --omit=dev` that every one of those 11 remaining findings lives entirely
+in devDependencies (`karma`, the local test runner, and `webpack-dev-server`, the local dev
+server) — neither ships inside `ng build --configuration production`'s own output, so neither
+reaches a deployed artifact. `.github/workflows/dependency-scan.yml`'s `frontend-npm-audit` job
+was updated accordingly: the build-failing gate now runs `npm audit --omit=dev
+--audit-level=high` (production dependencies only, currently 0 findings), with a second,
+always-run, non-failing step still printing the full audit (dev included) so this residual finding
+stays visible rather than silently suppressed. Re-check `npm audit` against `braces` on a normal
+cadence (the existing weekly scheduled run already does this) and remove the `--omit=dev` scoping
+once a real fix is published upstream.

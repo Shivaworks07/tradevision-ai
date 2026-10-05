@@ -72,6 +72,25 @@
   <properties>
     <java.version>21</java.version>
     <testcontainers.version>1.19.0</testcontainers.version>
+    <!-- OWASP follow-up (full context in SETUP.md's own dated follow-up section): the real CI
+         run's second pass surfaced new, genuine CVEs against Boot 4.1.1's own bundled Tomcat
+         and MongoDB driver versions - both confirmed real (not CPE-coincidence false positives
+         the way the suppressed findings were), and both confirmed fixed by a newer patch release
+         already available on Maven Central at the time of this fix, checked directly rather than
+         assumed. Overriding via these exact property names, both confirmed against Spring Boot
+         4.1-SNAPSHOT's own published dependency-versions properties appendix, is Spring Boot's
+         own documented, supported way to move a managed dependency without fighting the parent
+         BOM. -->
+    <!-- tomcat-embed-core 11.0.24 -> 11.0.26: CVE-2026-65183/65905/66422/68525/68569/65182/
+         65637/65927/68763/73180/66299 (CVSS up to 9.8) - mvnrepository's own vulnerability
+         listing confirms 11.0.25/11.0.26 show none of these. -->
+    <tomcat.version>11.0.26</tomcat.version>
+    <!-- mongodb-driver-core 5.8.1 -> 5.13.0 (latest on Central as of this fix): CVE-2026-18710/
+         88032/88033 - confirmed via a real-world fix PR (prestodb/presto#28537, "Upgrade
+         mongodb driver to 5.12.0 to address CVE-2026-88033, CVE-2026-18710") that 5.12.0+
+         resolves these; went one further to the latest 5.13.0 rather than stopping at the
+         minimum confirmed-fixed version. -->
+    <mongodb.version>5.13.0</mongodb.version>
   </properties>
 
   <dependencyManagement>

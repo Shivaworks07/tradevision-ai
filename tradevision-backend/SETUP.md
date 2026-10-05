@@ -332,3 +332,26 @@ deliberately NOT force-overridden as an alternative to suppression here: Spring 
 BOM already pins kotlin-stdlib/protobuf-java/okhttp/opentelemetry at versions it tested together,
 and this sandbox cannot compile-test a manually-forced alternative combination, so suppressing the
 confirmed-inapplicable findings is the lower-risk fix for both of these.
+
+## Follow-up: real CI re-run — 1 more false-positive suppression + 2 genuine version bumps
+
+The next real CI run confirmed the 4 suppressions above worked (none of those findings
+reappeared) but surfaced two new things:
+
+- **`spring-boot-starter-mongodb-4.1.1.jar`** — the same version-coincidence false positive as
+  `spring-boot-mongodb` above, just a *different* Boot 4 MongoDB glue artifact (the thin starter
+  POM wrapper vs. the autoconfiguration module) that happened not to surface in the first run.
+  `owasp-suppressions.xml`'s existing entry now covers both via one broadened `packageUrl` regex
+  rather than a near-duplicate block.
+- **`tomcat-embed-core-11.0.24`** (11 CVEs now, up from 7 in the first run — NVD simply published
+  more since then) and **`mongodb-driver-core-5.8.1`** (3 CVEs, present since the very first OWASP
+  failure this session and never previously addressed) — both confirmed **genuinely real and
+  exploitable** findings against jars this project actually ships, not CPE false positives:
+  mongodb-driver-core's CVE-2026-88033/18710 confirmed via a real-world fix PR
+  (prestodb/presto#28537) that upgraded to exactly fix them. Both have newer patches already on
+  Maven Central: `tomcat.version` bumped 11.0.24 → **11.0.26** (mvnrepository's own vulnerability
+  listing shows neither 11.0.25 nor 11.0.26 carry these CVEs), `mongodb.version` bumped 5.8.1 →
+  **5.13.0** (latest available; the Presto PR confirms 5.12.0+ resolves the 3 flagged CVEs). Both
+  overridden via Spring Boot's own documented property-override mechanism
+  (`spring-boot-starter-parent`'s own managed-version properties), confirmed against Spring Boot
+  4.1's own published dependency-versions properties appendix rather than guessed at.

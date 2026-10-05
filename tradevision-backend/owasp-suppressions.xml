@@ -23,11 +23,14 @@
 
   <suppress>
     <notes><![CDATA[
-      spring-boot-mongodb-4.1.1.jar (Spring Boot 4's own tiny MongoDB auto-configuration glue
-      module, ~51KB, no connection-handling or query code of its own -- just wires Spring Data
-      MongoDB's beans) is being matched against two unrelated products purely because its
-      artifactId contains "mongodb" and its version happens to be "4.1.1" (which is this
-      project's SPRING BOOT release version, not any real external product's version):
+      spring-boot-mongodb-4.1.1.jar and spring-boot-starter-mongodb-4.1.1.jar (two different
+      Spring Boot 4 MongoDB glue artifacts -- the autoconfiguration module and its own thin
+      starter POM wrapper, respectively; a real CI re-run surfaced the starter POM's own matches
+      separately from the autoconfig module's, already covered below, so this entry's packageUrl
+      regex now covers both rather than adding a near-duplicate suppress block) are each being
+      matched against two unrelated products purely because their artifactId contains "mongodb"
+      and their version happens to be "4.1.1" (which is this project's SPRING BOOT release
+      version, not any real external product's version):
 
       - cpe:2.3:a:mongodb:mongodb:4.1.1 (the actual MongoDB DATABASE SERVER, version 4.1.1) --
         CVE-2025-14847 ("MongoBleed", a critical uninitialized-memory-disclosure bug in the
@@ -45,7 +48,7 @@
       Pipeline DoS Vulnerability" against "MongoDB MongoDB Server") is the same server-side
       pattern as CVE-2025-14847 above, not applicable to this client-side glue module.
     ]]></notes>
-    <packageUrl regex="true">^pkg:maven/org\.springframework\.boot/spring-boot-mongodb@.*$</packageUrl>
+    <packageUrl regex="true">^pkg:maven/org\.springframework\.boot/spring-boot-(starter-)?mongodb@.*$</packageUrl>
     <cve>CVE-2025-14847</cve>
     <cve>CVE-2026-9753</cve>
     <cve>CVE-2021-32036</cve>

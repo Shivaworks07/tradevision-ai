@@ -292,3 +292,43 @@ documentation, release notes, or a specific open GitHub issue, not assumed — b
 version jump is exactly the kind of change most likely to surface something no documentation
 search catches. The real CI run (compile + full test suite + the OWASP gate itself) is what
 actually confirms this; whoever merges this should watch that run closely.
+
+## Follow-up: 4 new OWASP findings after the 4.1.1 bump, all suppressed with individual research
+
+The first real CI run against Spring Boot 4.1.1 compiled and passed every other job, but OWASP
+failed on 4 new findings. Each was individually researched (NVD/vendor advisories, not assumed)
+before deciding suppress vs. fix — full reasoning for each lives in `owasp-suppressions.xml`
+itself, right next to its `<suppress>` block:
+
+- **`spring-boot-mongodb`/`spring-boot-data-mongodb` (Boot 4's own tiny MongoDB auto-config glue
+  modules, ~27-51KB each)** — flagged for `CVE-2025-14847` ("MongoBleed"), `CVE-2026-9753`,
+  `CVE-2021-32036` (all three confirmed real MongoDB **server** CVEs this project, which only
+  ever connects to a server over the wire, cannot be vulnerable to), and `CVE-2014-8180` (ancient,
+  also server-side). Root cause: NVD's CPE matching these jars by name+version coincidence — their
+  version is `4.1.1`, this project's Spring Boot release, which happens to also be a real MongoDB
+  server release number.
+- **`spring-boot-data-mongodb`** additionally flagged for `CVE-2026-41717`/`CVE-2026-41696` —
+  genuinely real Spring Data MongoDB CVEs (confirmed via spring.io's own security advisories),
+  but both fixed in 5.0.6+, and this project's actual `spring-data-mongodb` (confirmed in the same
+  CI run's own dependency resolution log) is **5.1.1** — already past the fix. The flagged `4.1.1`
+  is, again, Boot's own release version coincidentally landing inside spring-data-mongodb's own
+  *historical* vulnerable range (4.0.0-4.3.16) for a different artifact entirely.
+- **`protobuf-java-4.35.1.jar`** (transitive via `spring-boot-starter-opentelemetry`'s OTLP
+  exporter) — flagged for `CVE-2026-0994`, confirmed via osv.dev to be a **Python** protobuf
+  (`google.protobuf.json_format.ParseDict()`) JSON-recursion DoS bug, not applicable to the Java
+  artifact or this project's binary-wire-format-only OTLP usage.
+- **`kotlin-stdlib-2.3.21.jar`** (transitive via okhttp, itself pulled in by the OTLP exporter's
+  HTTP sender) — flagged for `CVE-2026-53914`, CVSS 9.8. Confirmed via JetBrains' own advisory:
+  this is an unsafe-deserialization RCE in the **Kotlin compiler's own build-cache subsystem**,
+  reachable only by a Kotlin/Gradle build consuming poisoned remote build-cache metadata — not by
+  an application that merely has the kotlin-stdlib *runtime* jar on its classpath. This project is
+  a plain Java/Maven build with no Kotlin compiler or Gradle build cache anywhere in it.
+
+All 4 are the OWASP Dependency-Check false-positive pattern its own documentation and this
+project's own suppression-file header describe: CPE name/version coincidence against an unrelated
+product, or a vulnerability in a part of the dependency this project's own usage never reaches.
+None were suppressed on assumption — each has a cited, checkable source. Versions were
+deliberately NOT force-overridden as an alternative to suppression here: Spring Boot 4.1.1's own
+BOM already pins kotlin-stdlib/protobuf-java/okhttp/opentelemetry at versions it tested together,
+and this sandbox cannot compile-test a manually-forced alternative combination, so suppressing the
+confirmed-inapplicable findings is the lower-risk fix for both of these.

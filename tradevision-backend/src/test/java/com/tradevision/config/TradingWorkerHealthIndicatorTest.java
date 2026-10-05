@@ -10,7 +10,9 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import java.util.List;
-import org.springframework.boot.actuate.health.Status;
+// Spring Boot 4 follow-up: Status moved to org.springframework.boot.health.contributor (see
+// TradingWorkerHealthIndicator's own updated import comment for full context).
+import org.springframework.boot.health.contributor.Status;
 
 import java.time.Instant;
 

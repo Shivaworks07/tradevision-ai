@@ -63,7 +63,7 @@ class LegacyIndexMigrationIntegrationTest {
 
     @DynamicPropertySource
     static void mongoProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.data.mongodb.uri", () -> mongo.getReplicaSetUrl(DB_NAME));
+        registry.add("spring.mongodb.uri", () -> mongo.getReplicaSetUrl(DB_NAME));
         // Seed the OLD, actually-broken indexes BEFORE the Spring context (and therefore
         // IndexInitializer) is ever created -- this is the whole point of doing it here rather
         // than in a @BeforeEach, which would run too late to prove the migration, not just the

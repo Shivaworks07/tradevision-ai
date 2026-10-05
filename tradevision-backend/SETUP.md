@@ -239,3 +239,56 @@ this sandbox, so neither could be caught here before a real run exposed it):
   before calling the method under test — verified via `mvn -o test -Dtest='!*IntegrationTest'`
   (1164/1164 unit tests, unaffected) and `mvn -o test-compile` (clean); the integration test itself
   still needs a real CI run to confirm, same limitation as everywhere else in this file.
+
+## Follow-up: Spring Boot 3.5.16 → 4.1.1 (3.5.x ran out of patches)
+
+The OWASP gate failed again on a fresh real CI run, this time against **3.5.16 itself** — not a
+regression from anything in this pass, but confirmation that 3.5.16 (released June 26, 2026) was
+the *final* patch Spring ever shipped for the 3.5.x line: Maven Central's own version listing
+shows no 3.5.17, with the project's release cadence moving straight to 4.0.x/4.1.x after that
+date. The new findings: CVSS 8.1–9.8 CVEs in `spring-core`, `spring-web`,
+`spring-security-core`/`-web`, `tomcat-embed-core`, and `mongodb-driver-core` — all real,
+production-shipped jars from the 3.5.16 BOM — plus `kotlin-stdlib-1.9.25.jar`, which turned out
+to be a `provided`-scope transitive of `springdoc-openapi` (pulled in for optional Kotlin
+support this pure-Java project never used, and never actually packaged into the runtime jar;
+OWASP scans `provided` scope by default even though Spring Boot's packaging strips it out).
+
+With no further 3.5.x patch available, suppressing the six real CVEs was explicitly ruled out
+(this project's own `owasp-suppressions.xml` policy exists precisely to rule that out for a real,
+unaddressed finding) — the user was asked and chose the major-version bump to **4.1.1** (Spring
+Framework 7) over suppressing-for-now.
+
+**What changed**, full rationale for each inline at the touched file/property (see `pom.xml`'s
+own dated parent-version comment for the complete writeup):
+- `spring-boot-starter-parent` 3.5.16 → **4.1.1**.
+- `spring-boot-starter-web` → `spring-boot-starter-webmvc` (renamed in Boot 4).
+- `springdoc-openapi` (Swagger UI) **removed entirely**, not upgraded. Its only Boot-4-compatible
+  line (3.0.x) has an open, unresolved upstream bug (springdoc/springdoc-openapi#3200): swagger-core
+  pulls in a Jackson version that conflicts with this project's own direct, classic Jackson 2
+  usage (`ObjectMapper`/`JsonNode` in `BinanceBrokerAdapter`, `OrderService`, etc.), with reports
+  of a `ClassNotFoundException` and no confirmed fix as of this writing — a risk that could fail
+  the whole app's startup, not just `/swagger-ui`. Asked and confirmed with the user rather than
+  assumed; losing interactive API docs was judged the safer trade. This also removes the
+  `kotlin-stdlib` finding above for free, since that jar was a springdoc/swagger-core transitive.
+- `spring-boot-jackson2` added (+ `spring.jackson.use-jackson2-defaults=true`): Boot 4 defaults
+  to Jackson 3 (new `tools.jackson` groupId); this compatibility shim keeps this project's many
+  direct, hand-constructed Jackson 2 usages working unchanged instead of rewriting and
+  re-verifying every one of those call sites against Jackson 3 blind.
+- `micrometer-tracing-bridge-otel` + `opentelemetry-exporter-otlp` → Boot 4's own single
+  `spring-boot-starter-opentelemetry` starter; `management.otlp.tracing.endpoint` renamed to
+  `management.opentelemetry.tracing.export.otlp.endpoint` to match.
+- `spring.data.mongodb.*` properties (and the matching `registry.add(...)` calls in every
+  Testcontainers-backed integration test) → `spring.mongodb.*` (renamed, not just deprecated, in
+  Boot 4).
+- `@MockBean`/`@SpyBean` (`ReleaseTestSuiteIntegrationTest`, the only file using them) →
+  `@MockitoBean`/`@MockitoSpyBean`.
+
+**Honest limitation, more significant than usual**: this sandbox has no Maven Central access for
+Spring Boot 4.1.1 / Spring Framework 7 artifacts at all (only 3.2.0/3.2.5 are cached locally), so
+unlike the 3.2.5 → 3.5.16 bump above, this could not be round-tripped through a temporary
+local-cache downgrade to compile-check it — none of this has been compiled or test-run from
+inside this session. Every change above is backed by direct research against Spring's own current
+documentation, release notes, or a specific open GitHub issue, not assumed — but a major framework
+version jump is exactly the kind of change most likely to surface something no documentation
+search catches. The real CI run (compile + full test suite + the OWASP gate itself) is what
+actually confirms this; whoever merges this should watch that run closely.

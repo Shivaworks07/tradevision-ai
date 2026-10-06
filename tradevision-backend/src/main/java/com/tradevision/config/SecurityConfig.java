@@ -114,9 +114,13 @@ public class SecurityConfig {
                     "/api/ipo/**",              // public live IPO feed
                     "/api/stocks/symbols/**",   // public NSE symbol search
                     "/actuator/health/**",
-                    "/swagger-ui/**", "/swagger-ui.html",
-                    "/v3/api-docs/**", "/v3/api-docs",
-                    "/webjars/**",
+                    // Spring Boot 4 follow-up (full context in pom.xml's own dated parent-
+                    // version comment): springdoc/Swagger UI was removed entirely as part of
+                    // the Boot 4 migration (open, unresolved upstream Jackson conflict with
+                    // this app's own Jackson 2 usage -- see that comment), so the
+                    // /swagger-ui/**, /v3/api-docs/**, and /webjars/** routes that used to live
+                    // here no longer exist and were removed rather than left as permitAll
+                    // entries for routes nothing serves anymore.
                     // External API proxies (public - no auth needed)
                     "/binance-spot/**", "/binance-futures/**",
                     "/yf-api/**", "/forex-api/**", "/fng-api/**", "/nse-api/**", "/coingecko-api/**"

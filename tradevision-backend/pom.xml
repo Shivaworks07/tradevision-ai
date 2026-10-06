@@ -3,21 +3,66 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
-  <!-- P1-21 follow-up (full context in SETUP.md's own P1-21 section, and in its newer
-       dated follow-up below that): real CI's OWASP Dependency-Check job started hard-failing
+  <!-- P1-21 follow-up (full context in SETUP.md's own P1-21 section, and in the dated
+       follow-ups below that): real CI's OWASP Dependency-Check job started hard-failing
        (-DfailBuildOnCVSS=8) on a long list of accumulated CVEs against Spring Boot 3.2.5's own
-       pinned transitive versions; Spring Framework (CVSS 9.8, dozens of CVEs), Tomcat (dozens
-       more, some CVSS 9.8), Jackson, Spring Data MongoDB, Spring Security, the MongoDB driver,
-       Hibernate Validator, Log4j, and others, all of which move together with this one parent
-       version. 3.2.x itself is out of free/OSS support (confirmed in SETUP.md's own P1-21
-       section), so no patched 3.2.x release exists to move to; this bump goes to 3.5.16, the
-       latest patch of the 3.5.x line, a MINOR version bump within Spring Boot 3 (no jakarta/
-       javax namespace change, no Spring Framework major-version jump to 7.x the way Spring Boot
-       4.x would require), explicitly the lower-risk upgrade path for exactly this situation. -->
+       pinned transitive versions; this project moved to 3.5.16 (the last patch of the 3.5.x
+       line) as the lower-risk, same-major-version fix at the time.
+
+       NEWEST follow-up (this dated comment): 3.5.16 (released June 26, 2026) turned out to be
+       the FINAL patch ever issued for the 3.5.x line - confirmed against Maven Central's own
+       version listing, which shows no 3.5.17 and the project's release cadence moving straight
+       to 4.0.x/4.1.x after that date. OWASP's scan started failing again on CVSS 8.1-9.8 CVEs in
+       spring-core, spring-web, spring-security-core/-web, tomcat-embed-core, and
+       mongodb-driver-core - all real, production-shipped jars from the 3.5.16 BOM, not
+       false positives, so a suppression was not appropriate here (this file's own suppression
+       policy, below, exists precisely to rule that out as an option for a real, unaddressed
+       finding). With no further 3.5.x patch to move to, the only real fix is this MAJOR version
+       bump to 4.1.1 (Spring Framework 7), confirmed by the user to accept its migration risk.
+       Everything this bump required is documented inline at each touched file/property:
+       - spring-boot-starter-web -> spring-boot-starter-webmvc (renamed in Boot 4).
+       - springdoc-openapi (Swagger UI) REMOVED entirely rather than upgraded to its only
+         Boot-4-compatible line (3.0.x): that line has an open, unresolved upstream bug
+         (springdoc/springdoc-openapi#3200) where swagger-core pulls in a Jackson version that
+         conflicts with this project's own direct, classic Jackson 2 usage (ObjectMapper/
+         JsonNode in BinanceBrokerAdapter, OrderService, etc.), with reports of a
+         ClassNotFoundException with no confirmed fix as of this writing. Losing interactive API
+         docs was judged the safer trade against a bug that could fail the whole app's startup,
+         not just /swagger-ui - this was asked and confirmed, not assumed. Removing it also
+         removes kotlin-stdlib (a springdoc/swagger-core transitive, `provided` scope, never
+         actually packaged into the runtime jar) from the dependency tree entirely, which was
+         itself one of the 7 CVE findings in the log that triggered this follow-up.
+       - spring-boot-jackson2 + spring.jackson.use-jackson2-defaults=true added below: Boot 4
+         defaults to Jackson 3 (new `tools.jackson` groupId); this project's many direct,
+         hand-constructed `new ObjectMapper()`/`JsonNode` usages (classic
+         com.fasterxml.jackson.databind) keep working unchanged under this compatibility shim
+         instead of needing every one of those call sites rewritten and re-verified individually
+         in a sandbox that cannot compile Jackson 3 code at all.
+       - micrometer-tracing-bridge-otel + opentelemetry-exporter-otlp -> the new
+         spring-boot-starter-opentelemetry starter (Spring Boot 4's own replacement, confirmed
+         against spring.io's "OpenTelemetry with Spring Boot" post and docs.spring.io's own
+         4.0 tracing reference rather than assumed).
+       - spring.data.mongodb.* properties -> spring.mongodb.* (renamed, not just deprecated, in
+         Boot 4 - confirmed against two independent migration sources that agreed on this one).
+       - @MockBean/@SpyBean (ReleaseTestSuiteIntegrationTest, the only file using them) ->
+         @MockitoBean/@MockitoSpyBean (org.springframework.test.context.bean.override.mockito;
+         already the long-term-supported package, confirmed via the OpenRewrite Boot-4 recipe
+         for this exact rename rather than guessed).
+
+       HONEST LIMITATION, stated rather than left implicit: this sandbox has no Maven Central
+       access for Spring Boot 4.1.1 / Spring Framework 7 artifacts (only 3.2.0/3.2.5 are cached
+       locally), so none of this could be compiled or test-run here the way every prior version
+       bump this session was round-tripped through a temporary local-cache downgrade. Every
+       change above is backed by direct research against Spring's own current documentation,
+       release notes, or an open GitHub issue - not assumed - but "matches the documented API"
+       is not the same guarantee as "confirmed by actually running it." Whoever merges this
+       should watch the real CI run (compile + the full test suite + a real app boot) closely,
+       since a major framework version bump is exactly the kind of change most likely to surface
+       something no documentation search catches. -->
   <parent>
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-parent</artifactId>
-    <version>3.5.16</version>
+    <version>4.1.1</version>
   </parent>
   <groupId>com.tradevision</groupId>
   <artifactId>tradevision-backend</artifactId>
@@ -27,6 +72,25 @@
   <properties>
     <java.version>21</java.version>
     <testcontainers.version>1.19.0</testcontainers.version>
+    <!-- OWASP follow-up (full context in SETUP.md's own dated follow-up section): the real CI
+         run's second pass surfaced new, genuine CVEs against Boot 4.1.1's own bundled Tomcat
+         and MongoDB driver versions - both confirmed real (not CPE-coincidence false positives
+         the way the suppressed findings were), and both confirmed fixed by a newer patch release
+         already available on Maven Central at the time of this fix, checked directly rather than
+         assumed. Overriding via these exact property names, both confirmed against Spring Boot
+         4.1-SNAPSHOT's own published dependency-versions properties appendix, is Spring Boot's
+         own documented, supported way to move a managed dependency without fighting the parent
+         BOM. -->
+    <!-- tomcat-embed-core 11.0.24 -> 11.0.26: CVE-2026-65183/65905/66422/68525/68569/65182/
+         65637/65927/68763/73180/66299 (CVSS up to 9.8) - mvnrepository's own vulnerability
+         listing confirms 11.0.25/11.0.26 show none of these. -->
+    <tomcat.version>11.0.26</tomcat.version>
+    <!-- mongodb-driver-core 5.8.1 -> 5.13.0 (latest on Central as of this fix): CVE-2026-18710/
+         88032/88033 - confirmed via a real-world fix PR (prestodb/presto#28537, "Upgrade
+         mongodb driver to 5.12.0 to address CVE-2026-88033, CVE-2026-18710") that 5.12.0+
+         resolves these; went one further to the latest 5.13.0 rather than stopping at the
+         minimum confirmed-fixed version. -->
+    <mongodb.version>5.13.0</mongodb.version>
   </properties>
 
   <dependencyManagement>
@@ -64,7 +128,9 @@
       <artifactId>mongodb</artifactId>
       <scope>test</scope>
     </dependency>
-    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-web</artifactId></dependency>
+    <!-- Renamed from spring-boot-starter-web in Spring Boot 4 (see parent's own dated
+         migration comment above for full context). -->
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-webmvc</artifactId></dependency>
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-mongodb</artifactId></dependency>
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-security</artifactId></dependency>
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-validation</artifactId></dependency>
@@ -89,8 +155,11 @@
          backend accepts, so this doesn't lock in a specific choice. See
          application.properties's own new tracing section for the actual endpoint/sampling
          configuration. -->
-    <dependency><groupId>io.micrometer</groupId><artifactId>micrometer-tracing-bridge-otel</artifactId></dependency>
-    <dependency><groupId>io.opentelemetry</groupId><artifactId>opentelemetry-exporter-otlp</artifactId></dependency>
+    <!-- Spring Boot 4 follow-up (full context in parent's own dated migration comment above):
+         replaces the old micrometer-tracing-bridge-otel + opentelemetry-exporter-otlp pair with
+         Boot 4's own single starter for the same thing (confirmed against spring.io's
+         "OpenTelemetry with Spring Boot" post and docs.spring.io's 4.0 tracing reference). -->
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-opentelemetry</artifactId></dependency>
     <dependency><groupId>io.jsonwebtoken</groupId><artifactId>jjwt-api</artifactId><version>0.12.5</version></dependency>
     <dependency><groupId>io.jsonwebtoken</groupId><artifactId>jjwt-impl</artifactId><version>0.12.5</version><scope>runtime</scope></dependency>
     <dependency><groupId>io.jsonwebtoken</groupId><artifactId>jjwt-jackson</artifactId><version>0.12.5</version><scope>runtime</scope></dependency>
@@ -102,18 +171,21 @@
       <artifactId>spring-boot-starter-mail</artifactId>
     </dependency>
 
-    <!-- OpenAPI / Swagger UI -->
-    <!-- P1-21 follow-up (full context on spring-boot-starter-parent's own updated comment
-         above): 2.3.0 is the OWASP scan's actual source for the swagger-ui-5.10.3.jar DOMPurify
-         findings (its own CVEs, not Spring Boot's); springdoc-openapi is versioned
-         independently of Spring Boot and was never managed by that parent's own BOM, so bumping
-         the parent alone does not move this. 2.8.6 is confirmed Spring Boot 3.5.x-compatible
-         (springdoc explicitly tracks Spring Boot's own minor-version lines) and bundles a current
-         swagger-ui with a patched DOMPurify. -->
+    <!-- Spring Boot 4 follow-up (full context in parent's own dated migration comment above):
+         Boot 4 defaults to Jackson 3 (new `tools.jackson` groupId). This project has many
+         direct, hand-constructed uses of classic Jackson 2 (com.fasterxml.jackson.databind's
+         ObjectMapper/JsonNode - BinanceBrokerAdapter, OrderService, OrderFlowService,
+         Kline1mStreamService, BinanceUserDataStreamService, CallResultUpdater, FearGreedService,
+         OtpVerifyRequest), none of which this sandbox can rewrite-and-verify against Jackson 3
+         (no Maven Central access to even compile a Jackson-3 code path here). This official
+         compatibility module keeps Boot's own auto-configured Jackson beans on the classic
+         Jackson 2 line instead, matching spring.jackson.use-jackson2-defaults=true in
+         application.properties. Deprecated by Spring Boot and will be removed in a future
+         release - genuinely migrating every direct ObjectMapper/JsonNode usage to Jackson 3 is
+         real follow-up work this fix does not attempt blind. -->
     <dependency>
-      <groupId>org.springdoc</groupId>
-      <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
-      <version>2.8.6</version>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-jackson2</artifactId>
     </dependency>
   </dependencies>
 

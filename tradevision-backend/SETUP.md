@@ -239,3 +239,167 @@ this sandbox, so neither could be caught here before a real run exposed it):
   before calling the method under test — verified via `mvn -o test -Dtest='!*IntegrationTest'`
   (1164/1164 unit tests, unaffected) and `mvn -o test-compile` (clean); the integration test itself
   still needs a real CI run to confirm, same limitation as everywhere else in this file.
+
+## Follow-up: Spring Boot 3.5.16 → 4.1.1 (3.5.x ran out of patches)
+
+The OWASP gate failed again on a fresh real CI run, this time against **3.5.16 itself** — not a
+regression from anything in this pass, but confirmation that 3.5.16 (released June 26, 2026) was
+the *final* patch Spring ever shipped for the 3.5.x line: Maven Central's own version listing
+shows no 3.5.17, with the project's release cadence moving straight to 4.0.x/4.1.x after that
+date. The new findings: CVSS 8.1–9.8 CVEs in `spring-core`, `spring-web`,
+`spring-security-core`/`-web`, `tomcat-embed-core`, and `mongodb-driver-core` — all real,
+production-shipped jars from the 3.5.16 BOM — plus `kotlin-stdlib-1.9.25.jar`, which turned out
+to be a `provided`-scope transitive of `springdoc-openapi` (pulled in for optional Kotlin
+support this pure-Java project never used, and never actually packaged into the runtime jar;
+OWASP scans `provided` scope by default even though Spring Boot's packaging strips it out).
+
+With no further 3.5.x patch available, suppressing the six real CVEs was explicitly ruled out
+(this project's own `owasp-suppressions.xml` policy exists precisely to rule that out for a real,
+unaddressed finding) — the user was asked and chose the major-version bump to **4.1.1** (Spring
+Framework 7) over suppressing-for-now.
+
+**What changed**, full rationale for each inline at the touched file/property (see `pom.xml`'s
+own dated parent-version comment for the complete writeup):
+- `spring-boot-starter-parent` 3.5.16 → **4.1.1**.
+- `spring-boot-starter-web` → `spring-boot-starter-webmvc` (renamed in Boot 4).
+- `springdoc-openapi` (Swagger UI) **removed entirely**, not upgraded. Its only Boot-4-compatible
+  line (3.0.x) has an open, unresolved upstream bug (springdoc/springdoc-openapi#3200): swagger-core
+  pulls in a Jackson version that conflicts with this project's own direct, classic Jackson 2
+  usage (`ObjectMapper`/`JsonNode` in `BinanceBrokerAdapter`, `OrderService`, etc.), with reports
+  of a `ClassNotFoundException` and no confirmed fix as of this writing — a risk that could fail
+  the whole app's startup, not just `/swagger-ui`. Asked and confirmed with the user rather than
+  assumed; losing interactive API docs was judged the safer trade. This also removes the
+  `kotlin-stdlib` finding above for free, since that jar was a springdoc/swagger-core transitive.
+- `spring-boot-jackson2` added (+ `spring.jackson.use-jackson2-defaults=true`): Boot 4 defaults
+  to Jackson 3 (new `tools.jackson` groupId); this compatibility shim keeps this project's many
+  direct, hand-constructed Jackson 2 usages working unchanged instead of rewriting and
+  re-verifying every one of those call sites against Jackson 3 blind.
+- `micrometer-tracing-bridge-otel` + `opentelemetry-exporter-otlp` → Boot 4's own single
+  `spring-boot-starter-opentelemetry` starter; `management.otlp.tracing.endpoint` renamed to
+  `management.opentelemetry.tracing.export.otlp.endpoint` to match.
+- `spring.data.mongodb.*` properties (and the matching `registry.add(...)` calls in every
+  Testcontainers-backed integration test) → `spring.mongodb.*` (renamed, not just deprecated, in
+  Boot 4).
+- `@MockBean`/`@SpyBean` (`ReleaseTestSuiteIntegrationTest`, the only file using them) →
+  `@MockitoBean`/`@MockitoSpyBean`.
+
+**Honest limitation, more significant than usual**: this sandbox has no Maven Central access for
+Spring Boot 4.1.1 / Spring Framework 7 artifacts at all (only 3.2.0/3.2.5 are cached locally), so
+unlike the 3.2.5 → 3.5.16 bump above, this could not be round-tripped through a temporary
+local-cache downgrade to compile-check it — none of this has been compiled or test-run from
+inside this session. Every change above is backed by direct research against Spring's own current
+documentation, release notes, or a specific open GitHub issue, not assumed — but a major framework
+version jump is exactly the kind of change most likely to surface something no documentation
+search catches. The real CI run (compile + full test suite + the OWASP gate itself) is what
+actually confirms this; whoever merges this should watch that run closely.
+
+## Follow-up: 4 new OWASP findings after the 4.1.1 bump, all suppressed with individual research
+
+The first real CI run against Spring Boot 4.1.1 compiled and passed every other job, but OWASP
+failed on 4 new findings. Each was individually researched (NVD/vendor advisories, not assumed)
+before deciding suppress vs. fix — full reasoning for each lives in `owasp-suppressions.xml`
+itself, right next to its `<suppress>` block:
+
+- **`spring-boot-mongodb`/`spring-boot-data-mongodb` (Boot 4's own tiny MongoDB auto-config glue
+  modules, ~27-51KB each)** — flagged for `CVE-2025-14847` ("MongoBleed"), `CVE-2026-9753`,
+  `CVE-2021-32036` (all three confirmed real MongoDB **server** CVEs this project, which only
+  ever connects to a server over the wire, cannot be vulnerable to), and `CVE-2014-8180` (ancient,
+  also server-side). Root cause: NVD's CPE matching these jars by name+version coincidence — their
+  version is `4.1.1`, this project's Spring Boot release, which happens to also be a real MongoDB
+  server release number.
+- **`spring-boot-data-mongodb`** additionally flagged for `CVE-2026-41717`/`CVE-2026-41696` —
+  genuinely real Spring Data MongoDB CVEs (confirmed via spring.io's own security advisories),
+  but both fixed in 5.0.6+, and this project's actual `spring-data-mongodb` (confirmed in the same
+  CI run's own dependency resolution log) is **5.1.1** — already past the fix. The flagged `4.1.1`
+  is, again, Boot's own release version coincidentally landing inside spring-data-mongodb's own
+  *historical* vulnerable range (4.0.0-4.3.16) for a different artifact entirely.
+- **`protobuf-java-4.35.1.jar`** (transitive via `spring-boot-starter-opentelemetry`'s OTLP
+  exporter) — flagged for `CVE-2026-0994`, confirmed via osv.dev to be a **Python** protobuf
+  (`google.protobuf.json_format.ParseDict()`) JSON-recursion DoS bug, not applicable to the Java
+  artifact or this project's binary-wire-format-only OTLP usage.
+- **`kotlin-stdlib-2.3.21.jar`** (transitive via okhttp, itself pulled in by the OTLP exporter's
+  HTTP sender) — flagged for `CVE-2026-53914`, CVSS 9.8. Confirmed via JetBrains' own advisory:
+  this is an unsafe-deserialization RCE in the **Kotlin compiler's own build-cache subsystem**,
+  reachable only by a Kotlin/Gradle build consuming poisoned remote build-cache metadata — not by
+  an application that merely has the kotlin-stdlib *runtime* jar on its classpath. This project is
+  a plain Java/Maven build with no Kotlin compiler or Gradle build cache anywhere in it.
+
+All 4 are the OWASP Dependency-Check false-positive pattern its own documentation and this
+project's own suppression-file header describe: CPE name/version coincidence against an unrelated
+product, or a vulnerability in a part of the dependency this project's own usage never reaches.
+None were suppressed on assumption — each has a cited, checkable source. Versions were
+deliberately NOT force-overridden as an alternative to suppression here: Spring Boot 4.1.1's own
+BOM already pins kotlin-stdlib/protobuf-java/okhttp/opentelemetry at versions it tested together,
+and this sandbox cannot compile-test a manually-forced alternative combination, so suppressing the
+confirmed-inapplicable findings is the lower-risk fix for both of these.
+
+## Follow-up: real CI re-run — 1 more false-positive suppression + 2 genuine version bumps
+
+The next real CI run confirmed the 4 suppressions above worked (none of those findings
+reappeared) but surfaced two new things:
+
+- **`spring-boot-starter-mongodb-4.1.1.jar`** — the same version-coincidence false positive as
+  `spring-boot-mongodb` above, just a *different* Boot 4 MongoDB glue artifact (the thin starter
+  POM wrapper vs. the autoconfiguration module) that happened not to surface in the first run.
+  `owasp-suppressions.xml`'s existing entry now covers both via one broadened `packageUrl` regex
+  rather than a near-duplicate block.
+- **`tomcat-embed-core-11.0.24`** (11 CVEs now, up from 7 in the first run — NVD simply published
+  more since then) and **`mongodb-driver-core-5.8.1`** (3 CVEs, present since the very first OWASP
+  failure this session and never previously addressed) — both confirmed **genuinely real and
+  exploitable** findings against jars this project actually ships, not CPE false positives:
+  mongodb-driver-core's CVE-2026-88033/18710 confirmed via a real-world fix PR
+  (prestodb/presto#28537) that upgraded to exactly fix them. Both have newer patches already on
+  Maven Central: `tomcat.version` bumped 11.0.24 → **11.0.26** (mvnrepository's own vulnerability
+  listing shows neither 11.0.25 nor 11.0.26 carry these CVEs), `mongodb.version` bumped 5.8.1 →
+  **5.13.0** (latest available; the Presto PR confirms 5.12.0+ resolves the 3 flagged CVEs). Both
+  overridden via Spring Boot's own documented property-override mechanism
+  (`spring-boot-starter-parent`'s own managed-version properties), confirmed against Spring Boot
+  4.1's own published dependency-versions properties appendix rather than guessed at.
+
+## Follow-up: OWASP job failing with `401 Unauthorized` against OSS Index — not this project's fault
+
+The very next real CI run after the Tomcat/MongoDB-driver bumps above failed for a completely
+different reason — not a CVSS-threshold finding at all, but the job erroring out before it could
+even finish analysis:
+
+```
+AnalysisException: Failed to request component-reports
+    caused by DownloadFailedException: https://ossindex.sonatype.org/api/v3/component-report - Server status: 401 - Server reason: Unauthorized
+```
+
+repeated for every dependency, after which the build failed outright. Confirmed from the real log
+this isn't this project's code or dependencies at all: as of **September 2025**, Sonatype's own
+OSS Index requires authenticated requests for **all** API access and no longer permits the
+anonymous requests dependency-check-maven's OSS Index analyzer sends by default — a policy change
+on Sonatype's side that started breaking this exact job, with this exact error, across many
+unrelated projects the same month (confirmed via Sonatype's own community posts and
+dependency-check's own GitHub issue tracker). It also explains why the failed run took **1h50m**
+instead of its usual few minutes: dependency-check retries each failed OSS Index request with
+backoff before finally giving up.
+
+Two ways to fix this, presented to the user as a real trade-off rather than picked silently:
+disable the OSS Index analyzer entirely (`-DossindexAnalyzerEnabled=false`, falls back to
+NVD-only matching — simpler, but the dependency-check docs themselves note this "limits us to
+only the NVD data source"), or authenticate it with a free Sonatype OSS Index account. **User's
+choice: authenticate**, to keep both data sources.
+
+Implemented in `.github/workflows/dependency-scan.yml` (full reasoning in that job's own step
+comments): `actions/setup-java@v4`'s `server-id`/`server-username`/`server-password` inputs write
+a Maven `settings.xml` `<server>` block from two env vars at build time, and
+`-DossIndexServerId=ossindex` tells dependency-check-maven to read OSS Index credentials from
+that same `<server>` entry — confirmed against dependency-check-maven's own `check-mojo`
+parameter docs that this settings.xml-server-id indirection is the real mechanism; there is no
+direct `-DossIndexUsername`/`-DossIndexPassword` command-line property, despite some third-party
+blog posts claiming otherwise.
+
+**This needs two GitHub repo secrets added before the next OWASP run will actually pass** —
+*Settings → Secrets and variables → Actions → New repository secret*:
+- `OSS_INDEX_USERNAME` — the email address of a free account registered at
+  https://ossindex.sonatype.org/user/register
+- `OSS_INDEX_PASSWORD` — the API token generated at https://ossindex.sonatype.org/user/settings
+  (**not** that account's login password — OSS Index issues a separate token for API use)
+
+Until both secrets exist, this job will keep failing on this same 401: with the secrets unset,
+`setup-java` writes an empty/unset credential pair into `settings.xml`, which OSS Index still
+rejects. This is the one piece of this follow-up that genuinely cannot be finished from here —
+creating the Sonatype account and generating the token has to happen on the user's own side.

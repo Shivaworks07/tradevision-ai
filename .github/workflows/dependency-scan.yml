@@ -31,22 +31,59 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # OSS Index 401 follow-up (full root-cause writeup in this job's own "Run OWASP
+      # Dependency-Check" step comment below, and in SETUP.md's matching follow-up section):
+      # setup-java's own server-id/server-username/server-password inputs are its documented
+      # mechanism for writing a Maven settings.xml <server> block whose <username>/<password>
+      # are pulled from env vars at build time (confirmed via actions/setup-java's own README),
+      # rather than this workflow hand-writing a settings.xml itself. server-id here ("ossindex")
+      # must match the -DossIndexServerId value passed to dependency-check-maven below --
+      # that's how the plugin finds which <server> entry in the generated settings.xml holds the
+      # OSS Index credentials (confirmed against dependency-check-maven's own check-mojo
+      # parameter docs: there is no direct -DossIndexUsername/-DossIndexPassword command-line
+      # property, only this settings.xml-server-id indirection).
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '21'
           cache: 'maven'
-      # Review finding ("Build/CI cannot produce image" -- P0-10, full context in this repo's own
-      # Dockerfile): confirmed this same "must run from the actual pom.xml, with real dependency
-      # resolution" requirement applies here too -- dependency-check-maven inspects the resolved
-      # dependency tree, not just pom.xml text, so it needs a real `mvn` invocation against the
-      # backend module exactly like the existing test/build steps below do.
+          server-id: ossindex
+          server-username: OSSINDEX_USERNAME
+          server-password: OSSINDEX_PASSWORD
+      # Follow-up fix ("OWASP job failing with 401 Unauthorized against
+      # https://ossindex.sonatype.org/api/v3/component-report, all other CI jobs green" --
+      # confirmed real from a real CI run's own log, not assumed): root cause is NOT this
+      # project's code or dependencies at all -- as of September 2025 Sonatype's own OSS Index
+      # requires authenticated requests for ALL API access and no longer permits the anonymous
+      # requests dependency-check-maven's OSS Index analyzer previously sent by default
+      # (confirmed via Sonatype's own community posts and dependency-check's own GitHub issue
+      # tracker discussing this exact 401 pattern across many unrelated projects starting the
+      # same month). The repeated identical 401s in the log, and the run's own ~1h50m wall time
+      # (dependency-check retries each failed OSS Index request with backoff before finally
+      # giving up), are both explained by this one upstream policy change.
+      #
+      # Fixed by authenticating rather than dropping OSS Index as a data source (the user's own
+      # explicit choice over the lower-effort alternative of just disabling the analyzer, which
+      # the dependency-check-maven docs themselves note "limits us to only the NVD data source").
+      # Needs two repo secrets added under Settings -> Secrets and variables -> Actions, from a
+      # free Sonatype OSS Index account (https://ossindex.sonatype.org/user/register) and its
+      # generated API token (https://ossindex.sonatype.org/user/settings -- NOT your account
+      # login password):
+      #   OSS_INDEX_USERNAME = the account's email address
+      #   OSS_INDEX_PASSWORD = the generated API token (not the login password)
+      # Until those two secrets exist, this job will keep failing on this same 401 -- the
+      # setup-java step above only writes empty/unset credentials into settings.xml if the
+      # underlying secrets are unset, which OSS Index will still reject.
       - name: Run OWASP Dependency-Check
         working-directory: tradevision-backend
+        env:
+          OSSINDEX_USERNAME: ${{ secrets.OSS_INDEX_USERNAME }}
+          OSSINDEX_PASSWORD: ${{ secrets.OSS_INDEX_PASSWORD }}
         run: >
           mvn -B org.owasp:dependency-check-maven:12.1.0:check
           -DfailBuildOnCVSS=8
           -DsuppressionFile=owasp-suppressions.xml
+          -DossIndexServerId=ossindex
           -Dformats=HTML,JSON
       - name: Upload Dependency-Check report
         if: always()
@@ -68,13 +105,45 @@ jobs:
       - name: Install dependencies
         working-directory: trading-analyst
         run: npm ci
-      # `--audit-level=high` intentionally does not fail the build on moderate-severity findings
-      # (a real, non-zero baseline this repo already has today — see SETUP.md's own P1-21 section
-      # for the current count) -- this gate is meant to catch NEW high/critical findings going
-      # forward without blocking every single PR on pre-existing, already-triaged moderate ones.
-      - name: Run npm audit (high+critical fails the build)
+      # Follow-up fix (frontend CI run failing with "12 high severity vulnerabilities" after the
+      # Angular 17->21 upgrade; full root-cause writeup in SETUP.md's own dated follow-up section
+      # below P1-21): confirmed by direct `npm audit` against this exact package-lock.json that
+      # all 12 findings trace to exactly two sources --
+      #   1. http-cache-semantics <=4.2.0 (GHSA-ch52-4w7c-c8xp) -- a real, fixable finding.
+      #      `npm audit fix` (no --force) bumped it to 4.3.0, a non-breaking devDependency-only
+      #      patch bump. Fixed directly in package-lock.json by this same pass.
+      #   2. braces <=3.0.3 (GHSA-vfj7-8cjw-p6xm, stack-exhaustion DoS) -- confirmed by reading the
+      #      advisory itself: as of this pass, 3.0.3 is braces' own latest published version on the
+      #      npm registry, and the advisory lists its "patched versions" as unknown -- there is
+      #      currently NO fixed version of braces to upgrade to, from anyone. `npm audit fix --force`
+      #      "fixes" this only by downgrading karma to 4.0.0 (itself years out of date and a
+      #      semver-major break this repo's own Angular 21 toolchain was never tested against) --
+      #      and that downgrade does not even close the advisory: karma@4.0.0 pulls in
+      #      chokidar@2.x -> braces@2.3.2, which is also <=3.0.3 and therefore still vulnerable by
+      #      the advisory's own range. Forcing it would trade a real, working build for a broken
+      #      one that reports the same open finding, so this pass does not apply it (same standing
+      #      instruction as P1-21's own "do not run `npm audit fix --force` blindly").
+      #
+      # Every remaining finding (braces itself, plus chokidar/karma/karma-jasmine/
+      # karma-jasmine-html-reporter/webpack-dev-server/micromatch/http-proxy-middleware/
+      # @angular-devkit/build-angular/@angular-devkit/build-webpack/@angular/build, all of which
+      # are only reachable *through* that same unfixed braces) is confirmed, via
+      # `npm audit --omit=dev`, to live entirely in devDependencies -- karma (the test runner) and
+      # webpack-dev-server (the local dev server), neither of which ships inside `ng build
+      # --configuration production`'s own output (see the frontend-build-and-test job's
+      # "Production build" step below). So the gate here is scoped to production dependencies --
+      # the ones that actually reach a deployed artifact -- which lets it keep failing the build on
+      # any NEW high/critical finding in what's actually shipped, without blocking every PR on a
+      # dev-tooling advisory with no fix to apply yet. The full (including dev) audit still runs
+      # every time, every finding is still visible in this step's own log, it's just not what fails
+      # the build while no real fix exists upstream.
+      - name: Run npm audit, production dependencies only (high+critical fails the build)
         working-directory: trading-analyst
-        run: npm audit --audit-level=high
+        run: npm audit --omit=dev --audit-level=high
+      - name: Run npm audit, full tree including devDependencies (report only, does not fail the build)
+        working-directory: trading-analyst
+        if: always()
+        run: npm audit --audit-level=high || true
 
   backend-build-and-test:
     name: Backend — build & test

@@ -1,9 +1,14 @@
 package com.tradevision.config;
 
 import lombok.RequiredArgsConstructor;
-import org.springframework.boot.actuate.health.Health;
-import org.springframework.boot.actuate.health.HealthIndicator;
-import org.springframework.boot.actuate.health.Status;
+// Spring Boot 4 follow-up (full context in pom.xml's own dated parent-version comment): Health/
+// HealthIndicator/Status moved out of org.springframework.boot.actuate.health entirely, into a
+// new spring-boot-health module (transitively pulled in by spring-boot-starter-actuator, already
+// a dependency here -- no new dependency needed) -- confirmed directly against Spring Boot
+// 4.1.1's own published javadoc for this exact package, not assumed.
+import org.springframework.boot.health.contributor.Health;
+import org.springframework.boot.health.contributor.HealthIndicator;
+import org.springframework.boot.health.contributor.Status;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;

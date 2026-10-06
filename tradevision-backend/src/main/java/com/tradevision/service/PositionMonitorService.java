@@ -2436,6 +2436,14 @@ public class PositionMonitorService {
         // previously used the GROSS confirmedExecutedQty, meaning exposure itself was also being
         // over-counted by exactly the commission amount, not just the eventual OCO sizing.
         BigDecimal netQuantity = confirmedExecutedQty;
+        // CI-review fix ("PositionPersistenceRecoveryIntegrationTest: Fill ledger mismatch" --
+        // full context in PositionLedgerService.reconstructPosition(String, String)'s own
+        // updated javadoc): the reconcilePositionAgainstLedger call further below needs the same
+        // base asset computeNetQuantity already uses, but `rules` itself is a local declared
+        // inside the `if (totalQty.signum() > 0)` block just below -- out of scope by the time
+        // this method reaches that reconcile call. Captured into this outer-scoped holder the
+        // same way netQuantity itself already is, right where rules is actually resolved.
+        String baseAssetForLedgerReconcile = null;
         try {
             List<com.tradevision.service.broker.dto.Fill> fills =
                 adapter.getFillsForOrder(apiKey, apiSecret, credential.getMode(), order.getSymbol(), order.getBrokerOrderId());
@@ -2445,6 +2453,7 @@ public class PositionMonitorService {
                 if (totalQty.signum() > 0) {
                     avgEntry = totalCost.divide(totalQty, 8, java.math.RoundingMode.HALF_UP);
                     var rules = adapter.getSymbolRules(order.getSymbol(), credential.getMode());
+                    baseAssetForLedgerReconcile = rules.baseAsset();
                     entryFee = positionSafetyService.sumCommissionInQuoteAsset(fills, rules.quoteAsset());
                     // Review finding ("Fill Ledger" review — "Late-discovered fills still don't
                     // enter FillLedger"): confirmed real and fixed — this is the exact same
@@ -2576,7 +2585,7 @@ public class PositionMonitorService {
             // here means the flatten itself is about to act on a quantity the ledger disagrees
             // with. Runs before that call, not after, for exactly that reason.
             try {
-                var reconcileResult = positionLedgerService.reconcilePositionAgainstLedger(positionId, netQuantity);
+                var reconcileResult = positionLedgerService.reconcilePositionAgainstLedger(positionId, netQuantity, baseAssetForLedgerReconcile);
                 if (!reconcileResult.matches()) {
                     // Review finding ("Position Ledger is still not authoritative" -- P0, full
                     // context in ReconcileResult.resolvedQuantity's own javadoc): actual
@@ -2653,7 +2662,7 @@ public class PositionMonitorService {
         // before whichever branch below actually persists the position, since the quantity
         // itself doesn't differ between them.
         try {
-            var reconcileResult = positionLedgerService.reconcilePositionAgainstLedger(positionId, netQuantity);
+            var reconcileResult = positionLedgerService.reconcilePositionAgainstLedger(positionId, netQuantity, baseAssetForLedgerReconcile);
             if (!reconcileResult.matches()) {
                 // Review finding ("Position Ledger is still not authoritative" -- P0, full
                 // context in ReconcileResult.resolvedQuantity's own javadoc): actual derivation,
@@ -3290,8 +3299,22 @@ public class PositionMonitorService {
         // silently trusting either side. Runs after the position is already closed (its own
         // exchange-side closure is real regardless of what the ledger says) -- what changes on
         // a mismatch is that further automated trading halts until a human investigates.
+        //
+        // CI-review fix (full context in PositionLedgerService.reconstructPosition(String,
+        // String)'s own updated javadoc): without the base asset, a fully-closed position whose
+        // entry paid ANY base-asset commission would net to that commission amount, not zero --
+        // a false mismatch on ordinary, correct closes, not just this specific test's own
+        // scenario. Resolved best-effort; a failure here falls back to the old, commission-
+        // unaware comparison rather than skipping the check entirely.
+        String baseAssetForClosedCheck = null;
         try {
-            var reconcileResult = positionLedgerService.reconcilePositionAgainstLedger(position.getId(), BigDecimal.ZERO);
+            baseAssetForClosedCheck = adapter.getSymbolRules(position.getSymbol(), credential.getMode()).baseAsset();
+        } catch (Exception e) {
+            log.debug("Could not resolve base asset for post-close ledger reconciliation on {} ({}) -- falling back to the "
+                + "commission-unaware comparison.", position.getSymbol(), e.getMessage());
+        }
+        try {
+            var reconcileResult = positionLedgerService.reconcilePositionAgainstLedger(position.getId(), BigDecimal.ZERO, baseAssetForClosedCheck);
             if (!reconcileResult.matches()) {
                 // Review finding ("Position Ledger is still not authoritative" -- P0, full
                 // context in ReconcileResult.resolvedQuantity's own javadoc): actual derivation.

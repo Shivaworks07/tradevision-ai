@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertySource;
@@ -46,7 +46,7 @@ import static org.mockito.Mockito.*;
  * HONEST SCOPING, stated plainly, same convention as every other integration test in this
  * package:
  * - The broker adapter is a real Spring bean (BinanceBrokerAdapter) with its own real HTTP call
- *   methods replaced by @MockBean, NOT a real Binance Testnet connection. This proves the
+ *   methods replaced by @MockitoBean, NOT a real Binance Testnet connection. This proves the
  *   RECOVERY LOGIC's own correctness against real MongoDB reads/writes and real distributed-lock/
  *   reconciliation-loop behavior, not that Binance's real API responds exactly as these mocked
  *   stubs assume. Real Testnet validation remains the separate, larger, still-open gap this same
@@ -56,7 +56,7 @@ import static org.mockito.Mockito.*;
  *   exist after a genuine crash at that point, then calling reconcileCredential fresh -- not by
  *   literally starting and killing a JVM process. The recovery methods' own behavior is identical
  *   either way, since none of them depend on in-memory state from before the "crash."
- * - The @MockBean wiring itself (replacing BinanceBrokerAdapter in the real Spring context so
+ * - The @MockitoBean wiring itself (replacing BinanceBrokerAdapter in the real Spring context so
  *   PositionMonitorService's own internal adapterMap picks up the mock) follows this codebase's
  *   standard Spring Boot Test convention, but -- same as every test in this file -- has not
  *   actually been executed, so this specific mechanism is unverified along with everything else.
@@ -82,10 +82,13 @@ class ReleaseTestSuiteIntegrationTest {
 
     @DynamicPropertySource
     static void mongoProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.data.mongodb.uri", mongo::getReplicaSetUrl);
+        registry.add("spring.mongodb.uri", mongo::getReplicaSetUrl);
     }
 
-    @MockBean private BinanceBrokerAdapter adapter;
+    // Spring Boot 4 follow-up (full context in pom.xml's own dated parent-version comment):
+    // @MockBean -> @MockitoBean, confirmed against Spring's own OpenRewrite migration recipe for
+    // this exact rename rather than guessed.
+    @MockitoBean private BinanceBrokerAdapter adapter;
 
     @Autowired private PositionMonitorService positionMonitorService;
     @Autowired private PositionRepository positionRepo;
@@ -96,7 +99,7 @@ class ReleaseTestSuiteIntegrationTest {
     @Autowired private BrokerCredentialRepository credentialRepo;
     @Autowired private RiskProfileRepository riskProfileRepo;
     @Autowired private com.tradevision.service.CredentialEncryptionService credentialEncryptionService;
-    @MockBean private IncidentService incidentService; // real delivery (email/webhook) is out of scope for this suite -- see IncidentRetryServiceTest for that
+    @MockitoBean private IncidentService incidentService; // real delivery (email/webhook) is out of scope for this suite -- see IncidentRetryServiceTest for that
 
     private BrokerCredential newTestCredential() {
         var credential = new BrokerCredential();
@@ -105,7 +108,7 @@ class ReleaseTestSuiteIntegrationTest {
         credential.setBroker(BrokerType.BINANCE);
         credential.setMode(BrokerMode.TESTNET);
         // API keys are encrypted at rest in the real model -- these test values are never
-        // actually sent anywhere, since every real HTTP call is mocked via @MockBean above.
+        // actually sent anywhere, since every real HTTP call is mocked via @MockitoBean above.
         // Review finding, self-caught before this file was trusted: BrokerCredentialService's
         // own decrypt() (called internally by reconcileCredential's own sub-methods to obtain
         // real apiKey/apiSecret before every adapter call) delegates to

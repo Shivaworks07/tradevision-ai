@@ -2,14 +2,127 @@
 <!--
   P1-21 fix ("Unsupported framework versions on a money system"; full context in this module's
   own SETUP.md, "P1-21" section, and .github/workflows/dependency-scan.yml's own header comment
-  at the repo root): empty on purpose. This file exists so dependency-scan.yml's own
-  `-DsuppressionFile=owasp-suppressions.xml` argument has a real, valid (if currently empty) XML
-  document to load: OWASP Dependency-Check requires the referenced file to exist and parse, even
-  with zero suppress entries. Add a suppress entry here ONLY for a specific CVE that has been
-  reviewed and determined to be a false positive or genuinely not exploitable in this
-  application's own usage of the flagged dependency; never as a way to silence a real,
-  unaddressed finding. See https://jeremylong.github.io/DependencyCheck/general/suppression.html
-  for the suppression-file schema.
+  at the repo root): originally empty on purpose. This file exists so dependency-scan.yml's own
+  `-DsuppressionFile=owasp-suppressions.xml` argument has a real, valid XML document to load:
+  OWASP Dependency-Check requires the referenced file to exist and parse, even with zero suppress
+  entries. Add a suppress entry here ONLY for a specific CVE that has been reviewed and determined
+  to be a false positive or genuinely not exploitable in this application's own usage of the
+  flagged dependency; never as a way to silence a real, unaddressed finding. See
+  https://jeremylong.github.io/DependencyCheck/general/suppression.html for the suppression-file
+  schema.
+
+  Spring Boot 4.1.1 follow-up (full context in pom.xml's own dated parent-version comment and
+  SETUP.md's own matching follow-up section): the real CI run after that bump surfaced 4 findings,
+  each individually researched below rather than suppressed on assumption. All 4 are the same
+  underlying OWASP Dependency-Check failure mode: NVD's CPE dictionary matching a dependency by
+  product name + version number coincidence, against a completely different product that happens
+  to share one or both - a well-documented category for Dependency-Check, not something unique
+  to this project.
 -->
 <suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+
+  <suppress>
+    <notes><![CDATA[
+      spring-boot-mongodb-4.1.1.jar and spring-boot-starter-mongodb-4.1.1.jar (two different
+      Spring Boot 4 MongoDB glue artifacts -- the autoconfiguration module and its own thin
+      starter POM wrapper, respectively; a real CI re-run surfaced the starter POM's own matches
+      separately from the autoconfig module's, already covered below, so this entry's packageUrl
+      regex now covers both rather than adding a near-duplicate suppress block) are each being
+      matched against two unrelated products purely because their artifactId contains "mongodb"
+      and their version happens to be "4.1.1" (which is this project's SPRING BOOT release
+      version, not any real external product's version):
+
+      - cpe:2.3:a:mongodb:mongodb:4.1.1 (the actual MongoDB DATABASE SERVER, version 4.1.1) --
+        CVE-2025-14847 ("MongoBleed", a critical uninitialized-memory-disclosure bug in the
+        MongoDB server's own zlib handling, confirmed via Tenable/Wiz/Unit42 advisories) and
+        CVE-2021-32036 (confirmed via MITRE/db.gcve.eu to be a real MongoDB 5.0.3 server bug) are
+        both vulnerabilities IN THE MONGODB SERVER PROCESS ITSELF. This project does not ship or
+        run a MongoDB server -- it connects to one over the wire via the Java driver, exactly the
+        boundary these two CVEs live on the other side of.
+      - cpe:2.3:a:vmware:spring_boot:4.1.1 (a generic "Spring Boot" vendor/product CPE entry,
+        which this jar's OWN groupId:artifactId:version already gets checked against correctly
+        elsewhere in this same report via its real packageUrl) is a duplicate, broader match
+        adding no real additional finding beyond what the rest of this report already covers.
+
+      CVE-2026-9753 (confirmed via SentinelOne/Threat Radar to be CWE-1287, "MongoDB Aggregation
+      Pipeline DoS Vulnerability" against "MongoDB MongoDB Server") is the same server-side
+      pattern as CVE-2025-14847 above, not applicable to this client-side glue module.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.springframework\.boot/spring-boot-(starter-)?mongodb@.*$</packageUrl>
+    <cve>CVE-2025-14847</cve>
+    <cve>CVE-2026-9753</cve>
+    <cve>CVE-2021-32036</cve>
+    <cve>CVE-2014-8180</cve>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      spring-boot-data-mongodb-4.1.1.jar -- the same Spring Boot 4 auto-configuration glue
+      module/version-coincidence pattern as spring-boot-mongodb above (see that suppress entry's
+      own notes for the shared CVE-2025-14847/CVE-2026-9753/CVE-2021-32036/CVE-2014-8180
+      reasoning, all server-side MongoDB CVEs misattributed to this client-side jar via its
+      coincidental "4.1.1" version number).
+
+      CVE-2026-41717 ("Spring Data MongoDB -- SpEL Expression Injection via Annotated Query
+      Parameter Binding") and CVE-2026-41696 ("insufficient validation of the bound parameter" in
+      regex parameter binding) are individually confirmed, genuinely real Spring Data MongoDB
+      CVEs (spring.io's own security advisories, not a false product match) -- but both have a
+      confirmed affected range of 5.0.0-5.0.5 / 4.5.0-4.5.11 / 4.4.0-4.4.14 / 4.0.0-4.3.16 /
+      3.4.19-and-earlier, fixed in 5.0.6+. This project's REAL spring-data-mongodb dependency
+      (confirmed directly in the same CI run's own Maven dependency resolution log:
+      org/springframework/data/spring-data-mongodb/5.1.1/spring-data-mongodb-5.1.1.jar) is 5.1.1
+      -- past the fixed version, not affected. The flagged "4.1.1" is spring-boot-data-mongodb's
+      own version (= this project's Spring Boot release), which coincidentally falls inside the
+      vulnerable 4.0.0-4.3.16 range for the DIFFERENT, real spring-data-mongodb artifact -- the
+      exact version-coincidence CPE confusion this suppression file's own header describes.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.springframework\.boot/spring-boot-data-mongodb@.*$</packageUrl>
+    <cve>CVE-2025-14847</cve>
+    <cve>CVE-2026-9753</cve>
+    <cve>CVE-2021-32036</cve>
+    <cve>CVE-2014-8180</cve>
+    <cve>CVE-2026-41717</cve>
+    <cve>CVE-2026-41696</cve>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      protobuf-java-4.35.1.jar (pulled in transitively via spring-boot-starter-opentelemetry ->
+      opentelemetry-exporter-otlp -> opentelemetry-proto, for OTLP's binary wire-format encoding
+      -- see pom.xml's own Spring Boot 4 migration comment for why this project depends on
+      spring-boot-starter-opentelemetry at all) is flagged for CVE-2026-0994. Confirmed via
+      osv.dev's own advisory: this CVE is a JSON-parsing recursion-depth denial-of-service bug
+      specifically in `google.protobuf.json_format.ParseDict()` -- the PYTHON protobuf package's
+      own pure-Python JSON glue code, not the Java artifact. NVD's CPE dictionary matches both
+      language bindings under the same generic "google:protobuf"/"protobuf-java" product entries,
+      a cross-ecosystem false positive OWASP Dependency-Check is known to produce. This project
+      never uses Python, and the Java protobuf-java usage here is exclusively OpenTelemetry's
+      binary OTLP wire format, not any untrusted-JSON-to-protobuf parsing path.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/com\.google\.protobuf/protobuf-java@.*$</packageUrl>
+    <cve>CVE-2026-0994</cve>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      kotlin-stdlib-2.3.21.jar (pulled in transitively via spring-boot-starter-opentelemetry ->
+      opentelemetry-exporter-otlp -> opentelemetry-exporter-sender-okhttp -> okhttp-jvm ->
+      okio-jvm, which is partly written in Kotlin and needs kotlin-stdlib present at runtime --
+      see pom.xml's own Spring Boot 4 migration comment) is flagged for CVE-2026-53914, CVSS 9.8.
+      Confirmed via JetBrains' own advisory (also cross-checked against SentinelOne's vulnerability
+      database): this is specifically an unsafe-deserialization RCE in the KOTLIN COMPILER'S OWN
+      BUILD CACHE subsystem -- triggered only when a Kotlin/Gradle build consumes poisoned
+      metadata from a remote build-cache backend during compilation. It is not reachable by an
+      application merely having the kotlin-stdlib RUNTIME jar on its classpath as a transitive
+      dependency of a third-party library (here, okhttp/okio), with no Kotlin code of its own.
+      This project is a plain Java/Maven build: it never invokes the Kotlin compiler, has no
+      Gradle build-cache configuration of any kind, local or remote, and ships kotlin-stdlib only
+      because okhttp needs it at runtime -- the vulnerable attack surface (a Kotlin build process
+      deserializing untrusted remote build-cache entries) does not exist anywhere in this
+      project's build or runtime.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.jetbrains\.kotlin/kotlin-stdlib@.*$</packageUrl>
+    <cve>CVE-2026-53914</cve>
+  </suppress>
+
 </suppressions>

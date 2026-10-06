@@ -31,22 +31,59 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # OSS Index 401 follow-up (full root-cause writeup in this job's own "Run OWASP
+      # Dependency-Check" step comment below, and in SETUP.md's matching follow-up section):
+      # setup-java's own server-id/server-username/server-password inputs are its documented
+      # mechanism for writing a Maven settings.xml <server> block whose <username>/<password>
+      # are pulled from env vars at build time (confirmed via actions/setup-java's own README),
+      # rather than this workflow hand-writing a settings.xml itself. server-id here ("ossindex")
+      # must match the -DossIndexServerId value passed to dependency-check-maven below --
+      # that's how the plugin finds which <server> entry in the generated settings.xml holds the
+      # OSS Index credentials (confirmed against dependency-check-maven's own check-mojo
+      # parameter docs: there is no direct -DossIndexUsername/-DossIndexPassword command-line
+      # property, only this settings.xml-server-id indirection).
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '21'
           cache: 'maven'
-      # Review finding ("Build/CI cannot produce image" -- P0-10, full context in this repo's own
-      # Dockerfile): confirmed this same "must run from the actual pom.xml, with real dependency
-      # resolution" requirement applies here too -- dependency-check-maven inspects the resolved
-      # dependency tree, not just pom.xml text, so it needs a real `mvn` invocation against the
-      # backend module exactly like the existing test/build steps below do.
+          server-id: ossindex
+          server-username: OSSINDEX_USERNAME
+          server-password: OSSINDEX_PASSWORD
+      # Follow-up fix ("OWASP job failing with 401 Unauthorized against
+      # https://ossindex.sonatype.org/api/v3/component-report, all other CI jobs green" --
+      # confirmed real from a real CI run's own log, not assumed): root cause is NOT this
+      # project's code or dependencies at all -- as of September 2025 Sonatype's own OSS Index
+      # requires authenticated requests for ALL API access and no longer permits the anonymous
+      # requests dependency-check-maven's OSS Index analyzer previously sent by default
+      # (confirmed via Sonatype's own community posts and dependency-check's own GitHub issue
+      # tracker discussing this exact 401 pattern across many unrelated projects starting the
+      # same month). The repeated identical 401s in the log, and the run's own ~1h50m wall time
+      # (dependency-check retries each failed OSS Index request with backoff before finally
+      # giving up), are both explained by this one upstream policy change.
+      #
+      # Fixed by authenticating rather than dropping OSS Index as a data source (the user's own
+      # explicit choice over the lower-effort alternative of just disabling the analyzer, which
+      # the dependency-check-maven docs themselves note "limits us to only the NVD data source").
+      # Needs two repo secrets added under Settings -> Secrets and variables -> Actions, from a
+      # free Sonatype OSS Index account (https://ossindex.sonatype.org/user/register) and its
+      # generated API token (https://ossindex.sonatype.org/user/settings -- NOT your account
+      # login password):
+      #   OSS_INDEX_USERNAME = the account's email address
+      #   OSS_INDEX_PASSWORD = the generated API token (not the login password)
+      # Until those two secrets exist, this job will keep failing on this same 401 -- the
+      # setup-java step above only writes empty/unset credentials into settings.xml if the
+      # underlying secrets are unset, which OSS Index will still reject.
       - name: Run OWASP Dependency-Check
         working-directory: tradevision-backend
+        env:
+          OSSINDEX_USERNAME: ${{ secrets.OSS_INDEX_USERNAME }}
+          OSSINDEX_PASSWORD: ${{ secrets.OSS_INDEX_PASSWORD }}
         run: >
           mvn -B org.owasp:dependency-check-maven:12.1.0:check
           -DfailBuildOnCVSS=8
           -DsuppressionFile=owasp-suppressions.xml
+          -DossIndexServerId=ossindex
           -Dformats=HTML,JSON
       - name: Upload Dependency-Check report
         if: always()

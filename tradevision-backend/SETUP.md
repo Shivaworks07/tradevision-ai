@@ -355,3 +355,51 @@ reappeared) but surfaced two new things:
   overridden via Spring Boot's own documented property-override mechanism
   (`spring-boot-starter-parent`'s own managed-version properties), confirmed against Spring Boot
   4.1's own published dependency-versions properties appendix rather than guessed at.
+
+## Follow-up: OWASP job failing with `401 Unauthorized` against OSS Index — not this project's fault
+
+The very next real CI run after the Tomcat/MongoDB-driver bumps above failed for a completely
+different reason — not a CVSS-threshold finding at all, but the job erroring out before it could
+even finish analysis:
+
+```
+AnalysisException: Failed to request component-reports
+    caused by DownloadFailedException: https://ossindex.sonatype.org/api/v3/component-report - Server status: 401 - Server reason: Unauthorized
+```
+
+repeated for every dependency, after which the build failed outright. Confirmed from the real log
+this isn't this project's code or dependencies at all: as of **September 2025**, Sonatype's own
+OSS Index requires authenticated requests for **all** API access and no longer permits the
+anonymous requests dependency-check-maven's OSS Index analyzer sends by default — a policy change
+on Sonatype's side that started breaking this exact job, with this exact error, across many
+unrelated projects the same month (confirmed via Sonatype's own community posts and
+dependency-check's own GitHub issue tracker). It also explains why the failed run took **1h50m**
+instead of its usual few minutes: dependency-check retries each failed OSS Index request with
+backoff before finally giving up.
+
+Two ways to fix this, presented to the user as a real trade-off rather than picked silently:
+disable the OSS Index analyzer entirely (`-DossindexAnalyzerEnabled=false`, falls back to
+NVD-only matching — simpler, but the dependency-check docs themselves note this "limits us to
+only the NVD data source"), or authenticate it with a free Sonatype OSS Index account. **User's
+choice: authenticate**, to keep both data sources.
+
+Implemented in `.github/workflows/dependency-scan.yml` (full reasoning in that job's own step
+comments): `actions/setup-java@v4`'s `server-id`/`server-username`/`server-password` inputs write
+a Maven `settings.xml` `<server>` block from two env vars at build time, and
+`-DossIndexServerId=ossindex` tells dependency-check-maven to read OSS Index credentials from
+that same `<server>` entry — confirmed against dependency-check-maven's own `check-mojo`
+parameter docs that this settings.xml-server-id indirection is the real mechanism; there is no
+direct `-DossIndexUsername`/`-DossIndexPassword` command-line property, despite some third-party
+blog posts claiming otherwise.
+
+**This needs two GitHub repo secrets added before the next OWASP run will actually pass** —
+*Settings → Secrets and variables → Actions → New repository secret*:
+- `OSS_INDEX_USERNAME` — the email address of a free account registered at
+  https://ossindex.sonatype.org/user/register
+- `OSS_INDEX_PASSWORD` — the API token generated at https://ossindex.sonatype.org/user/settings
+  (**not** that account's login password — OSS Index issues a separate token for API use)
+
+Until both secrets exist, this job will keep failing on this same 401: with the secrets unset,
+`setup-java` writes an empty/unset credential pair into `settings.xml`, which OSS Index still
+rejects. This is the one piece of this follow-up that genuinely cannot be finished from here —
+creating the Sonatype account and generating the token has to happen on the user's own side.

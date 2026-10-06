@@ -30,7 +30,7 @@ jobs:
     name: Backend — OWASP Dependency-Check (Maven)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # OSS Index 401 follow-up (full root-cause writeup in this job's own "Run OWASP
       # Dependency-Check" step comment below, and in SETUP.md's matching follow-up section):
       # setup-java's own server-id/server-username/server-password inputs are its documented
@@ -96,7 +96,7 @@ jobs:
     name: Frontend — npm audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -149,7 +149,7 @@ jobs:
     name: Backend — build & test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -180,7 +180,7 @@ jobs:
     name: Backend — integration tests (Testcontainers/Docker, real Mongo replica set)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -194,7 +194,7 @@ jobs:
     name: Frontend — build & test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: '20'

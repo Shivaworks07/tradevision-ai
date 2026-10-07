@@ -125,4 +125,24 @@
     <cve>CVE-2026-53914</cve>
   </suppress>
 
+  <suppress>
+    <notes><![CDATA[
+      spring-security-web-7.1.1.jar flagged for CVE-2026-47838 ("SubjectDnX509PrincipalExtractor
+      fails to properly handle malformed X.509 certificate Common Name values, enabling user
+      impersonation via crafted client certificates"). Confirmed via the official GitHub Security
+      Advisory (GHSA-293q-567p-wmwq) that its own listed affected ranges are
+      >=6.5.0,<=6.5.10 / >=6.4.0,<=6.4.13 / >=6.0.0,<=6.3.10 / >=5.8.0,<=5.8.16 / <=5.7.14, fixed
+      in 6.5.11 -- this project's actual version, 7.1.1 (a full major line ahead of the fixed
+      6.5.11, part of this session's own Spring Boot 4 / Spring Framework 7 bump), falls outside
+      every one of those ranges and already contains whatever fix 6.5.11 shipped. Same NVD
+      CPE-matching pattern this suppression file's own header describes: a generic
+      "spring_security" product/version match with no awareness that 7.1.1 postdates the fixed
+      6.5.11 release. This project also does not use X.509 client-certificate authentication
+      anywhere (confirmed via SecurityConfig -- JWT bearer tokens are the only auth mechanism),
+      so even a genuine finding here would have no real attack surface to reach.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.springframework\.security/spring-security-web@.*$</packageUrl>
+    <cve>CVE-2026-47838</cve>
+  </suppress>
+
 </suppressions>

@@ -403,3 +403,63 @@ Until both secrets exist, this job will keep failing on this same 401: with the 
 `setup-java` writes an empty/unset credential pair into `settings.xml`, which OSS Index still
 rejects. This is the one piece of this follow-up that genuinely cannot be finished from here —
 creating the Sonatype account and generating the token has to happen on the user's own side.
+
+## Follow-up: first real CVSS-gate failure once OSS Index auth actually worked
+
+With OSS Index authenticating successfully, the job ran a real full analysis for the first time
+and failed the CVSS≥8 gate on 3 findings — each individually researched, two real and one a
+false positive, same discipline as every other finding this session:
+
+- **`jackson-core`/`jackson-databind` 2.21.5** (the Jackson 2 compat shim pulled in via
+  `spring-boot-jackson2`) **and the same pair at 3.1.5** (Boot 4's own new Jackson 3 default —
+  still present on the classpath even with `spring.jackson.use-jackson2-defaults=true`, which
+  only changes which line Spring's *own* auto-configured beans use, not which jars are shipped) —
+  both genuinely affected by `CVE-2026-68498`/`CVE-2026-68497` (quadratic-complexity parsing DoS
+  in `ReaderBasedJsonParser`/`Duration`/`XMLGregorianCalendar` handling, CVSS 8.7) and
+  `CVE-2026-83557` (`DefaultBaseTypeLimitingValidator` denylist omitting `java.lang.Comparable`).
+  Confirmed via each CVE's own advisory that the fix lines are 2.21.6/3.1.6 (not a newer
+  2.22.x/3.2.x jump needed) — both already published to Maven Central, checked directly. Fixed
+  in `pom.xml` via the two properties Spring Boot 4 actually uses for this (confirmed against
+  docs.spring.io's own 4.1 dependency-versions-properties appendix, since Boot 4 reassigns what
+  used to be Boot 3's single `jackson-bom.version` property into two: `jackson-2-bom.version` for
+  the classic Jackson 2 line, freeing `jackson-bom.version` to mean the *new* Jackson 3 BOM):
+  `jackson-2-bom.version=2.21.6`, `jackson-bom.version=3.1.6`.
+- **`spring-security-web-7.1.1.jar`** flagged for `CVE-2026-47838` (X.509 client-certificate CN
+  parsing allowing user impersonation) — confirmed via the official GitHub Security Advisory
+  (GHSA-293q-567p-wmwq) to be a false positive: its own listed affected ranges top out at
+  `6.5.10`, fixed in `6.5.11`, and this project's actual version (`7.1.1`, a full major line
+  ahead, from this session's own Boot 4/Framework 7 bump) is past that fix. Also confirmed this
+  project doesn't use X.509 client-cert auth anywhere (`SecurityConfig` — JWT bearer tokens only),
+  so there'd be no reachable attack surface even if the version match had been real. Suppressed
+  in `owasp-suppressions.xml` with the advisory citation, not assumed.
+
+## Follow-up: OWASP job taking ~1 hour — no NVD API key, no cache between runs
+
+User flagged this straight from the real log:
+
+```
+[WARNING] An NVD API Key was not provided - it is highly recommended to use an NVD API key as
+the update can take a VERY long time without an API Key
+[INFO] NVD API has 402,547 records in this update
+```
+
+Two separate, stackable causes, both fixed in `.github/workflows/dependency-scan.yml` (full
+reasoning in that job's own step comments):
+
+1. **No NVD API key** — confirmed via NVD's own developer docs that unauthenticated API callers
+   get a much lower rate limit than callers with a free, registered key, exactly what
+   dependency-check's own warning is about. Fixed by requesting a free key at
+   https://nvd.nist.gov/developers/request-an-api-key (approval is near-instant, by email) and
+   adding it as a new repo secret, **`NVD_API_KEY`**, under *Settings → Secrets and variables →
+   Actions*. Wired in via `-DnvdApiKeyEnvironmentVariable=NVD_API_KEY` rather than the more
+   obvious `-DnvdApiKey=...` — dependency-check-maven's own `check-mojo` docs explicitly warn the
+   direct property risks exposing the raw key in Maven's own debug/verbose logging, and recommend
+   the environment-variable-name indirection instead for CI. Unlike OSS Index's auth change, this
+   one is NOT a hard requirement — the job still works without this secret, just slower.
+2. **No caching between runs** — even with a key, every run was re-downloading/re-processing
+   NVD's full ~400k-record dataset from scratch instead of just that day's delta, because the job
+   had nowhere persistent to keep the database it downloads. Fixed by pinning dependency-check's
+   own data directory to a stable path (`-DdataDirectory=${HOME}/.dependency-check-data`, outside
+   `target/`, which this job already wipes every run) and caching that path with
+   `actions/cache@v4`, keyed by UTC date with a prefix `restore-keys` fallback so even a run on a
+   new day starts from yesterday's mostly-complete database rather than nothing.

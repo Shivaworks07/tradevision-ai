@@ -50,6 +50,39 @@ jobs:
           server-id: ossindex
           server-username: OSSINDEX_USERNAME
           server-password: OSSINDEX_PASSWORD
+      # Follow-up fix ("[WARNING] An NVD API Key was not provided... NVD API has 402,547 records
+      # in this update" -- confirmed real from a real CI log, job taking ~1h): NVD's own public
+      # API rate-limits unauthenticated requests far harder than requests carrying a free,
+      # registered API key (confirmed via NVD's own developer docs -- unauthenticated callers get
+      # a small fraction of the authenticated rate, which is exactly why dependency-check's own
+      # README recommends one and this job's log prints that warning every single run). A free
+      # key removes most of that wait on its own; caching the actual downloaded NVD database
+      # between runs (below) removes almost all of the rest, since otherwise every run -- even
+      # with a key -- re-downloads/re-processes the full ~400k-record dataset from scratch rather
+      # than just the day's delta.
+      #
+      # dataDirectory pinned to a fixed path outside target/ (which gets wiped every run anyway)
+      # so actions/cache has something stable to key on; nvdApiKeyEnvironmentVariable (not the
+      # direct -DnvdApiKey property) is dependency-check-maven's own documented recommendation
+      # for CI -- its check-mojo docs state passing the raw key via -DnvdApiKey risks exposing it
+      # in Maven's own debug/verbose logging, where an env-var-name indirection doesn't.
+      - name: Compute cache date
+        id: nvd-cache-date
+        run: echo "date=$(date -u +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+      - name: Restore NVD database cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.dependency-check-data
+          key: nvd-data-${{ steps.nvd-cache-date.outputs.date }}
+          restore-keys: |
+            nvd-data-
+      # Needs one more repo secret under Settings -> Secrets and variables -> Actions, from a
+      # free NVD API key (https://nvd.nist.gov/developers/request-an-api-key -- approval is
+      # usually near-instant, by email):
+      #   NVD_API_KEY = the key emailed after requesting one at the link above
+      # Works even without it (NVD access itself was never authentication-REQUIRED the way OSS
+      # Index now is -- this is a rate-limit problem, not a 401), just slower on days the cache
+      # above doesn't already have most of the data.
       # Follow-up fix ("OWASP job failing with 401 Unauthorized against
       # https://ossindex.sonatype.org/api/v3/component-report, all other CI jobs green" --
       # confirmed real from a real CI run's own log, not assumed): root cause is NOT this
@@ -79,11 +112,14 @@ jobs:
         env:
           OSSINDEX_USERNAME: ${{ secrets.OSS_INDEX_USERNAME }}
           OSSINDEX_PASSWORD: ${{ secrets.OSS_INDEX_PASSWORD }}
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         run: >
           mvn -B org.owasp:dependency-check-maven:12.1.0:check
           -DfailBuildOnCVSS=8
           -DsuppressionFile=owasp-suppressions.xml
           -DossIndexServerId=ossindex
+          -DnvdApiKeyEnvironmentVariable=NVD_API_KEY
+          -DdataDirectory=${HOME}/.dependency-check-data
           -Dformats=HTML,JSON
       - name: Upload Dependency-Check report
         if: always()

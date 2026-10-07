@@ -91,6 +91,27 @@
          resolves these; went one further to the latest 5.13.0 rather than stopping at the
          minimum confirmed-fixed version. -->
     <mongodb.version>5.13.0</mongodb.version>
+    <!-- OWASP follow-up (first real CVSS-gate run after the OSS Index 401 was fixed - full
+         context in SETUP.md's own dated follow-up section): jackson-core/jackson-databind
+         2.21.5 (the Jackson 2 compat shim's own version, via spring-boot-jackson2) AND
+         jackson-core/jackson-databind 3.1.5 (Boot 4's new Jackson 3 default, still on the
+         classpath even with spring.jackson.use-jackson2-defaults=true - that property only
+         changes which Jackson line Spring's OWN auto-configured beans use, it doesn't remove
+         the other line's jars) are BOTH individually confirmed real, unfixed findings, not a
+         CPE-coincidence false positive: CVE-2026-68498/68497 (ReaderBasedJsonParser /
+         Duration-and-XMLGregorianCalendar quadratic-parsing DoS, CVSS 8.7) and CVE-2026-83557
+         (DefaultBaseTypeLimitingValidator's denylist omitting java.lang.Comparable, CVSS 5.6)
+         all confirmed via their own advisories to affect exactly these shipped versions and be
+         fixed in 2.21.6/3.1.6 respectively (both already available on Maven Central, checked
+         directly) - no need to jump to the newer 2.22.x/3.2.x lines Spring Boot 4.1.1 doesn't
+         manage yet. Property names confirmed against docs.spring.io's own 4.1 dependency-
+         versions-properties appendix: Boot 4 splits what Boot 3 called jackson-bom.version
+         (Jackson 2's own BOM) into jackson-2-bom.version for the still-classic Jackson 2 line,
+         freeing jackson-bom.version to mean the NEW Jackson 3 BOM (tools.jackson group) instead
+         - the same kind of one-property-becomes-two split already hit once this session with
+         MongoDB's connection/data property prefixes, so checked directly rather than assumed. -->
+    <jackson-2-bom.version>2.21.6</jackson-2-bom.version>
+    <jackson-bom.version>3.1.6</jackson-bom.version>
   </properties>
 
   <dependencyManagement>

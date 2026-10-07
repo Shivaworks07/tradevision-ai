@@ -1470,8 +1470,43 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
             // Network-level failure (timeout, connection reset, DNS) — no HTTP status to read.
             // Treat as retryable by using a synthetic 503, since these are exactly the transient
             // failures review item #26 is about.
-            throw new BinanceApiException("Binance request failed: " + e.getMessage(), null, 503);
+            //
+            // Audit item P2 ("secrets/signed-request leakage via BinanceApiException messages"
+            // -- external review, confirmed real by direct inspection: RestClientException's own
+            // real-world subclass here, ResourceAccessException (what Spring's RestTemplate
+            // actually throws on a genuine I/O failure), builds its message as "I/O error on
+            // <method> request for \"<url>\": <cause>" -- and `url` is this adapter's own
+            // fully-built, SIGNED request URL: every order parameter plus the HMAC-SHA256
+            // signature itself. Using e.getMessage() directly, as this used to, put that entire
+            // signed URL into BinanceApiException's own message, which
+            // OrderResult/OcoOrderResult.errorMessage() then carries all the way into
+            // Order.failureReason (persisted), TradingIncident.message (persisted, emailed to
+            // the account owner, and sent to any user-configured webhook URL), and the audit
+            // chain -- none of which should ever see a live, replayable signed request. The
+            // HTTP-error-response branch just above this one is NOT affected -- it only ever
+            // carries Binance's own response body, never the request URL.
+            log.warn("Binance request failed (network-level, no HTTP status): {}", e.toString(), e);
+            throw new BinanceApiException("Binance request failed: " + sanitizedNetworkFailureReason(e), null, 503);
         }
+    }
+
+    /**
+     * Audit item P2, full context in executeHttpRequest's own updated catch block comment:
+     * returns a description of a network-level failure that is safe to persist, email, or send
+     * to a webhook -- never the exception's own top-level message, which embeds the full signed
+     * request URL for RestClientException's real-world subclasses. Prefers the root cause's own
+     * message (a genuine I/O failure's cause -- e.g. SocketTimeoutException/ConnectException --
+     * describes the failure itself, such as "Read timed out" or "Connection refused", never the
+     * URL), falling back to just the exception's simple class name if there is no cause or its
+     * message is empty. The full, unsanitized exception (including its URL-bearing message) is
+     * still logged in full, server-side only, by the caller just above this.
+     */
+    private String sanitizedNetworkFailureReason(Exception e) {
+        Throwable cause = e.getCause();
+        if (cause != null && cause.getMessage() != null && !cause.getMessage().isBlank()) {
+            return cause.getClass().getSimpleName() + ": " + cause.getMessage();
+        }
+        return e.getClass().getSimpleName();
     }
 
     /**

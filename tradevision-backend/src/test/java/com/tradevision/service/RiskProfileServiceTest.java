@@ -65,6 +65,8 @@ class RiskProfileServiceTest {
     @Mock com.tradevision.repository.BrokerCredentialRepository credentialRepo;
     @Mock com.tradevision.repository.TradingIncidentRepository tradingIncidentRepo;
     @Mock com.tradevision.config.StartupState startupState;
+    // Audit item P0-1, full context in LiveCanaryRecord's own class javadoc.
+    @Mock com.tradevision.service.LiveCanaryService liveCanaryService;
 
     @InjectMocks RiskProfileService service;
 
@@ -122,6 +124,13 @@ class RiskProfileServiceTest {
         // itself lives on BrokerCredentialService and internally calls adapter.getApiKeyRestrictions --
         // stubbing it here avoids every existing test needing to know that internal detail.)
         doNothing().when(credentialService).validateLiveKeyRestrictions(any(), any(), any(), any(), any(), any(), any());
+        // Audit item P0-1 ("Nothing gates autonomous LIVE trading on a real, successful live
+        // order ever having been placed" -- full context in LiveCanaryRecord's own class
+        // javadoc): a healthy default (a passing canary already on record) so every existing
+        // LIVE-authorization test in this file, none of which are about this specific new gate,
+        // is unaffected by it -- see the dedicated noRecentPassingLiveCanary_* test below for
+        // the gate itself.
+        when(liveCanaryService.hasRecentPassingCanary(any())).thenReturn(true);
     }
 
     @Test
@@ -198,6 +207,27 @@ class RiskProfileServiceTest {
         assertThatThrownBy(() -> service.authorizeLiveAutoTrade("user1", "cred1", PHRASE))
             .isInstanceOf(IllegalStateException.class)
             .hasMessageContaining("does not support transactions");
+
+        verify(adapter, never()).getAccountPermissions(any(), any(), any());
+        verify(riskProfileRepo, never()).save(any());
+        verify(incidentService, never()).raiseCritical(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    /**
+     * Audit item P0-1 ("Nothing gates autonomous LIVE trading on a real, successful live order
+     * ever having been placed" -- full context in LiveCanaryRecord's own class javadoc): the
+     * actual test proving the new refusal, same pattern as the Mongo-transactions test above --
+     * refused before ever reaching the broker permission check, since there is no point
+     * re-verifying permissions for a credential that hasn't even cleared this gate yet.
+     */
+    @Test
+    @DisplayName("authorizeLiveAutoTrade: no PASSED live canary on record for this credential -- refuses outright for LIVE, never even reaches the broker permission check")
+    void noRecentPassingLiveCanary_refusesOutright() {
+        when(liveCanaryService.hasRecentPassingCanary("cred1")).thenReturn(false);
+
+        assertThatThrownBy(() -> service.authorizeLiveAutoTrade("user1", "cred1", PHRASE))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("live canary");
 
         verify(adapter, never()).getAccountPermissions(any(), any(), any());
         verify(riskProfileRepo, never()).save(any());

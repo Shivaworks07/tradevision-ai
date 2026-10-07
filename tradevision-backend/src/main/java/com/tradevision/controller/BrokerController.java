@@ -5,10 +5,13 @@ import com.tradevision.dto.BrokerCredentialResponse;
 import com.tradevision.dto.ConnectBrokerRequest;
 import com.tradevision.dto.PlaceTestOrderRequest;
 import com.tradevision.dto.RiskProfileRequest;
+import com.tradevision.dto.StartLiveCanaryRequest;
+import com.tradevision.model.LiveCanaryRecord;
 import com.tradevision.model.Order;
 import com.tradevision.model.OrderStatus;
 import com.tradevision.model.RiskProfile;
 import com.tradevision.service.BrokerCredentialService;
+import com.tradevision.service.LiveCanaryService;
 import com.tradevision.service.OrderExecutionService;
 import com.tradevision.service.RiskProfileService;
 import jakarta.validation.Valid;
@@ -49,6 +52,8 @@ public class BrokerController {
     private final BrokerCredentialService credentialService;
     private final OrderExecutionService orderExecutionService;
     private final RiskProfileService riskProfileService;
+    // Audit item P0-1, full context in LiveCanaryRecord's own class javadoc.
+    private final LiveCanaryService liveCanaryService;
 
     @PostMapping("/connect")
     public ResponseEntity<?> connect(@AuthenticationPrincipal String userId,
@@ -244,6 +249,38 @@ public class BrokerController {
             return ResponseEntity.ok(ApiResponse.ok("Autonomous LIVE trading authorized for this credential.", profile));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    /**
+     * Audit item P0-1, full context in LiveCanaryRecord's own class javadoc. Places one real,
+     * minimal LIVE order on the given symbol -- a genuinely real-money action, gated behind the
+     * same explicit confirmation-phrase pattern as authorize-live-autotrade just above. Returns
+     * the PENDING record immediately; the order resolves to PASSED/FAILED asynchronously via
+     * LiveCanaryService's own reconciliation sweep -- poll GET .../live-canary/{credentialId}
+     * for the outcome.
+     */
+    @PostMapping("/{credentialId}/live-canary")
+    public ResponseEntity<?> startLiveCanary(@AuthenticationPrincipal String userId, @PathVariable String credentialId,
+                                               @Valid @RequestBody StartLiveCanaryRequest req) {
+        try {
+            LiveCanaryRecord record = liveCanaryService.startCanary(userId, credentialId, req.getSymbol(), req.getConfirm());
+            return ResponseEntity.ok(ApiResponse.ok("Live canary order submitted -- poll for PASSED/FAILED.", record));
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @GetMapping("/{credentialId}/live-canary")
+    public ResponseEntity<?> getLiveCanaryStatus(@AuthenticationPrincipal String userId, @PathVariable String credentialId) {
+        try {
+            var latest = liveCanaryService.latestFor(userId, credentialId);
+            if (latest.isPresent()) {
+                return ResponseEntity.ok(ApiResponse.ok("Latest live canary attempt for this credential.", latest.get()));
+            }
+            return ResponseEntity.ok(ApiResponse.ok("No live canary attempt on record for this credential yet.", null));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
         }
     }
 

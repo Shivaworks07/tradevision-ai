@@ -71,6 +71,10 @@ public class RiskProfileService {
      * pure state holder with no dependencies of its own at all.
      */
     private final com.tradevision.config.StartupState startupState;
+    // Audit item P0-1 fix, full context in LiveCanaryRecord's own class javadoc: the actual
+    // "has this credential ever proven itself with a real LIVE order" gate, checked below
+    // alongside every other LIVE-only check this method already has.
+    private final LiveCanaryService liveCanaryService;
 
     /**
      * Review finding ("Kill switch can race with LIVE order submission" -- P0): confirmed real
@@ -893,6 +897,26 @@ public class RiskProfileService {
                 throw new IllegalStateException("LIVE auto-trade authorization refused: this MongoDB deployment does not support "
                     + "transactions (confirmed at application startup). Configure a MongoDB replica set and restart the application "
                     + "before authorizing LIVE autonomous trading.");
+            }
+            // Audit item P0-1 fix ("Nothing gates autonomous LIVE trading on a real, successful
+            // live order ever having been placed" -- full context in LiveCanaryRecord's own
+            // class javadoc): every check above and below this one is about whether this
+            // credential is ALLOWED to trade LIVE; none of them ever actually sends one real
+            // order through the full pipeline (adapter auth, placement, OMS transitions,
+            // Position creation, real OCO protection) and confirms it genuinely works for THIS
+            // credential before autonomous trading is allowed to start sending LIVE orders
+            // unsupervised for the first time. This is that missing proof -- see
+            // LiveCanaryService.startCanary for how an admin runs one, and
+            // hasRecentPassingCanary's own javadoc for the 24-hour validity window.
+            if (!liveCanaryService.hasRecentPassingCanary(credentialId)) {
+                credentialService.audit(userId, credentialId, credential.getBroker(), "LIVE_AUTOTRADE_AUTH_REFUSED_NO_LIVE_CANARY",
+                    "LIVE auto-trade authorization refused: this credential has no PASSED live canary order on record "
+                        + "within the last 24 hours. Run a live canary order first (POST /api/broker/{id}/live-canary) and "
+                        + "let it resolve to PASSED before authorizing autonomous LIVE trading.");
+                throw new IllegalArgumentException("LIVE auto-trade authorization refused: no PASSED live canary order on "
+                    + "record for this credential within the last 24 hours. Run a live canary order first, and wait for it "
+                    + "to resolve to PASSED (it must actually fill and get real OCO protection placed), before authorizing "
+                    + "autonomous LIVE trading.");
             }
             var adapter = credentialService.adapterForCredential(credential);
             String apiKey = credentialService.decrypt(credential, true);

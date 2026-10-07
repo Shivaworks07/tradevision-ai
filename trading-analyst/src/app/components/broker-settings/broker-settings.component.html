@@ -111,6 +111,15 @@
             <option value="SELL">SELL</option>
           </select>
           <input type="number" placeholder="Quantity" [(ngModel)]="testQuantity" step="0.0001" />
+          @if (testSide === 'BUY') {
+            <!-- Follow-up fix (full context in BrokerService.placeTestOrder's own updated
+            comment, PR #33): optional -- without these, a manual fill has no way to be
+            protected once the backend's own reconciliation pass discovers it, and gets
+            emergency-flattened unprotected instead. Only meaningful for a BUY, so hidden
+            entirely on a SELL rather than shown disabled. -->
+            <input type="number" placeholder="Take-profit price (optional)" [(ngModel)]="testTakeProfitPrice" step="0.01" />
+            <input type="number" placeholder="Stop-loss price (optional)" [(ngModel)]="testStopLossTriggerPrice" step="0.01" />
+          }
           <!-- Review finding (P1 — "Manual test-order UI mismatch"): OrderExecutionService
           hard-rejects manual test orders on LIVE credentials (verified against the actual
           backend code, not assumed) — this button could never succeed on LIVE, so the old
@@ -121,6 +130,9 @@
         </div>
         @if (sel.mode === 'LIVE') {
           <div class="ss-desc">Manual test orders are TESTNET-only and disabled on LIVE credentials — this proves execution safely without ever risking real funds.</div>
+        }
+        @if (testSide === 'BUY') {
+          <div class="ss-desc">Take-profit/stop-loss are optional. Leave both blank to place a plain order; if set, this fill gets a real protective OCO exit once discovered, instead of being emergency-flattened unprotected.</div>
         }
       </div>
       <!-- Risk profile / auto-trade -->

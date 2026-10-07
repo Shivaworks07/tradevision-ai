@@ -108,8 +108,19 @@ export class BrokerService {
     return this.http.get(`${this.API}/${credentialId}/open-orders`);
   }
 
-  placeTestOrder(credentialId: string, symbol: string, side: string, quantity: number): Observable<any> {
-    return this.http.post(`${this.API}/test-order`, { credentialId, symbol, side, quantity });
+  // Follow-up fix (full context in the backend's own PlaceTestOrderRequest/OrderExecutionService
+  // comments, PR #33): takeProfitPrice/stopLossTriggerPrice are optional and only meaningful for
+  // a BUY -- without them, a manually placed order has no way to be protected once the backend's
+  // own reconciliation pass discovers its fill, and gets emergency-flattened unprotected. Sent
+  // as undefined (dropped from the JSON body entirely, not sent as null) when not provided, so
+  // an unchanged caller behaves exactly as before this fix.
+  placeTestOrder(credentialId: string, symbol: string, side: string, quantity: number,
+                 takeProfitPrice?: number | null, stopLossTriggerPrice?: number | null): Observable<any> {
+    return this.http.post(`${this.API}/test-order`, {
+      credentialId, symbol, side, quantity,
+      takeProfitPrice: takeProfitPrice ?? undefined,
+      stopLossTriggerPrice: stopLossTriggerPrice ?? undefined,
+    });
   }
 
   history(): Observable<any> {

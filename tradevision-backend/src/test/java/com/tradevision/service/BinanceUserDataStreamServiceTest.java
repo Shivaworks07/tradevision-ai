@@ -108,6 +108,91 @@ class BinanceUserDataStreamServiceTest {
         assertThat(connections).doesNotContainKey("cred1");
     }
 
+    /**
+     * Audit item P1-8 ("No watchdog detects a connection that hangs without ever firing
+     * onClose/onError" -- full context in MAX_CONSECUTIVE_MISSED_SESSION_STATUS's own javadoc):
+     * the actual tests proving the new hung-connection detection in verifySubscriptionHealth --
+     * a connection that never answers repeated active session.status probes is force-closed
+     * (so reconcileConnections reopens it), while one that's only missed a single probe so far
+     * is given another chance rather than closed prematurely.
+     */
+    private Object buildSubscribedListenerWithPendingSessionStatus(String credentialId, String pendingId, int missedSoFar) throws Exception {
+        Class<?> listenerClass = Class.forName("com.tradevision.service.BinanceUserDataStreamService$Listener");
+        var listenerConstructor = listenerClass.getDeclaredConstructor(BinanceUserDataStreamService.class, String.class);
+        listenerConstructor.setAccessible(true);
+        Object listener = listenerConstructor.newInstance(service, credentialId);
+        var stateField = listenerClass.getDeclaredField("state");
+        stateField.setAccessible(true);
+        Class<?> stateEnum = Class.forName("com.tradevision.service.BinanceUserDataStreamService$ConnectionState");
+        stateField.set(listener, java.util.Arrays.stream(stateEnum.getEnumConstants()).filter(e -> e.toString().equals("SUBSCRIBED")).findFirst().get());
+        var pendingIdField = listenerClass.getDeclaredField("pendingSessionStatusId");
+        pendingIdField.setAccessible(true);
+        pendingIdField.set(listener, pendingId);
+        var missedField = listenerClass.getDeclaredField("consecutiveMissedSessionStatus");
+        missedField.setAccessible(true);
+        missedField.set(listener, missedSoFar);
+        return listener;
+    }
+
+    @Test
+    @DisplayName("verifySubscriptionHealth: a connection that reaches MAX_CONSECUTIVE_MISSED_SESSION_STATUS unanswered probes is force-closed as hung, with the backoff and health-tracking the other close paths already use")
+    void verifySubscriptionHealth_maxMissedProbes_forceClosesAsHung() throws Exception {
+        java.net.http.WebSocket mockSocket = org.mockito.Mockito.mock(java.net.http.WebSocket.class);
+        when(mockSocket.sendClose(anyInt(), anyString())).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(mockSocket));
+        // One miss already recorded (from the PREVIOUS cycle) -- this call's own detection that
+        // the request is STILL pending pushes it to 2, meeting the threshold.
+        Object listener = buildSubscribedListenerWithPendingSessionStatus("cred1", "still-pending-request-id", 1);
+
+        Class<?> managedConnectionClass = Class.forName("com.tradevision.service.BinanceUserDataStreamService$ManagedConnection");
+        Class<?> listenerClass = Class.forName("com.tradevision.service.BinanceUserDataStreamService$Listener");
+        var mcConstructor = managedConnectionClass.getDeclaredConstructor(java.net.http.WebSocket.class, java.time.Instant.class, listenerClass);
+        mcConstructor.setAccessible(true);
+        Object managedConnection = mcConstructor.newInstance(mockSocket, java.time.Instant.now(), listener);
+
+        var connectionsField = BinanceUserDataStreamService.class.getDeclaredField("connections");
+        connectionsField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        var connections = (java.util.Map<String, Object>) connectionsField.get(service);
+        connections.put("cred1", managedConnection);
+
+        when(shutdownState.isShuttingDown()).thenReturn(false);
+
+        service.verifySubscriptionHealth();
+
+        verify(mockSocket).sendClose(anyInt(), anyString());
+        verify(mockSocket, never()).sendText(anyString(), anyBoolean()); // must not probe a connection it just closed
+        assertThat(connections).doesNotContainKey("cred1");
+        verify(exchangeHealthService).recordWsError(eq("cred1"), contains("session.status"));
+    }
+
+    @Test
+    @DisplayName("verifySubscriptionHealth: a connection that has missed only ONE probe so far is given another chance -- probed again, not yet closed")
+    void verifySubscriptionHealth_belowMissThreshold_stillProbesAgain() throws Exception {
+        java.net.http.WebSocket mockSocket = org.mockito.Mockito.mock(java.net.http.WebSocket.class);
+        // No misses recorded yet -- this is the very first miss being detected this cycle (1 < 2).
+        Object listener = buildSubscribedListenerWithPendingSessionStatus("cred1", "still-pending-request-id", 0);
+
+        Class<?> managedConnectionClass = Class.forName("com.tradevision.service.BinanceUserDataStreamService$ManagedConnection");
+        Class<?> listenerClass = Class.forName("com.tradevision.service.BinanceUserDataStreamService$Listener");
+        var mcConstructor = managedConnectionClass.getDeclaredConstructor(java.net.http.WebSocket.class, java.time.Instant.class, listenerClass);
+        mcConstructor.setAccessible(true);
+        Object managedConnection = mcConstructor.newInstance(mockSocket, java.time.Instant.now(), listener);
+
+        var connectionsField = BinanceUserDataStreamService.class.getDeclaredField("connections");
+        connectionsField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        var connections = (java.util.Map<String, Object>) connectionsField.get(service);
+        connections.put("cred1", managedConnection);
+
+        when(shutdownState.isShuttingDown()).thenReturn(false);
+
+        service.verifySubscriptionHealth();
+
+        verify(mockSocket, never()).sendClose(anyInt(), anyString());
+        verify(mockSocket).sendText(anyString(), eq(true)); // still sends a fresh probe
+        assertThat(connections).containsKey("cred1");
+    }
+
     @Test
     @DisplayName("closeAllStreams: with no active connections, does nothing and does not throw")
     void closeAllStreams_withNoActiveConnections() {

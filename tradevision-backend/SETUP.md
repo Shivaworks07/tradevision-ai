@@ -403,3 +403,32 @@ Until both secrets exist, this job will keep failing on this same 401: with the 
 `setup-java` writes an empty/unset credential pair into `settings.xml`, which OSS Index still
 rejects. This is the one piece of this follow-up that genuinely cannot be finished from here —
 creating the Sonatype account and generating the token has to happen on the user's own side.
+
+## Follow-up: first real CVSS-gate failure once OSS Index auth actually worked
+
+With OSS Index authenticating successfully, the job ran a real full analysis for the first time
+and failed the CVSS≥8 gate on 3 findings — each individually researched, two real and one a
+false positive, same discipline as every other finding this session:
+
+- **`jackson-core`/`jackson-databind` 2.21.5** (the Jackson 2 compat shim pulled in via
+  `spring-boot-jackson2`) **and the same pair at 3.1.5** (Boot 4's own new Jackson 3 default —
+  still present on the classpath even with `spring.jackson.use-jackson2-defaults=true`, which
+  only changes which line Spring's *own* auto-configured beans use, not which jars are shipped) —
+  both genuinely affected by `CVE-2026-68498`/`CVE-2026-68497` (quadratic-complexity parsing DoS
+  in `ReaderBasedJsonParser`/`Duration`/`XMLGregorianCalendar` handling, CVSS 8.7) and
+  `CVE-2026-83557` (`DefaultBaseTypeLimitingValidator` denylist omitting `java.lang.Comparable`).
+  Confirmed via each CVE's own advisory that the fix lines are 2.21.6/3.1.6 (not a newer
+  2.22.x/3.2.x jump needed) — both already published to Maven Central, checked directly. Fixed
+  in `pom.xml` via the two properties Spring Boot 4 actually uses for this (confirmed against
+  docs.spring.io's own 4.1 dependency-versions-properties appendix, since Boot 4 reassigns what
+  used to be Boot 3's single `jackson-bom.version` property into two: `jackson-2-bom.version` for
+  the classic Jackson 2 line, freeing `jackson-bom.version` to mean the *new* Jackson 3 BOM):
+  `jackson-2-bom.version=2.21.6`, `jackson-bom.version=3.1.6`.
+- **`spring-security-web-7.1.1.jar`** flagged for `CVE-2026-47838` (X.509 client-certificate CN
+  parsing allowing user impersonation) — confirmed via the official GitHub Security Advisory
+  (GHSA-293q-567p-wmwq) to be a false positive: its own listed affected ranges top out at
+  `6.5.10`, fixed in `6.5.11`, and this project's actual version (`7.1.1`, a full major line
+  ahead, from this session's own Boot 4/Framework 7 bump) is past that fix. Also confirmed this
+  project doesn't use X.509 client-cert auth anywhere (`SecurityConfig` — JWT bearer tokens only),
+  so there'd be no reachable attack surface even if the version match had been real. Suppressed
+  in `owasp-suppressions.xml` with the advisory citation, not assumed.

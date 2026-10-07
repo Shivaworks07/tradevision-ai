@@ -432,3 +432,34 @@ false positive, same discipline as every other finding this session:
   project doesn't use X.509 client-cert auth anywhere (`SecurityConfig` — JWT bearer tokens only),
   so there'd be no reachable attack surface even if the version match had been real. Suppressed
   in `owasp-suppressions.xml` with the advisory citation, not assumed.
+
+## Follow-up: OWASP job taking ~1 hour — no NVD API key, no cache between runs
+
+User flagged this straight from the real log:
+
+```
+[WARNING] An NVD API Key was not provided - it is highly recommended to use an NVD API key as
+the update can take a VERY long time without an API Key
+[INFO] NVD API has 402,547 records in this update
+```
+
+Two separate, stackable causes, both fixed in `.github/workflows/dependency-scan.yml` (full
+reasoning in that job's own step comments):
+
+1. **No NVD API key** — confirmed via NVD's own developer docs that unauthenticated API callers
+   get a much lower rate limit than callers with a free, registered key, exactly what
+   dependency-check's own warning is about. Fixed by requesting a free key at
+   https://nvd.nist.gov/developers/request-an-api-key (approval is near-instant, by email) and
+   adding it as a new repo secret, **`NVD_API_KEY`**, under *Settings → Secrets and variables →
+   Actions*. Wired in via `-DnvdApiKeyEnvironmentVariable=NVD_API_KEY` rather than the more
+   obvious `-DnvdApiKey=...` — dependency-check-maven's own `check-mojo` docs explicitly warn the
+   direct property risks exposing the raw key in Maven's own debug/verbose logging, and recommend
+   the environment-variable-name indirection instead for CI. Unlike OSS Index's auth change, this
+   one is NOT a hard requirement — the job still works without this secret, just slower.
+2. **No caching between runs** — even with a key, every run was re-downloading/re-processing
+   NVD's full ~400k-record dataset from scratch instead of just that day's delta, because the job
+   had nowhere persistent to keep the database it downloads. Fixed by pinning dependency-check's
+   own data directory to a stable path (`-DdataDirectory=${HOME}/.dependency-check-data`, outside
+   `target/`, which this job already wipes every run) and caching that path with
+   `actions/cache@v4`, keyed by UTC date with a prefix `restore-keys` fallback so even a run on a
+   new day starts from yesterday's mostly-complete database rather than nothing.

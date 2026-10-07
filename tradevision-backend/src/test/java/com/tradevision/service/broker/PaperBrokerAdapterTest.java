@@ -172,7 +172,12 @@ class PaperBrokerAdapterTest {
         oco.setTakeProfitPrice(BigDecimal.valueOf(70000));
         oco.setStopLossPrice(BigDecimal.valueOf(60000));
         when(paperOcoRepo.findById("oco-1")).thenReturn(java.util.Optional.of(oco));
-        when(realAdapter.getCurrentPrice("BTCUSDT", BrokerMode.LIVE)).thenReturn(BigDecimal.valueOf(59000));
+        // Audit finding (P1-4 -- full context in getOcoStatus_stopLossGap_largeGap_
+        // triggersButDoesNotFill below): close enough to the 60,000 trigger to stay within the
+        // simulated stop-limit's own resting buffer (0.5%, i.e. within 300 of the trigger) --
+        // this test is about a clean, ordinary stop-loss trigger filling normally, not the
+        // real-world "triggered but gapped past the resting limit" scenario that test covers.
+        when(realAdapter.getCurrentPrice("BTCUSDT", BrokerMode.LIVE)).thenReturn(BigDecimal.valueOf(59900));
 
         var result = service.getOcoStatus("k", "s", BrokerMode.PAPER, "oco-1");
 
@@ -342,15 +347,98 @@ class PaperBrokerAdapterTest {
         oco.setTakeProfitPrice(BigDecimal.valueOf(70000));
         oco.setStopLossPrice(BigDecimal.valueOf(60000));
         when(paperOcoRepo.findById("oco-gap-1")).thenReturn(java.util.Optional.of(oco));
-        // The real market has already gapped well past the 60,000 stop trigger -- a real Binance
-        // stop-loss in a fast-moving market can and does fill at a materially worse price than
-        // its own trigger, not exactly at it.
-        when(realAdapter.getCurrentPrice("BTCUSDT", BrokerMode.LIVE)).thenReturn(BigDecimal.valueOf(58500));
+        // The real market has gapped slightly past the 60,000 stop trigger -- still within the
+        // simulated stop-limit's own 0.5% resting buffer (P1-4, full context in
+        // STOP_LIMIT_NON_FILL_GAP_RATE's own field javadoc), so this still fills, just not
+        // exactly at the stored trigger price -- a real Binance stop-loss in a fast-moving
+        // market can and does fill at a materially worse price than its own trigger. A LARGER
+        // gap that blows through that buffer entirely is covered by the dedicated
+        // getOcoStatus_stopLossGap_largeGap_triggersButDoesNotFill test below instead.
+        when(realAdapter.getCurrentPrice("BTCUSDT", BrokerMode.LIVE)).thenReturn(BigDecimal.valueOf(59800));
 
         var status = service.getOcoStatus("fake-key", "fake-secret", BrokerMode.PAPER, "oco-gap-1");
 
         var slLeg = status.legs().stream().filter(l -> l.orderId().endsWith("-SL")).findFirst().orElseThrow();
         assertThat(slLeg.status()).isEqualTo("FILLED");
-        assertThat(slLeg.price()).isEqualByComparingTo("58500"); // the real observed price, NOT the 60000 trigger price
+        assertThat(slLeg.price()).isEqualByComparingTo("59800"); // the real observed price, NOT the 60000 trigger price
+    }
+
+    // ── P1-4: "Improve PaperBrokerAdapter realism... stop-limit-non-fill simulation" ──
+
+    @Test
+    @DisplayName("P1-4: a stop-loss trigger the market has gapped WELL past (beyond the simulated stop-limit's own 0.5% resting buffer) is left triggered-but-UNFILLED, not auto-resolved -- exactly the real scenario PositionMonitorService's P0-3 watchdog exists to catch")
+    void getOcoStatus_stopLossGap_largeGap_triggersButDoesNotFill() {
+        PaperOco oco = new PaperOco();
+        oco.setId("oco-biggap-1");
+        oco.setSymbol("BTCUSDT");
+        oco.setQuantity(BigDecimal.valueOf(1));
+        oco.setTakeProfitPrice(BigDecimal.valueOf(70000));
+        oco.setStopLossPrice(BigDecimal.valueOf(60000));
+        when(paperOcoRepo.findById("oco-biggap-1")).thenReturn(java.util.Optional.of(oco));
+        // 58,500 is 2.5% below the 60,000 trigger -- well past the simulated 0.5% resting buffer.
+        when(realAdapter.getCurrentPrice("BTCUSDT", BrokerMode.LIVE)).thenReturn(BigDecimal.valueOf(58500));
+
+        var status = service.getOcoStatus("fake-key", "fake-secret", BrokerMode.PAPER, "oco-biggap-1");
+
+        // Deliberately NOT ALL_DONE and the SL leg deliberately NOT FILLED -- that exact
+        // combination is what PositionMonitorService.handleStopTriggeredButUnfilled keys off of.
+        assertThat(status.listStatus()).isEqualTo("EXECUTING");
+        var slLeg = status.legs().stream().filter(l -> l.orderId().endsWith("-SL")).findFirst().orElseThrow();
+        assertThat(slLeg.status()).isEqualTo("NEW");
+        verify(paperOcoRepo).save(argThat(saved -> "SL_TRIGGERED_UNFILLED".equals(saved.getStatus())));
+    }
+
+    @Test
+    @DisplayName("P1-4: a triggered-but-unfilled stop-limit OCO can still be cancelled -- the real emergencyFlatten flow cancels the stuck exit OCO before placing a fresh market sell")
+    void cancelOco_slTriggeredUnfilled_cancelsSuccessfully() {
+        PaperOco oco = new PaperOco();
+        oco.setId("oco-biggap-1");
+        oco.setStatus("SL_TRIGGERED_UNFILLED");
+        when(paperOcoRepo.findById("oco-biggap-1")).thenReturn(java.util.Optional.of(oco));
+
+        var result = service.cancelOco("k", "s", BrokerMode.PAPER, "BTCUSDT", "oco-biggap-1");
+
+        assertThat(result.success()).isTrue();
+        verify(paperOcoRepo).save(argThat(saved -> "CANCELLED".equals(saved.getStatus())));
+    }
+
+    @Test
+    @DisplayName("P1-4: per-asset oversell rejection -- a SELL for an asset this PAPER credential has real tracked holdings for, but not enough of, is rejected rather than simulated")
+    void placeOrder_sellExceedsTrackedAssetHoldings_rejected() {
+        var rules = new com.tradevision.service.broker.dto.SymbolRules("BTCUSDT", "BTC", "USDT", BigDecimal.valueOf(0.01), BigDecimal.valueOf(0.0001),
+            BigDecimal.valueOf(0.0001), BigDecimal.ZERO, 2, 4, BigDecimal.ZERO, false, false, BigDecimal.ZERO, BigDecimal.ZERO);
+        when(realAdapter.getSymbolRules("BTCUSDT", BrokerMode.LIVE)).thenReturn(rules);
+        when(realAdapter.getCurrentPrice("BTCUSDT", BrokerMode.LIVE)).thenReturn(BigDecimal.valueOf(65000));
+        // Buys exactly 0.05 BTC first.
+        service.placeOrder("k", "s", BrokerMode.PAPER, new OrderRequest("BTCUSDT", "BUY", "MARKET", BigDecimal.valueOf(0.05), "buy-1"));
+
+        // Then tries to sell MORE than that -- a real exchange would reject this outright.
+        var result = service.placeOrder("k", "s", BrokerMode.PAPER,
+            new OrderRequest("BTCUSDT", "SELL", "MARKET", BigDecimal.valueOf(0.2), "sell-1"));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.status()).isEqualTo("REJECTED");
+        assertThat(result.errorMessage()).containsIgnoringCase("insufficient");
+    }
+
+    @Test
+    @DisplayName("P1-4: per-asset holdings allow selling up to exactly what was bought, and reduce holdings by what actually sold")
+    void placeOrder_sellWithinTrackedAssetHoldings_succeeds() {
+        var rules = new com.tradevision.service.broker.dto.SymbolRules("BTCUSDT", "BTC", "USDT", BigDecimal.valueOf(0.01), BigDecimal.valueOf(0.0001),
+            BigDecimal.valueOf(0.0001), BigDecimal.ZERO, 2, 4, BigDecimal.ZERO, false, false, BigDecimal.ZERO, BigDecimal.ZERO);
+        when(realAdapter.getSymbolRules("BTCUSDT", BrokerMode.LIVE)).thenReturn(rules);
+        when(realAdapter.getCurrentPrice("BTCUSDT", BrokerMode.LIVE)).thenReturn(BigDecimal.valueOf(65000));
+        service.placeOrder("k", "s", BrokerMode.PAPER, new OrderRequest("BTCUSDT", "BUY", "MARKET", BigDecimal.valueOf(0.1), "buy-1"));
+
+        var result = service.placeOrder("k", "s", BrokerMode.PAPER,
+            new OrderRequest("BTCUSDT", "SELL", "MARKET", BigDecimal.valueOf(0.1), "sell-1"));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.status()).isEqualTo("FILLED");
+
+        // Selling again (nothing left) is rejected -- holdings were genuinely decremented.
+        var secondSell = service.placeOrder("k", "s", BrokerMode.PAPER,
+            new OrderRequest("BTCUSDT", "SELL", "MARKET", BigDecimal.valueOf(0.01), "sell-2"));
+        assertThat(secondSell.success()).isFalse();
     }
 }

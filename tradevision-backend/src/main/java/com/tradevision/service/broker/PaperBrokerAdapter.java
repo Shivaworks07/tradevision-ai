@@ -98,6 +98,17 @@ public class PaperBrokerAdapter implements BrokerAdapter {
      */
     private final java.util.concurrent.atomic.AtomicReference<BigDecimal> simulatedUsdtBalance;
     /**
+     * Audit finding (P1-4 -- "Improve PaperBrokerAdapter realism... per-asset balances,
+     * oversell rejection" -- full context in PaperAccountBalance.assetBalances' own field
+     * javadoc and placeOrder's own updated comment below): the per-base-asset counterpart to
+     * simulatedUsdtBalance above, keyed by uppercase base asset symbol (e.g. "BTC"). A BUY
+     * increases the relevant entry; a SELL is rejected outright (same "refuse a fill a real
+     * exchange would reject" posture as the existing USDT insufficient-balance check) unless
+     * this credential's own tracked holdings genuinely cover the requested quantity, and
+     * decreases that entry by exactly what filled.
+     */
+    private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicReference<BigDecimal>> simulatedAssetBalances;
+    /**
      * Review finding ("PaperBrokerAdapter still reports simulated market orders as effectively
      * filled during later status lookup even though v178 can simulate partial fills" -- external
      * review, thirtieth pass, P2, confirmed real by direct inspection before this fix:
@@ -143,6 +154,17 @@ public class PaperBrokerAdapter implements BrokerAdapter {
      */
     private static final BigDecimal PARTIAL_FILL_NOTIONAL_THRESHOLD = BigDecimal.valueOf(5000);
     /**
+     * Audit finding (P1-4 -- "Improve PaperBrokerAdapter realism... stop-limit-non-fill
+     * simulation" -- full context in getOcoStatus's own updated comment): matches
+     * BinanceBrokerAdapter.placeExitOco's own real STOP_LOSS_LIMIT buffer exactly (that method's
+     * own javadoc: belowPrice = stopTrigger * 0.995, i.e. a 0.5% resting-limit gap below the
+     * trigger) -- the real-world distance a fast price move has to cross past the trigger before
+     * the resting limit leg is left behind, unfilled. Reused here as the threshold for when a
+     * simulated SL crossing is left SL_TRIGGERED_UNFILLED instead of auto-resolving to
+     * SL_FILLED, so the simulated gap matches the real gap it's modeling, not an arbitrary one.
+     */
+    private static final BigDecimal STOP_LIMIT_NON_FILL_GAP_RATE = BigDecimal.valueOf(0.005);
+    /**
      * Review finding, same context as PARTIAL_FILL_NOTIONAL_THRESHOLD's own javadoc above: a
      * real, INJECTABLE random source -- deliberately java.util.Random, not ThreadLocalRandom,
      * since ThreadLocalRandom cannot be seeded or replaced at all, which would have made this
@@ -185,27 +207,50 @@ public class PaperBrokerAdapter implements BrokerAdapter {
         this.paperAccountBalanceRepo = paperAccountBalanceRepo;
         this.credentialId = credentialId;
         BigDecimal initialBalance = BigDecimal.valueOf(100_000);
+        java.util.Map<String, BigDecimal> initialAssetBalances = new java.util.HashMap<>();
         if (paperAccountBalanceRepo != null && credentialId != null) {
             var existing = paperAccountBalanceRepo.findById(credentialId);
             if (existing.isPresent()) {
                 initialBalance = existing.get().getBalanceUsdt();
-                log.info("[PAPER] Resumed durable balance {} for credential {} (not reset to the 100,000 default -- see this class's own P2-4 fix)",
-                    initialBalance, credentialId);
+                // Audit finding (P1-4, full context in PaperAccountBalance.assetBalances' own
+                // field javadoc): resumed here too, same reasoning as the USDT balance just
+                // above -- a legacy record saved before this fix has no assetBalances field at
+                // all (defaults to an empty map on deserialization), which is the correct,
+                // honest starting point for a credential that has never had holdings tracked.
+                if (existing.get().getAssetBalances() != null) initialAssetBalances.putAll(existing.get().getAssetBalances());
+                log.info("[PAPER] Resumed durable balance {} USDT and {} asset holding(s) for credential {} (not reset -- see this class's own P2-4/P1-4 fixes)",
+                    initialBalance, initialAssetBalances.size(), credentialId);
             } else {
-                persistBalance(initialBalance);
+                persistBalances(initialBalance, initialAssetBalances);
             }
         }
         this.simulatedUsdtBalance = new java.util.concurrent.atomic.AtomicReference<>(initialBalance);
+        this.simulatedAssetBalances = new java.util.concurrent.ConcurrentHashMap<>();
+        initialAssetBalances.forEach((asset, qty) ->
+            simulatedAssetBalances.put(asset, new java.util.concurrent.atomic.AtomicReference<>(qty)));
     }
 
-    /** P2-4 fix, full context above: upserts this credential's own durable balance document. No-op for the connect-validation-only instance (paperAccountBalanceRepo/credentialId null). */
-    private void persistBalance(BigDecimal balance) {
+    /**
+     * P2-4 fix, full context above, extended by P1-4 (full context in
+     * PaperAccountBalance.assetBalances' own field javadoc): upserts this credential's own
+     * durable balance document, USDT cash and per-asset holdings together. No-op for the
+     * connect-validation-only instance (paperAccountBalanceRepo/credentialId null).
+     */
+    private void persistBalances(BigDecimal usdtBalance, java.util.Map<String, BigDecimal> assetBalances) {
         if (paperAccountBalanceRepo == null || credentialId == null) return;
         var record = new PaperAccountBalance();
         record.setCredentialId(credentialId);
-        record.setBalanceUsdt(balance);
+        record.setBalanceUsdt(usdtBalance);
+        record.setAssetBalances(new java.util.HashMap<>(assetBalances));
         record.setUpdatedAt(java.time.LocalDateTime.now());
         paperAccountBalanceRepo.save(record);
+    }
+
+    /** Snapshot of every currently-tracked asset balance, for persistBalances to save alongside a USDT update. */
+    private java.util.Map<String, BigDecimal> snapshotAssetBalances() {
+        java.util.Map<String, BigDecimal> snapshot = new java.util.HashMap<>();
+        simulatedAssetBalances.forEach((asset, ref) -> snapshot.put(asset, ref.get()));
+        return snapshot;
     }
 
     @Override
@@ -273,8 +318,18 @@ public class PaperBrokerAdapter implements BrokerAdapter {
         // block an otherwise-good simulated fill" posture elsewhere (see the price-fetch
         // try/catch already established in BinanceBrokerAdapter for the same reasoning).
         BigDecimal requestedQty = request.quantity();
+        // Audit finding (P1-4 -- "per-asset balances, oversell rejection" -- full context in
+        // simulatedAssetBalances' own field javadoc): captured here, alongside the existing
+        // step-size lookup that already fetches the same SymbolRules, rather than a second
+        // lookup. Left null (same fail-open posture as the step-size rounding immediately below)
+        // if the lookup itself fails -- the oversell check further down simply cannot be
+        // enforced for this one fill if that happens, consistent with this class's own
+        // established "never let a market-data lookup failure block an otherwise-good simulated
+        // fill" posture elsewhere in this method.
+        String baseAsset = null;
         try {
             SymbolRules rules = getSymbolRules(request.symbol(), mode);
+            baseAsset = rules.baseAsset();
             if (rules.stepSize() != null && rules.stepSize().signum() > 0) {
                 BigDecimal steps = requestedQty.divide(rules.stepSize(), 0, java.math.RoundingMode.DOWN);
                 BigDecimal rounded = steps.multiply(rules.stepSize());
@@ -308,6 +363,21 @@ public class PaperBrokerAdapter implements BrokerAdapter {
                     "Paper trading balance " + simulatedUsdtBalance.get() + " USDT is insufficient for this order's simulated cost "
                         + fullNotional.add(fullFee) + " USDT -- refusing to simulate a fill a real exchange would reject.");
             }
+        } else if (baseAsset != null) {
+            // Audit finding (P1-4 -- "per-asset balances, oversell rejection" -- full context in
+            // simulatedAssetBalances' own field javadoc): the real, confirmed gap this fix
+            // closes -- before this, a SELL was simulated as filling regardless of whether this
+            // PAPER credential had ever actually bought any of this asset at all. Checked against
+            // the FULL requested quantity (before any partial-fill roll below, which can only
+            // ever reduce the actual quantity needed), same "can never itself be the reason a
+            // fill later turns out to have sold more than was actually held" reasoning as the
+            // BUY-side USDT check just above.
+            BigDecimal held = simulatedAssetBalances.getOrDefault(baseAsset, new java.util.concurrent.atomic.AtomicReference<>(BigDecimal.ZERO)).get();
+            if (held.compareTo(requestedQty) < 0) {
+                return new OrderResult(false, null, request.clientOrderId(), "REJECTED", null, null, "{}",
+                    "Paper trading holdings of " + held + " " + baseAsset + " are insufficient to sell " + requestedQty
+                        + " -- refusing to simulate a fill a real exchange would reject as an oversell.");
+            }
         }
         String brokerOrderId = "PAPER-" + UUID.randomUUID();
         // Review finding, same context as PARTIAL_FILL_NOTIONAL_THRESHOLD's own field javadoc
@@ -336,7 +406,17 @@ public class PaperBrokerAdapter implements BrokerAdapter {
         BigDecimal fee = notional.multiply(SIMULATED_TAKER_FEE_RATE);
         BigDecimal cashFlow = isBuy ? notional.add(fee).negate() : notional.subtract(fee);
         BigDecimal newBalance = simulatedUsdtBalance.updateAndGet(bal -> bal.add(cashFlow));
-        persistBalance(newBalance); // P2-4 fix, full context in paperAccountBalanceRepo's own field javadoc: durable now, not just in-memory
+        // Audit finding (P1-4, full context in simulatedAssetBalances' own field javadoc): the
+        // actual per-asset holdings update, mirroring the USDT cash-flow update immediately
+        // above -- a BUY increases holdings by what actually filled, a SELL decreases them,
+        // using executedQty (not the originally requested quantity) so a partial fill's own
+        // holdings change is exactly as honest as its cash-flow change already is.
+        if (baseAsset != null) {
+            BigDecimal assetDelta = isBuy ? executedQty : executedQty.negate();
+            simulatedAssetBalances.computeIfAbsent(baseAsset, k -> new java.util.concurrent.atomic.AtomicReference<>(BigDecimal.ZERO))
+                .updateAndGet(qty -> qty.add(assetDelta));
+        }
+        persistBalances(newBalance, snapshotAssetBalances()); // P2-4/P1-4 fix: durable now, not just in-memory
         log.info("[PAPER] Simulated {} fill with slippage: {} {} of {} requested {} @ {} (observed {}, fee {}, brokerOrderId={}, balance now {})",
             resultStatus, request.side(), executedQty, requestedQty, request.symbol(), fillPrice, observedPrice, fee, brokerOrderId, simulatedUsdtBalance.get());
         // Review finding ("PaperBrokerAdapter still reports simulated market orders as
@@ -419,6 +499,28 @@ public class PaperBrokerAdapter implements BrokerAdapter {
         if (currentPrice.compareTo(oco.getTakeProfitPrice()) >= 0) {
             oco.setStatus("TP_FILLED");
         } else if (currentPrice.compareTo(oco.getStopLossPrice()) <= 0) {
+            // Audit finding (P1-4 -- "Improve PaperBrokerAdapter realism... stop-limit-non-fill
+            // simulation" -- full context in STOP_LIMIT_NON_FILL_GAP_RATE's own field javadoc):
+            // before this fix, crossing the SL trigger always resolved straight to SL_FILLED --
+            // PAPER mode could never reproduce the exact real-world scenario BinanceBrokerAdapter.
+            // placeExitOco's own STOP_LOSS_LIMIT (a 0.5% resting-limit buffer below the trigger)
+            // and PositionMonitorService.handleStopTriggeredButUnfilled/the P0-3 watchdog exist to
+            // defend against: a fast move blows straight through that resting limit, triggering
+            // the stop without actually filling it. Simulated here the same way that real gap
+            // happens -- when the market has already moved a genuinely conservative buffer PAST
+            // the trigger (not just barely touched it) by the time this check observes it, the
+            // leg is left triggered-but-unfilled instead of auto-resolving, so PAPER mode
+            // exercises the exact same emergency-flatten/watchdog path a real account would need.
+            BigDecimal gapBuffer = oco.getStopLossPrice().multiply(STOP_LIMIT_NON_FILL_GAP_RATE);
+            if (currentPrice.compareTo(oco.getStopLossPrice().subtract(gapBuffer)) < 0) {
+                oco.setStatus("SL_TRIGGERED_UNFILLED");
+                paperOcoRepo.save(oco);
+                log.warn("[PAPER] Simulated stop-limit leg for OCO {} TRIGGERED but did NOT fill -- price {} gapped past the stop-limit's "
+                        + "own resting buffer below trigger {} ({}%), exactly the real-world gap BinanceBrokerAdapter's own STOP_LOSS_LIMIT "
+                        + "buffer can suffer. Left unresolved for the emergency-flatten watchdog to find, not auto-filled.",
+                    orderListId, currentPrice, oco.getStopLossPrice(), STOP_LIMIT_NON_FILL_GAP_RATE.multiply(BigDecimal.valueOf(100)));
+                return ocoStatusFor(oco);
+            }
             oco.setStatus("SL_FILLED");
         }
         if (!"NEW".equals(oco.getStatus())) {
@@ -438,6 +540,13 @@ public class PaperBrokerAdapter implements BrokerAdapter {
     private OcoStatusInfo ocoStatusFor(PaperOco oco) {
         boolean tpFilled = "TP_FILLED".equals(oco.getStatus());
         boolean slFilled = "SL_FILLED".equals(oco.getStatus());
+        // Audit finding (P1-4, full context in getOcoStatus's own updated comment above):
+        // SL_TRIGGERED_UNFILLED is deliberately NOT ALL_DONE and its own leg deliberately does
+        // NOT report FILLED -- that combination is exactly what
+        // PositionMonitorService.handleStopTriggeredButUnfilled (and the P0-3 watchdog that
+        // calls it every 10s) keys off of to detect a real triggered-but-unfilled stop and
+        // emergency-flatten the position. Reporting ALL_DONE/FILLED here instead would make that
+        // entire safety path untestable in PAPER mode.
         String listStatus = (tpFilled || slFilled) ? "ALL_DONE" : "EXECUTING";
         // P2-4 fix, full context in PaperOco.resolvedPrice's own field javadoc: a filled leg
         // reports the real observed price this OCO resolved at (which can genuinely differ from
@@ -448,6 +557,8 @@ public class PaperBrokerAdapter implements BrokerAdapter {
         var legs = List.of(
             new OcoStatusInfo.Leg(oco.getId() + "-TP", "SELL", "LIMIT_MAKER", tpFilled ? "FILLED" : "NEW",
                 tpFillPrice, tpFilled ? oco.getQuantity() : BigDecimal.ZERO, oco.getQuantity()),
+            // Leg status stays "NEW" (never "FILLED") for SL_TRIGGERED_UNFILLED -- see this
+            // method's own updated comment above for why that distinction matters.
             new OcoStatusInfo.Leg(oco.getId() + "-SL", "SELL", "STOP_LOSS", slFilled ? "FILLED" : "NEW",
                 slFillPrice, slFilled ? oco.getQuantity() : BigDecimal.ZERO, oco.getQuantity()));
         return new OcoStatusInfo(oco.getId(), listStatus, legs, "{}");
@@ -460,7 +571,13 @@ public class PaperBrokerAdapter implements BrokerAdapter {
     @Override
     public OcoOrderResult cancelOco(String apiKey, String apiSecret, BrokerMode mode, String symbol, String orderListId) {
         var oco = paperOcoRepo.findById(orderListId).orElse(null);
-        if (oco != null && "NEW".equals(oco.getStatus())) {
+        // Audit finding (P1-4, full context in getOcoStatus's own updated comment above):
+        // SL_TRIGGERED_UNFILLED must be cancellable too -- this is exactly the state
+        // PositionSafetyService.emergencyFlatten's own real-world flow cancels the stuck exit
+        // OCO from before placing a fresh market sell to actually get out of the position.
+        // Leaving this guard at "NEW" only (its state before this fix) would have made that
+        // cancel silently do nothing for the one case this fix exists to simulate.
+        if (oco != null && ("NEW".equals(oco.getStatus()) || "SL_TRIGGERED_UNFILLED".equals(oco.getStatus()))) {
             oco.setStatus("CANCELLED");
             oco.setResolvedAt(java.time.LocalDateTime.now());
             paperOcoRepo.save(oco);

@@ -160,6 +160,34 @@ public class SchedulingConfig {
     }
 
     /**
+     * Audit item P0-3 fix ("the stuck-triggered-stop-leg detection in
+     * PositionMonitorService.reconcileOcoProtectedPosition/handleStopTriggeredButUnfilled is
+     * correct, but only runs on the main 60-second reconciliationScheduler cadence -- a fast
+     * price move through a resting STOP_LOSS_LIMIT leg's own buffer can sit undetected for up
+     * to a minute" -- confirmed real by direct inspection of that existing, already-tested
+     * detection/flatten logic before this fix; user's own explicit choice between two offered
+     * approaches: "add a fast price watchdog" over changing the OCO leg type Binance is sent,
+     * which this sandbox has no live network path to verify): a dedicated, small, fast-cadence
+     * pool for PositionMonitorService.watchExitProtection, which re-runs that exact same,
+     * already-proven detection+flatten logic every 10 seconds instead of every 60 -- not new
+     * logic, just a much shorter window for the one specific gap the audit named. Deliberately
+     * separate from reconciliationScheduler: this pool's own job acquires the SAME per-credential
+     * lock reconciliationScheduler's own work does (so the two can never run concurrently for one
+     * credential), and giving it its own thread means a slow watchdog pass for one credential can
+     * never delay the 60s pass's own, broader reconciliation work for a different credential.
+     */
+    @Bean("watchdogScheduler")
+    public TaskScheduler watchdogScheduler() {
+        ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+        scheduler.setPoolSize(2);
+        scheduler.setThreadNamePrefix("watchdog-sched-");
+        scheduler.setWaitForTasksToCompleteOnShutdown(true);
+        scheduler.setAwaitTerminationSeconds(30);
+        scheduler.initialize();
+        return scheduler;
+    }
+
+    /**
      * A named "taskScheduler" bean is still supplied as a safety net -- Spring Boot's own
      * scheduling infrastructure looks for a bean of this exact name (or type TaskScheduler) when
      * a @Scheduled method does NOT specify scheduler=..., and without ANY TaskScheduler bean

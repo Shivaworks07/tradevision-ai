@@ -178,6 +178,88 @@ public class PositionMonitorService {
     }
 
     /**
+     * Audit item P0-3 fix. Full context in SchedulingConfig.watchdogScheduler's own javadoc --
+     * this is NOT new detection logic. reconcileOcoProtectedPosition (and the
+     * handleStopTriggeredButUnfilled check it calls whenever the OCO list isn't ALL_DONE) already
+     * correctly detects a stop-limit leg that's triggered-but-unfilled and emergency-flattens
+     * it -- the only real gap was that it only ran once every 60 seconds, via the main
+     * reconciliationScheduler cadence. This re-runs that exact same method, every 10 seconds,
+     * scoped to ONLY the OPEN positions that actually have a live OCO (ocoOrderListId set) --
+     * deliberately not the full reconcileCredentialLocked chain (entry-order reconciliation,
+     * orphaned-OCO recovery, stuck-protection-attempt recovery, max-hold/end-of-session/risk-exit
+     * enforcement), which stay on the 60s cadence since re-running all of that every 10 seconds
+     * would multiply broker API load for no safety benefit -- none of those other steps are time-
+     * critical in the way a fast-moving stop-loss is.
+     *
+     * Reuses the exact same per-credential locking this class's own main reconciliation path
+     * uses (the JVM-local reconciliationLocks entry, then the real distributed lock) so the two
+     * can never mutate the same credential's positions concurrently -- whichever one is already
+     * running for a given credential, the other simply skips that credential for this cycle and
+     * retries on its own next tick, the same non-blocking "skip, don't queue" pattern already
+     * established throughout this class.
+     */
+    @Scheduled(fixedDelay = 10_000, initialDelay = 20_000, scheduler = "watchdogScheduler")
+    public void watchExitProtection() {
+        if (shutdownState.isShuttingDown()) return;
+        for (BrokerCredential credential : credentialRepo.findAll()) {
+            if (!credential.isActive() && !positionRepo.existsByCredentialIdAndStatusIn(credential.getId(), java.util.Set.of("OPEN"))) {
+                continue;
+            }
+            if (shutdownState.isShuttingDown()) return;
+            try {
+                watchExitProtectionForCredential(credential);
+            } catch (Exception e) {
+                log.warn("Exit-protection watchdog pass failed for credential {} (non-fatal -- the next 10s tick retries, and the "
+                    + "60s main reconciliation pass remains the authoritative backstop regardless): {}", credential.getId(), e.getMessage());
+            }
+        }
+    }
+
+    private void watchExitProtectionForCredential(BrokerCredential credential) {
+        List<Position> ocoProtectedOpen = positionRepo.findByCredentialIdAndStatus(credential.getId(), "OPEN").stream()
+            .filter(p -> p.getOcoOrderListId() != null)
+            .toList();
+        if (ocoProtectedOpen.isEmpty()) return; // nothing for this fast pass to check -- avoid acquiring a lock or decrypting credentials for no reason
+
+        java.util.concurrent.locks.ReentrantLock lock = reconciliationLocks.computeIfAbsent(
+            credential.getId(), k -> new java.util.concurrent.locks.ReentrantLock());
+        if (!lock.tryLock()) {
+            log.debug("Main reconciliation (or another watchdog pass) already in progress for credential {} -- skipping this "
+                + "watchdog tick, the next one in 10s will retry.", credential.getId());
+            return;
+        }
+        try {
+            var acquireLease = distributedLockService.tryAcquireWithDiagnosis(credential.getId(), instanceId, java.time.Duration.ofSeconds(30));
+            if (!acquireLease.acquired()) {
+                log.debug("Another application instance currently holds the reconciliation lock for credential {} -- skipping this "
+                    + "watchdog tick.", credential.getId());
+                return;
+            }
+            long generation = acquireLease.generation();
+            try {
+                BrokerAdapter adapter = credentialService.adapterForCredential(credential);
+                if (adapter == null) return;
+                String apiKey = credentialService.decrypt(credential, true);
+                String apiSecret = credentialService.decrypt(credential, false);
+                Optional<RiskProfile> profileOpt = riskProfileRepo.findByCredentialId(credential.getId());
+                for (Position position : ocoProtectedOpen) {
+                    try {
+                        reconcileOcoProtectedPosition(credential, adapter, apiKey, apiSecret, position, profileOpt, generation);
+                    } catch (Exception e) {
+                        log.warn("Exit-protection watchdog check failed for position {} ({}) (non-fatal -- the next 10s tick "
+                            + "retries, and the 60s main reconciliation pass remains the authoritative backstop regardless): {}",
+                            position.getId(), position.getSymbol(), e.getMessage());
+                    }
+                }
+            } finally {
+                distributedLockService.release(credential.getId(), instanceId);
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
      * Review finding ("P0 #2" — "Your balance-based position detection is not reliable enough"):
      * confirmed real. The old check compared a position's own quantity against the account's
      * TOTAL free balance for that asset — which conflates three genuinely different things: (1)

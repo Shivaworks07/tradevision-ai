@@ -2980,4 +2980,86 @@ class PositionMonitorServiceTest {
         verify(positionRepo, never()).save(any(Position.class));
         verify(slotReservationService, never()).reserve(any(), anyInt(), any(), anyBoolean());
     }
+
+    // ── Audit item P0-3 fix: watchExitProtection ──────────────────────────────────────────
+    // Full context in SchedulingConfig.watchdogScheduler's own javadoc and this class's own
+    // watchExitProtection javadoc -- this is wiring around the ALREADY-TESTED
+    // reconcileOcoProtectedPosition/handleStopTriggeredButUnfilled logic above (see
+    // ocoStuckTriggeredStop_cancelsAndFlattens), running it on a faster, dedicated cadence.
+    // These tests cover the new wiring itself, not the detection logic a second time.
+
+    @Test
+    @DisplayName("watchExitProtection: credential has no OPEN, OCO-protected positions -- skips entirely, never acquires a lock or decrypts credentials")
+    void watchExitProtection_noProtectedPositions_doesNothing() {
+        when(credentialRepo.findAll()).thenReturn(List.of(credential));
+        when(positionRepo.findByCredentialIdAndStatus("cred1", "OPEN")).thenReturn(List.of());
+
+        service.watchExitProtection();
+
+        verify(distributedLockService, never()).tryAcquireWithDiagnosis(any(), any(), any());
+        verify(credentialService, never()).decrypt(any(), anyBoolean());
+    }
+
+    @Test
+    @DisplayName("watchExitProtection: an OPEN position with a live OCO -- acquires the lock, decrypts, and re-runs the existing stuck-triggered-stop check for it")
+    void watchExitProtection_protectedPosition_runsCheck() {
+        Position position = openPosition("BTCUSDT", 1.0);
+        position.setUserId("user1");
+        position.setCredentialId("cred1");
+        position.setOcoOrderListId("oco1");
+        position.setEntryOrderId("entry-1");
+
+        when(credentialRepo.findAll()).thenReturn(List.of(credential));
+        when(positionRepo.findByCredentialIdAndStatus("cred1", "OPEN")).thenReturn(List.of(position));
+        when(credentialService.adapterForCredential(credential)).thenReturn(adapter);
+        when(credentialService.decrypt(credential, true)).thenReturn("key");
+        when(credentialService.decrypt(credential, false)).thenReturn("secret");
+        when(riskProfileRepo.findByCredentialId("cred1")).thenReturn(Optional.empty());
+
+        Order entryOrder = new Order();
+        entryOrder.setStopLossTriggerPrice(BigDecimal.valueOf(95));
+        when(omsOrderRepo.findByCredentialIdAndSymbolAndBrokerOrderId("cred1", "BTCUSDT", "entry-1")).thenReturn(Optional.of(entryOrder));
+        var stopLeg = new com.tradevision.service.broker.dto.OcoStatusInfo.Leg(
+            "sl1", "SELL", "STOP_LOSS_LIMIT", "NEW", BigDecimal.valueOf(94.5), BigDecimal.ZERO, BigDecimal.valueOf(1.0));
+        when(adapter.getOcoStatus(any(), any(), any(), eq("oco1"))).thenReturn(
+            new com.tradevision.service.broker.dto.OcoStatusInfo("test-oco-id", "EXECUTING", List.of(stopLeg), "{}"));
+        // Market has moved through the recorded stop trigger of 95, with the leg still NEW --
+        // same stuck-triggered-stop scenario as ocoStuckTriggeredStop_cancelsAndFlattens above.
+        when(adapter.getCurrentPrice("BTCUSDT", BrokerMode.TESTNET)).thenReturn(BigDecimal.valueOf(94));
+
+        service.watchExitProtection();
+
+        verify(distributedLockService).tryAcquireWithDiagnosis(eq("cred1"), any(), any());
+        verify(distributedLockService).release(eq("cred1"), any());
+        verify(positionSafetyService).emergencyFlatten(eq(credential), eq(adapter), eq("key"), eq("secret"), eq(position), any());
+    }
+
+    @Test
+    @DisplayName("watchExitProtection: another instance already holds the distributed lock for this credential -- skips this tick rather than racing it")
+    void watchExitProtection_lockHeldElsewhere_skips() {
+        Position position = openPosition("BTCUSDT", 1.0);
+        position.setCredentialId("cred1");
+        position.setOcoOrderListId("oco1");
+
+        when(credentialRepo.findAll()).thenReturn(List.of(credential));
+        when(positionRepo.findByCredentialIdAndStatus("cred1", "OPEN")).thenReturn(List.of(position));
+        when(distributedLockService.tryAcquireWithDiagnosis(eq("cred1"), any(), any()))
+            .thenReturn(new com.tradevision.service.DistributedLockService.LockLease(
+                com.tradevision.service.DistributedLockService.AcquireResult.HELD_BY_OTHER, 0L));
+
+        service.watchExitProtection();
+
+        verify(credentialService, never()).decrypt(any(), anyBoolean());
+        verify(distributedLockService, never()).release(any(), any());
+    }
+
+    @Test
+    @DisplayName("watchExitProtection: shutdown in progress -- does nothing at all, same as the main reconciliation sweep")
+    void watchExitProtection_shuttingDown_doesNothing() {
+        when(shutdownState.isShuttingDown()).thenReturn(true);
+
+        service.watchExitProtection();
+
+        verify(credentialRepo, never()).findAll();
+    }
 }

@@ -50,6 +50,10 @@ export class BrokerSettingsComponent implements OnInit {
   testSymbol = 'BTCUSDT';
   testSide: 'BUY' | 'SELL' = 'BUY';
   testQuantity: number | null = null;
+  // Follow-up fix (full context in BrokerService.placeTestOrder's own updated comment, PR #33):
+  // optional, BUY-only -- left null on a SELL or when not wanted, unchanged existing behavior.
+  testTakeProfitPrice: number | null = null;
+  testStopLossTriggerPrice: number | null = null;
 
   // Risk profile form
   autoTradeEnabled = false;
@@ -187,8 +191,22 @@ export class BrokerSettingsComponent implements OnInit {
   placeTestOrder() {
     const c = this.selected();
     if (!c || !this.testQuantity) { this.show('error', 'Pick a credential and enter a quantity.'); return; }
+    // Follow-up fix (full context in BrokerService.placeTestOrder's own updated comment, PR #33):
+    // same both-or-neither / BUY-only / SL-below-TP rules the backend enforces -- checked here
+    // too so a bad combination is caught before the request even goes out, not just reported
+    // back as a 400 after the fact. The backend remains the real source of truth for this.
+    if ((this.testTakeProfitPrice == null) !== (this.testStopLossTriggerPrice == null)) {
+      this.show('error', 'Take-profit and stop-loss must both be set, or both left blank.'); return;
+    }
+    if (this.testTakeProfitPrice != null && this.testSide !== 'BUY') {
+      this.show('error', 'Take-profit/stop-loss only apply to a BUY.'); return;
+    }
+    if (this.testTakeProfitPrice != null && this.testStopLossTriggerPrice! >= this.testTakeProfitPrice) {
+      this.show('error', 'Stop-loss must be below take-profit.'); return;
+    }
     this.loading.set(true);
-    this.broker.placeTestOrder(c.id, this.testSymbol, this.testSide, this.testQuantity).subscribe({
+    this.broker.placeTestOrder(c.id, this.testSymbol, this.testSide, this.testQuantity,
+      this.testTakeProfitPrice, this.testStopLossTriggerPrice).subscribe({
       next: (r: any) => {
         this.loading.set(false);
         this.show('ok', r.message || 'Order placed.');

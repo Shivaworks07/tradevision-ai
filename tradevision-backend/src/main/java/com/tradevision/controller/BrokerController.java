@@ -241,11 +241,28 @@ public class BrokerController {
         }
     }
 
+    /**
+     * Audit item P1-5, full context in RiskProfileService.authorizeLiveAutoTrade's own updated
+     * javadoc: issues the fresh step-up verification code authorize-live-autotrade below now
+     * requires, sent to the caller's own on-file email/mobile. Call this first, then submit the
+     * code you receive as "stepUpOtp" in the authorize-live-autotrade request body.
+     */
+    @PostMapping("/risk-profile/{credentialId}/authorize-live-autotrade/request-otp")
+    public ResponseEntity<?> requestLiveAutoTradeStepUpOtp(@AuthenticationPrincipal String userId, @PathVariable String credentialId) {
+        try {
+            riskProfileService.requestLiveAutoTradeStepUpOtp(userId);
+            return ResponseEntity.ok(ApiResponse.ok("A verification code has been sent. Submit it as \"stepUpOtp\" when authorizing "
+                + "autonomous LIVE trading."));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
     @PostMapping("/risk-profile/{credentialId}/authorize-live-autotrade")
     public ResponseEntity<?> authorizeLiveAutoTrade(@AuthenticationPrincipal String userId, @PathVariable String credentialId,
                                                       @RequestBody Map<String, String> body) {
         try {
-            RiskProfile profile = riskProfileService.authorizeLiveAutoTrade(userId, credentialId, body.get("confirm"));
+            RiskProfile profile = riskProfileService.authorizeLiveAutoTrade(userId, credentialId, body.get("confirm"), body.get("stepUpOtp"));
             return ResponseEntity.ok(ApiResponse.ok("Autonomous LIVE trading authorized for this credential.", profile));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(e.getMessage()));

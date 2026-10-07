@@ -103,19 +103,67 @@ public class AuthService {
         return ApiResponse.ok("OTP sent to " + id);
     }
 
-    // ── Verify OTP + login/register ───────────────────────────
-    public ApiResponse<?> verifyOtp(OtpVerifyRequest req) {
-        String identifier = (req.getEmail() != null ? req.getEmail() : req.getMobile());
+    /**
+     * Audit item P1-5 ("Live-trade-enabling actions do not require step-up authentication" --
+     * external review, confirmed real by direct inspection: RiskProfileService.authorizeLiveAutoTrade
+     * -- the action that flips a risk profile into autonomous LIVE auto-trading -- was gated
+     * only by @AuthenticationPrincipal (an ordinary, possibly long-lived JWT session) and a
+     * static confirmation-phrase string readable in the frontend source. Anyone who hijacked an
+     * already-authenticated session (XSS, a leaked token, a left-open browser) could enable
+     * real-money autonomous trading with no fresh proof of identity at the moment of that
+     * specific, high-consequence action. Every OTP in this codebase was previously consumed
+     * once, at login -- there was no step-up mechanism at all). This issues a fresh OTP to the
+     * CALLER'S OWN on-file email/mobile (never an attacker-suppliable destination) for a
+     * mid-session, high-stakes confirmation, reusing this class's existing OTP infrastructure
+     * (rate limiting, hashing, expiry) rather than a new pipeline.
+     */
+    public ApiResponse<?> sendStepUpOtp(String userId, String purpose) {
+        var userOpt = userRepo.findById(userId);
+        if (userOpt.isEmpty()) return ApiResponse.error("User not found.");
+        User user = userOpt.get();
+        String identifier = user.getEmail() != null ? user.getEmail() : user.getMobile();
         if (identifier == null || identifier.isBlank())
-            return ApiResponse.error("Email is required.");
-        identifier = identifier.trim().toLowerCase();
+            return ApiResponse.error("No verified email or mobile on file to send a step-up verification code to.");
+        return sendOtp(identifier, purpose);
+    }
 
-        var otpList = otpRepo.findByMobileAndPurposeOrderByCreatedAtDesc(identifier, req.getPurpose());
-        if (otpList.isEmpty()) return ApiResponse.error("No OTP found. Request a new one.");
+    /**
+     * Verifies a step-up OTP for a mid-session, high-stakes action (see sendStepUpOtp's own
+     * javadoc and RiskProfileService.authorizeLiveAutoTrade, which calls this). Always checks
+     * against the CALLER'S OWN on-file identifier -- never a caller-supplied one -- so this
+     * can't be used to verify a code sent to somewhere else. Throws IllegalArgumentException
+     * with a user-facing message on any failure (no code sent, expired, wrong, already used,
+     * rate limited); the caller surfaces that message directly, exactly like every other
+     * authorizeLiveAutoTrade refusal.
+     */
+    public void verifyStepUpOtp(String userId, String purpose, String code) {
+        var userOpt = userRepo.findById(userId);
+        if (userOpt.isEmpty()) throw new IllegalArgumentException("User not found.");
+        User user = userOpt.get();
+        String identifier = user.getEmail() != null ? user.getEmail() : user.getMobile();
+        if (identifier == null || identifier.isBlank())
+            throw new IllegalArgumentException("No verified email or mobile on file to verify a step-up code against.");
+        if (code == null || code.isBlank())
+            throw new IllegalArgumentException("A fresh verification code is required for this action. Request one first via "
+                + "POST /api/broker/risk-profile/{credentialId}/authorize-live-autotrade/request-otp.");
+        String error = verifyOtpCodeOnly(identifier.trim().toLowerCase(), purpose, code);
+        if (error != null) throw new IllegalArgumentException(error);
+    }
+
+    /**
+     * The shared core of OTP code verification -- attempt-limit claim, hash compare, atomic
+     * single-use consumption -- factored out of verifyOtp (audit item P1-5) so the step-up flow
+     * above (verifyStepUpOtp) reuses the exact same hardening without going through verifyOtp's
+     * login/session-issuance side effects, which don't belong in a mid-session "prove it's
+     * still you" check. Returns null on success, or a user-facing error message on failure.
+     */
+    private String verifyOtpCodeOnly(String identifier, String purpose, String code) {
+        var otpList = otpRepo.findByMobileAndPurposeOrderByCreatedAtDesc(identifier, purpose);
+        if (otpList.isEmpty()) return "No OTP found. Request a new one.";
 
         OtpRecord otp = otpList.get(0);
         if (otp.getCreatedAt().plusMinutes(otpExpiryMin).isBefore(LocalDateTime.now()))
-            return ApiResponse.error("OTP expired. Request a new one.");
+            return "OTP expired. Request a new one.";
 
         // Review finding ("OTP verification has no effective attempt/rate limit" -- P0):
         // confirmed real -- verifyOtp() previously never checked an attempt limit before
@@ -136,18 +184,18 @@ public class AuthService {
             // Either already used (a concurrent request won first) or genuinely out of attempts
             // -- same rejection message either way, deliberately not distinguishing which, to
             // avoid handing an attacker a signal about which guess was "closer" to succeeding.
-            return ApiResponse.error("Too many incorrect attempts for this OTP. Request a new one.");
+            return "Too many incorrect attempts for this OTP. Request a new one.";
         }
 
         // Review finding (this doc, "BLOCKER #5"): compare hashes, never a raw stored OTP —
         // there isn't one anymore. MessageDigest.isEqual is constant-time, avoiding a timing
         // side-channel on the comparison itself.
-        String submittedHash = otpUtil.hashOtp(req.getCode(), identifier, req.getPurpose());
+        String submittedHash = otpUtil.hashOtp(code, identifier, purpose);
         if (!java.security.MessageDigest.isEqual(
                 otp.getOtpHash().getBytes(java.nio.charset.StandardCharsets.UTF_8),
                 submittedHash.getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
             incrementFailures(identifier);
-            return ApiResponse.error("Invalid OTP. Please check and try again.");
+            return "Invalid OTP. Please check and try again.";
         }
 
         // Review finding ("OTP verification has no effective attempt/rate limit" -- P0,
@@ -162,8 +210,23 @@ public class AuthService {
         // code that's already been spent.
         var consumeClaim = mongoTemplate.remove(new Query(where("id").is(otp.getId())), OtpRecord.class);
         if (consumeClaim.getDeletedCount() == 0) {
-            return ApiResponse.error("This OTP has already been used. Request a new one.");
+            return "This OTP has already been used. Request a new one.";
         }
+        return null;
+    }
+
+    // ── Verify OTP + login/register ───────────────────────────
+    public ApiResponse<?> verifyOtp(OtpVerifyRequest req) {
+        String identifier = (req.getEmail() != null ? req.getEmail() : req.getMobile());
+        if (identifier == null || identifier.isBlank())
+            return ApiResponse.error("Email is required.");
+        identifier = identifier.trim().toLowerCase();
+
+        // Audit item P1-5, full context in verifyOtpCodeOnly's own javadoc: the attempt-limit
+        // claim / hash compare / single-use consumption now lives in one shared helper so the
+        // step-up flow below reuses the exact same hardening instead of a second copy.
+        String otpError = verifyOtpCodeOnly(identifier, req.getPurpose(), req.getCode());
+        if (otpError != null) return ApiResponse.error(otpError);
 
         // Find or create user
         final String finalId = identifier;

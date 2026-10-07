@@ -54,6 +54,16 @@ public class RiskProfileService {
      */
     private final com.tradevision.repository.UserRepository userRepo;
     /**
+     * Audit item P1-5, full context in authorizeLiveAutoTrade's own updated javadoc: needed for
+     * the fresh step-up OTP check authorizeLiveAutoTrade now requires, reusing AuthService's
+     * existing OTP infrastructure (rate limiting, hashing, expiry, single-use consumption)
+     * rather than a second copy of it. Confirmed no circular dependency: AuthService depends
+     * only on UserRepository, OtpRepository, JwtUtil, OtpUtil, EmailService,
+     * OtpRateLimitService, MongoTemplate and WebhookAlertService -- none of which depend on
+     * RiskProfileService.
+     */
+    private final AuthService authService;
+    /**
      * Review finding ("The execution authorization still has an unavoidable exchange-boundary
      * race" -- external review, twenty-first pass, P0, full context in haltAll's own updated
      * javadoc): needed for the actual "automatically reconcile in-flight claims immediately
@@ -829,16 +839,49 @@ public class RiskProfileService {
     }
 
     private static final String REQUIRED_PHRASE = "I UNDERSTAND THIS ENABLES AUTONOMOUS LIVE TRADING";
+    /**
+     * Audit item P1-5, full context in authorizeLiveAutoTrade's own updated javadoc: the OTP
+     * purpose used for the step-up check below, kept distinct from LOGIN/REGISTER so a stolen
+     * login OTP (or vice versa) can never be replayed as a live-autotrade step-up code, and
+     * AuthService's per-(identifier, purpose) OTP storage keeps the two completely separate.
+     */
+    public static final String STEPUP_OTP_PURPOSE = "LIVE_AUTOTRADE_STEPUP";
+
+    /**
+     * Request a fresh step-up verification code before calling authorizeLiveAutoTrade. Sent to
+     * the caller's own on-file email/mobile -- see AuthService.sendStepUpOtp's own javadoc.
+     */
+    public void requestLiveAutoTradeStepUpOtp(String userId) {
+        var resp = authService.sendStepUpOtp(userId, STEPUP_OTP_PURPOSE);
+        if (!resp.isSuccess()) {
+            throw new IllegalArgumentException(String.valueOf(resp.getMessage()));
+        }
+    }
 
     /**
      * The second, independent unlock AutoTradeService checks before it will place a LIVE order.
      * Deliberately requires the caller to send back an exact confirmation phrase rather than a
      * boolean flag — a stray `true` in a request body is too easy to send by accident.
+     *
+     * Audit item P1-5 ("Live-trade-enabling actions do not require step-up authentication" --
+     * external review, confirmed real by direct inspection: this method -- the action that
+     * flips a risk profile into autonomous LIVE auto-trading -- was gated only by an ordinary,
+     * possibly long-lived JWT session plus the REQUIRED_PHRASE above, a static string readable
+     * in the frontend source and not tied to proving who's actually present at the keyboard
+     * right now. Anyone who hijacked an already-authenticated session could enable real-money
+     * autonomous trading with no fresh proof of identity at the exact moment of that specific,
+     * high-consequence action): now also requires a fresh, just-issued OTP (requested via
+     * requestLiveAutoTradeStepUpOtp / POST .../authorize-live-autotrade/request-otp) verified
+     * against the caller's own on-file email/mobile, checked first so a stale/replayed request
+     * never reaches any of the state-changing checks below.
      */
-    public RiskProfile authorizeLiveAutoTrade(String userId, String credentialId, String confirmationPhrase) {
+    public RiskProfile authorizeLiveAutoTrade(String userId, String credentialId, String confirmationPhrase, String stepUpOtpCode) {
         if (!REQUIRED_PHRASE.equals(confirmationPhrase)) {
             throw new IllegalArgumentException("Confirmation phrase did not match. Send exactly: \"" + REQUIRED_PHRASE + "\"");
         }
+        // Throws IllegalArgumentException (propagated as-is) on any failure -- no code
+        // requested, expired, wrong, already used, or rate limited.
+        authService.verifyStepUpOtp(userId, STEPUP_OTP_PURPOSE, stepUpOtpCode);
         RiskProfile profile = get(userId, credentialId);
 
         // Review finding (P1 #6 — "LIVE auto-trade authorization doesn't revalidate broker

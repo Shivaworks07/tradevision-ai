@@ -67,8 +67,14 @@ class RiskProfileServiceTest {
     @Mock com.tradevision.config.StartupState startupState;
     // Audit item P0-1, full context in LiveCanaryRecord's own class javadoc.
     @Mock com.tradevision.service.LiveCanaryService liveCanaryService;
+    // Audit item P1-5, full context in RiskProfileService.authorizeLiveAutoTrade's own updated
+    // javadoc: needed now that authorization also requires a fresh step-up OTP verified via
+    // AuthService.
+    @Mock AuthService authService;
 
     @InjectMocks RiskProfileService service;
+
+    private static final String STEP_UP_OTP = "123456";
 
     private BrokerCredential liveCredential;
     private RiskProfile profile;
@@ -131,6 +137,10 @@ class RiskProfileServiceTest {
         // is unaffected by it -- see the dedicated noRecentPassingLiveCanary_* test below for
         // the gate itself.
         when(liveCanaryService.hasRecentPassingCanary(any())).thenReturn(true);
+        // Audit item P1-5: a healthy default (step-up OTP verifies cleanly) so every existing
+        // LIVE-authorization test in this file, none of which are about this specific new gate,
+        // is unaffected by it -- see the dedicated stepUpOtp_* tests below for the gate itself.
+        doNothing().when(authService).verifyStepUpOtp(any(), any(), any());
     }
 
     @Test
@@ -139,7 +149,7 @@ class RiskProfileServiceTest {
         when(adapter.getAccountPermissions("api-key", "api-secret", BrokerMode.LIVE))
             .thenReturn(new AccountPermissions(true, false, true));
 
-        RiskProfile result = service.authorizeLiveAutoTrade("user1", "cred1", PHRASE);
+        RiskProfile result = service.authorizeLiveAutoTrade("user1", "cred1", PHRASE, STEP_UP_OTP);
 
         assertThat(result.isLiveAutoTradeAuthorized()).isTrue();
     }
@@ -161,7 +171,7 @@ class RiskProfileServiceTest {
                 + "'Enable Reading' and 'Enable Spot & Margin Trading' — withdrawal must stay off."))
             .when(credentialService).validateLiveKeyRestrictions(any(), any(), any(), any(), any(), any(), any());
 
-        assertThatThrownBy(() -> service.authorizeLiveAutoTrade("user1", "cred1", PHRASE))
+        assertThatThrownBy(() -> service.authorizeLiveAutoTrade("user1", "cred1", PHRASE, STEP_UP_OTP))
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessageContaining("withdrawal permission enabled");
 
@@ -176,7 +186,7 @@ class RiskProfileServiceTest {
         when(adapter.getAccountPermissions("api-key", "api-secret", BrokerMode.LIVE))
             .thenReturn(new AccountPermissions(false, false, true)); // canTrade=false
 
-        assertThatThrownBy(() -> service.authorizeLiveAutoTrade("user1", "cred1", PHRASE))
+        assertThatThrownBy(() -> service.authorizeLiveAutoTrade("user1", "cred1", PHRASE, STEP_UP_OTP))
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessageContaining("trading permission");
 
@@ -188,7 +198,7 @@ class RiskProfileServiceTest {
     void permissionQueryFails_refusesRatherThanGuessing() {
         when(adapter.getAccountPermissions(any(), any(), any())).thenThrow(new RuntimeException("connection timeout"));
 
-        assertThatThrownBy(() -> service.authorizeLiveAutoTrade("user1", "cred1", PHRASE))
+        assertThatThrownBy(() -> service.authorizeLiveAutoTrade("user1", "cred1", PHRASE, STEP_UP_OTP))
             .isInstanceOf(IllegalStateException.class);
 
         verify(riskProfileRepo, never()).save(any());
@@ -204,7 +214,7 @@ class RiskProfileServiceTest {
     void mongoTransactionsUnsupported_liveCredential_refusesOutright() {
         when(startupState.areMongoTransactionsSupported()).thenReturn(false);
 
-        assertThatThrownBy(() -> service.authorizeLiveAutoTrade("user1", "cred1", PHRASE))
+        assertThatThrownBy(() -> service.authorizeLiveAutoTrade("user1", "cred1", PHRASE, STEP_UP_OTP))
             .isInstanceOf(IllegalStateException.class)
             .hasMessageContaining("does not support transactions");
 
@@ -225,7 +235,7 @@ class RiskProfileServiceTest {
     void noRecentPassingLiveCanary_refusesOutright() {
         when(liveCanaryService.hasRecentPassingCanary("cred1")).thenReturn(false);
 
-        assertThatThrownBy(() -> service.authorizeLiveAutoTrade("user1", "cred1", PHRASE))
+        assertThatThrownBy(() -> service.authorizeLiveAutoTrade("user1", "cred1", PHRASE, STEP_UP_OTP))
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessageContaining("live canary");
 
@@ -239,7 +249,7 @@ class RiskProfileServiceTest {
     void testnetCredential_skipsRevalidation() {
         liveCredential.setMode(BrokerMode.TESTNET);
 
-        RiskProfile result = service.authorizeLiveAutoTrade("user1", "cred1", PHRASE);
+        RiskProfile result = service.authorizeLiveAutoTrade("user1", "cred1", PHRASE, STEP_UP_OTP);
 
         assertThat(result.isLiveAutoTradeAuthorized()).isTrue();
         verify(adapter, never()).getAccountPermissions(any(), any(), any());
@@ -248,11 +258,61 @@ class RiskProfileServiceTest {
     @Test
     @DisplayName("authorizeLiveAutoTrade: wrong confirmation phrase — refuses before ever touching the broker")
     void wrongPhrase_refusesBeforeAnyBrokerCall() {
-        assertThatThrownBy(() -> service.authorizeLiveAutoTrade("user1", "cred1", "wrong phrase"))
+        assertThatThrownBy(() -> service.authorizeLiveAutoTrade("user1", "cred1", "wrong phrase", STEP_UP_OTP))
             .isInstanceOf(IllegalArgumentException.class);
 
         verify(adapter, never()).getAccountPermissions(any(), any(), any());
         verify(credentialService, never()).ownedCredential(any(), any());
+    }
+
+    // ── Audit item P1-5: step-up OTP required before LIVE auto-trade is authorized ───────
+
+    @Test
+    @DisplayName("authorizeLiveAutoTrade: step-up OTP rejected (expired/wrong/not requested) — refuses before ever touching the broker, " +
+        "even though the confirmation phrase was correct")
+    void stepUpOtpRejected_refusesBeforeAnyBrokerCall() {
+        doThrow(new IllegalArgumentException("Invalid OTP. Please check and try again."))
+            .when(authService).verifyStepUpOtp("user1", RiskProfileService.STEPUP_OTP_PURPOSE, "000000");
+
+        assertThatThrownBy(() -> service.authorizeLiveAutoTrade("user1", "cred1", PHRASE, "000000"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("Invalid OTP");
+
+        verify(adapter, never()).getAccountPermissions(any(), any(), any());
+        verify(credentialService, never()).ownedCredential(any(), any());
+    }
+
+    @Test
+    @DisplayName("authorizeLiveAutoTrade: a correct confirmation phrase alone is not enough — the fresh step-up OTP is still verified")
+    void stepUpOtp_isActuallyVerified_notJustAccepted() {
+        when(adapter.getAccountPermissions("api-key", "api-secret", BrokerMode.LIVE))
+            .thenReturn(new AccountPermissions(true, false, true));
+
+        service.authorizeLiveAutoTrade("user1", "cred1", PHRASE, STEP_UP_OTP);
+
+        verify(authService).verifyStepUpOtp("user1", RiskProfileService.STEPUP_OTP_PURPOSE, STEP_UP_OTP);
+    }
+
+    @Test
+    @DisplayName("requestLiveAutoTradeStepUpOtp: delegates to AuthService.sendStepUpOtp and succeeds on a healthy response")
+    void requestStepUpOtp_delegatesToAuthService() {
+        when(authService.sendStepUpOtp("user1", RiskProfileService.STEPUP_OTP_PURPOSE))
+            .thenReturn(com.tradevision.dto.ApiResponse.ok("OTP sent to u***@example.com"));
+
+        service.requestLiveAutoTradeStepUpOtp("user1");
+
+        verify(authService).sendStepUpOtp("user1", RiskProfileService.STEPUP_OTP_PURPOSE);
+    }
+
+    @Test
+    @DisplayName("requestLiveAutoTradeStepUpOtp: surfaces AuthService's own error (e.g. no email/mobile on file, rate limited) as an IllegalArgumentException")
+    void requestStepUpOtp_propagatesAuthServiceFailure() {
+        when(authService.sendStepUpOtp("user1", RiskProfileService.STEPUP_OTP_PURPOSE))
+            .thenReturn(com.tradevision.dto.ApiResponse.error("No verified email or mobile on file to send a step-up verification code to."));
+
+        assertThatThrownBy(() -> service.requestLiveAutoTradeStepUpOtp("user1"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("No verified email or mobile");
     }
 
     // ── P0-6: LIVE risk-limit enforcement ─────────────────────────────────
@@ -268,7 +328,7 @@ class RiskProfileServiceTest {
         profile.setMaxDrawdownPercent(0);
         profile.setMaxOrdersPerHour(0);
 
-        assertThatThrownBy(() -> service.authorizeLiveAutoTrade("user1", "cred1", PHRASE))
+        assertThatThrownBy(() -> service.authorizeLiveAutoTrade("user1", "cred1", PHRASE, STEP_UP_OTP))
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessageContaining("dailyLossLimitQuote")
             .hasMessageContaining("maxPositionQuoteAmount")
@@ -286,7 +346,7 @@ class RiskProfileServiceTest {
     void oneMissingLiveRiskLimit_refusesNamingOnlyThatField() {
         profile.setMaxOrdersPerHour(0); // every other limit stays at the setup()'s own healthy default
 
-        assertThatThrownBy(() -> service.authorizeLiveAutoTrade("user1", "cred1", PHRASE))
+        assertThatThrownBy(() -> service.authorizeLiveAutoTrade("user1", "cred1", PHRASE, STEP_UP_OTP))
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessageContaining("maxOrdersPerHour");
 
@@ -303,7 +363,7 @@ class RiskProfileServiceTest {
         profile.setMaxDrawdownPercent(0);
         profile.setMaxOrdersPerHour(0);
 
-        RiskProfile result = service.authorizeLiveAutoTrade("user1", "cred1", PHRASE);
+        RiskProfile result = service.authorizeLiveAutoTrade("user1", "cred1", PHRASE, STEP_UP_OTP);
 
         assertThat(result.isLiveAutoTradeAuthorized()).isTrue();
     }

@@ -68,7 +68,30 @@ public class AuthController {
     // narrowed.
     @org.springframework.beans.factory.annotation.Value("${app.proxy.trusted-proxy-cidrs:}")
     private String trustedProxyCidrs;
-    private static final int MAX_OTP_REQUESTS_PER_IP_PER_WINDOW = 20;
+    /**
+     * Audit item P1-6 ("Shared-IP users can be locked out of login/OTP by other users' activity
+     * on the same IP" -- external review, confirmed real by direct inspection: this per-IP
+     * bucket (added for the "single IP cycling through many different identifiers" reason
+     * described just above) is keyed purely by resolved client IP with NO identifier component
+     * at all -- every register/login/resend call from a given IP, for ANY identifier, increments
+     * the SAME counter. A corporate office, campus Wi-Fi, or CGNAT mobile-carrier pool can
+     * legitimately have dozens to hundreds of distinct real users behind one public IP; the old
+     * hardcoded 20/hour threshold meant a handful of unrelated people each logging in once could
+     * exhaust the bucket and lock out everyone else behind that IP for the rest of the window --
+     * a real denial-of-service against innocent users sharing an IP, not just abusers).
+     *
+     * This bucket is NOT the primary defense against any single account being targeted --
+     * OtpRateLimitService (per-identifier, 45s cooldown + 5/15min) and otp_resend_by_identifier
+     * below (per-identifier, 30s cooldown) already close that specific vector independently of
+     * IP. This one exists only as a coarse backstop against SCRIPTED enumeration/cycling from one
+     * source, so raising it substantially (and making it configurable, rather than a magic
+     * constant, so a deployment behind a known large shared-IP population -- e.g. a mobile
+     * carrier's CGNAT range -- can tune it without a code change) trades a small amount of
+     * enumeration-bounding precision for not collaterally denying service to legitimate shared-IP
+     * traffic, which is the right trade for a backstop rather than a primary control.
+     */
+    @org.springframework.beans.factory.annotation.Value("${app.auth.otp-requests-per-ip-per-hour:150}")
+    private int maxOtpRequestsPerIpPerWindow;
     private static final long OTP_IP_WINDOW_SECONDS = 3600;
 
     private static final String ACCESS_COOKIE = "tv_access_token";
@@ -131,7 +154,7 @@ public class AuthController {
 
     @PostMapping("/register/initiate")
     public ResponseEntity<?> initRegister(@RequestBody Map<String,String> req, HttpServletRequest httpReq) {
-        if (!distributedRateLimitService.allow("otp_initiate_by_ip", clientIp(httpReq), MAX_OTP_REQUESTS_PER_IP_PER_WINDOW, OTP_IP_WINDOW_SECONDS)) {
+        if (!distributedRateLimitService.allow("otp_initiate_by_ip", clientIp(httpReq), maxOtpRequestsPerIpPerWindow, OTP_IP_WINDOW_SECONDS)) {
             return ResponseEntity.status(429).body(ApiResponse.error("Too many OTP requests from this network. Please try again later."));
         }
         // Accept email or mobile
@@ -142,7 +165,7 @@ public class AuthController {
 
     @PostMapping("/login/initiate")
     public ResponseEntity<?> initLogin(@RequestBody Map<String,String> req, HttpServletRequest httpReq) {
-        if (!distributedRateLimitService.allow("otp_initiate_by_ip", clientIp(httpReq), MAX_OTP_REQUESTS_PER_IP_PER_WINDOW, OTP_IP_WINDOW_SECONDS)) {
+        if (!distributedRateLimitService.allow("otp_initiate_by_ip", clientIp(httpReq), maxOtpRequestsPerIpPerWindow, OTP_IP_WINDOW_SECONDS)) {
             return ResponseEntity.status(429).body(ApiResponse.error("Too many OTP requests from this network. Please try again later."));
         }
         String identifier = req.getOrDefault("email", req.get("mobile"));
@@ -249,7 +272,7 @@ public class AuthController {
             @RequestParam(required = false) String mobile,
             @RequestParam(defaultValue = "LOGIN") String purpose,
             HttpServletRequest httpReq) {
-        if (!distributedRateLimitService.allow("otp_initiate_by_ip", clientIp(httpReq), MAX_OTP_REQUESTS_PER_IP_PER_WINDOW, OTP_IP_WINDOW_SECONDS)) {
+        if (!distributedRateLimitService.allow("otp_initiate_by_ip", clientIp(httpReq), maxOtpRequestsPerIpPerWindow, OTP_IP_WINDOW_SECONDS)) {
             return ResponseEntity.status(429).body(ApiResponse.error("Too many OTP requests from this network. Please try again later."));
         }
         String identifier = email != null ? email : mobile;
@@ -284,14 +307,19 @@ public class AuthController {
      * signup flow checking availability) -- only the RATE at which that information can be
      * extracted, which is the actual lever available here without breaking the real feature this
      * endpoint exists for.
+     *
+     * Audit item P1-6, full context in maxOtpRequestsPerIpPerWindow's own updated javadoc above:
+     * same shared-IP collateral-lockout risk applies here (also keyed purely by IP, no identifier
+     * component) -- made configurable with a higher default for the same reason.
      */
-    private static final int MAX_ACCOUNT_CHECK_REQUESTS_PER_IP_PER_WINDOW = 30;
+    @org.springframework.beans.factory.annotation.Value("${app.auth.account-checks-per-ip-per-hour:200}")
+    private int maxAccountCheckRequestsPerIpPerWindow;
     private static final long ACCOUNT_CHECK_IP_WINDOW_SECONDS = 3600;
 
     @GetMapping("/check-email")
     public ResponseEntity<?> checkEmail(@RequestParam String email, HttpServletRequest httpReq) {
         if (!distributedRateLimitService.allow("account_check_by_ip", clientIp(httpReq),
-                MAX_ACCOUNT_CHECK_REQUESTS_PER_IP_PER_WINDOW, ACCOUNT_CHECK_IP_WINDOW_SECONDS)) {
+                maxAccountCheckRequestsPerIpPerWindow, ACCOUNT_CHECK_IP_WINDOW_SECONDS)) {
             return ResponseEntity.status(429).body(ApiResponse.error("Too many requests from this network. Please try again later."));
         }
         return ResponseEntity.ok(authService.checkEmail(email));
@@ -300,7 +328,7 @@ public class AuthController {
     @GetMapping("/check-mobile")
     public ResponseEntity<?> checkMobile(@RequestParam String mobile, HttpServletRequest httpReq) {
         if (!distributedRateLimitService.allow("account_check_by_ip", clientIp(httpReq),
-                MAX_ACCOUNT_CHECK_REQUESTS_PER_IP_PER_WINDOW, ACCOUNT_CHECK_IP_WINDOW_SECONDS)) {
+                maxAccountCheckRequestsPerIpPerWindow, ACCOUNT_CHECK_IP_WINDOW_SECONDS)) {
             return ResponseEntity.status(429).body(ApiResponse.error("Too many requests from this network. Please try again later."));
         }
         return ResponseEntity.ok(authService.checkMobile(mobile));

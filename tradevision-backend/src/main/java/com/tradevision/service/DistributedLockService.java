@@ -25,6 +25,29 @@ import java.time.temporal.ChronoUnit;
  * adds the missing cross-process guarantee on top for whenever this scales beyond replicas: 1.
  * Layering both is deliberate: the local lock avoids paying a database round-trip for
  * same-process contention, and this class is what actually makes scaling safe.
+ *
+ * <p>Audit item P2 ("wall-clock expiry"): external review, investigated by direct inspection.
+ * The broad concern -- that a naive wall-clock TTL lets a lock be released from under its
+ * legitimate holder, or expire while still genuinely needed -- does NOT describe this class as
+ * it stands today: {@code generation} is a DB-generated monotonic fencing token (never derived
+ * from a timestamp, see {@link #tryAcquireWithDiagnosis}), release is scoped to {@code _id AND
+ * instanceId} so one holder can never drop another's lock, and {@link #renew}/{@link
+ * #renewWithGeneration} are themselves atomic, expiry- and (optionally) generation-gated updates
+ * that every long-running holder (see {@code PositionMonitorService}, {@code
+ * PositionSafetyService}, {@code AutoTradeService}) calls repeatedly and aborts immediately on
+ * failure, rather than trusting a single lease to outlive the whole operation.
+ *
+ * <p>What genuinely remains, and is an inherent property of ANY TTL-based lease rather than a
+ * defect in this implementation: {@code expiresAt} comparisons ({@code Instant.now()} at lines
+ * computing/checking it) are evaluated against each app instance's own local clock, not a single
+ * Mongo-server-side clock -- so meaningful clock skew between app nodes could let a fast-clocked
+ * node treat another node's still-valid lease as already expired. This is the real, narrow
+ * residual shape of the audit's concern. It is accepted here rather than engineered away because
+ * every lease duration below (30-90s) is comfortably larger than ordinary NTP-synced drift
+ * between nodes in the same deployment, and because closing it fully (e.g. moving the expiry
+ * comparison to a Mongo-side {@code $expr}/{@code $$NOW} check) would only trade N-node clock
+ * skew for app-vs-Mongo-server skew -- a smaller, but not zero, version of the same assumption.
+ * Operationally: this requires NTP (or equivalent) time sync across app nodes; do not disable it.
  */
 @Service
 @RequiredArgsConstructor

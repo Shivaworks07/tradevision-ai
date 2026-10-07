@@ -76,6 +76,11 @@ class OrderExecutionServiceTest {
         // keeps this file's own existing assertions meaningful without re-implementing
         // OrderService's own state machine here a second time.
         when(orderService.recordBrokerResult(any(), any())).thenAnswer(inv -> inv.getArgument(0));
+        // Same reasoning as recordBrokerResult's own stub above, now that placeTestOrder also
+        // persists broker/mode/triggerSource/TP-SL through recordEntryMetadata (see
+        // OrderExecutionService's own updated comment on why that moved out of raw setters).
+        when(orderService.recordEntryMetadata(any(), any(), any(), any(), any(), any(), any()))
+            .thenAnswer(inv -> inv.getArgument(0));
         testnetCredential = new BrokerCredential();
         testnetCredential.setId("cred1");
         testnetCredential.setBroker(BrokerType.BINANCE);
@@ -179,5 +184,71 @@ class OrderExecutionServiceTest {
         inOrder.verify(orderService).markRiskAccepted(any());
         inOrder.verify(orderService).markSubmitting(any());
         inOrder.verify(orderService).recordBrokerResult(any(), any());
+    }
+
+    /**
+     * Follow-up fix (ported from an earlier local build, re-verified against this repo's own
+     * current code before applying -- full context in PlaceTestOrderRequest's own field comment
+     * and OrderExecutionService.placeTestOrder's own updated comment): a manual BUY with both TP
+     * and SL now carries them all the way through to the OMS order via recordEntryMetadata,
+     * instead of the fill being discovered later with nothing to protect it.
+     */
+    @Test
+    @DisplayName("placeTestOrder: BUY with takeProfitPrice/stopLossTriggerPrice persists both via recordEntryMetadata, as MANUAL trigger source")
+    void placeTestOrder_buyWithTpSl_persistsViaRecordEntryMetadata() {
+        when(credentialService.ownedCredential("user1", "cred1")).thenReturn(testnetCredential);
+        req.setTakeProfitPrice(BigDecimal.valueOf(110));
+        req.setStopLossTriggerPrice(BigDecimal.valueOf(95));
+
+        service.placeTestOrder("user1", req);
+
+        verify(orderService).recordEntryMetadata(any(), eq(BrokerType.BINANCE), eq(BrokerMode.TESTNET), eq("MANUAL"),
+            any(), eq(BigDecimal.valueOf(95)), eq(BigDecimal.valueOf(110)));
+    }
+
+    @Test
+    @DisplayName("placeTestOrder: TP/SL both left null is unchanged, existing behavior -- recordEntryMetadata is still called, but with null TP/SL")
+    void placeTestOrder_noTpSl_recordEntryMetadataCalledWithNulls() {
+        when(credentialService.ownedCredential("user1", "cred1")).thenReturn(testnetCredential);
+
+        service.placeTestOrder("user1", req);
+
+        verify(orderService).recordEntryMetadata(any(), any(), any(), eq("MANUAL"), any(), isNull(), isNull());
+    }
+
+    @Test
+    @DisplayName("placeTestOrder: only one of takeProfitPrice/stopLossTriggerPrice provided is rejected before any broker call")
+    void placeTestOrder_onlyOneOfTpSl_rejected() {
+        when(credentialService.ownedCredential("user1", "cred1")).thenReturn(testnetCredential);
+        req.setTakeProfitPrice(BigDecimal.valueOf(110));
+
+        assertThatThrownBy(() -> service.placeTestOrder("user1", req)).isInstanceOf(IllegalArgumentException.class);
+
+        verifyNoInteractions(adapter);
+    }
+
+    @Test
+    @DisplayName("placeTestOrder: stopLossTriggerPrice at or above takeProfitPrice is rejected before any broker call")
+    void placeTestOrder_stopLossAboveTakeProfit_rejected() {
+        when(credentialService.ownedCredential("user1", "cred1")).thenReturn(testnetCredential);
+        req.setTakeProfitPrice(BigDecimal.valueOf(100));
+        req.setStopLossTriggerPrice(BigDecimal.valueOf(100));
+
+        assertThatThrownBy(() -> service.placeTestOrder("user1", req)).isInstanceOf(IllegalArgumentException.class);
+
+        verifyNoInteractions(adapter);
+    }
+
+    @Test
+    @DisplayName("placeTestOrder: TP/SL on a SELL is rejected -- they only protect a long")
+    void placeTestOrder_tpSlOnSell_rejected() {
+        when(credentialService.ownedCredential("user1", "cred1")).thenReturn(testnetCredential);
+        req.setSide("SELL");
+        req.setTakeProfitPrice(BigDecimal.valueOf(110));
+        req.setStopLossTriggerPrice(BigDecimal.valueOf(95));
+
+        assertThatThrownBy(() -> service.placeTestOrder("user1", req)).isInstanceOf(IllegalArgumentException.class);
+
+        verifyNoInteractions(adapter);
     }
 }

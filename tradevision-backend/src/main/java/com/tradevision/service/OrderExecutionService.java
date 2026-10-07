@@ -11,6 +11,7 @@ import com.tradevision.service.broker.dto.OrderResult;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -81,6 +82,28 @@ public class OrderExecutionService {
             throw new IllegalArgumentException("side must be BUY or SELL");
         }
 
+        // Follow-up fix (full context in PlaceTestOrderRequest's own field comment, ported from
+        // an earlier local build and re-verified against this repo's current code before
+        // applying): optional on both ends -- a manual order with neither is unchanged, existing
+        // behavior (discovered and emergency-flattened, unprotected). If either is set, both
+        // must be, and must actually bracket a long correctly -- rejected here, before any real
+        // order reaches the exchange, rather than accepting a combination that would only fail
+        // later at OCO placement time.
+        BigDecimal takeProfitPrice = req.getTakeProfitPrice();
+        BigDecimal stopLossTriggerPrice = req.getStopLossTriggerPrice();
+        if ((takeProfitPrice == null) != (stopLossTriggerPrice == null)) {
+            throw new IllegalArgumentException("takeProfitPrice and stopLossTriggerPrice must both be provided, or both left out.");
+        }
+        if (takeProfitPrice != null) {
+            if (!side.equals("BUY")) {
+                throw new IllegalArgumentException("takeProfitPrice/stopLossTriggerPrice are only meaningful for a BUY (the protective "
+                    + "OCO exit sells back out of a long) -- leave them out for a SELL.");
+            }
+            if (stopLossTriggerPrice.compareTo(takeProfitPrice) >= 0) {
+                throw new IllegalArgumentException("stopLossTriggerPrice must be below takeProfitPrice for a long.");
+            }
+        }
+
         BrokerAdapter adapter = credentialService.adapterForCredential(credential);
         String apiKey = credentialService.decrypt(credential, true);
         String apiSecret = credentialService.decrypt(credential, false);
@@ -111,25 +134,39 @@ public class OrderExecutionService {
         // distinction mattered).
         Order order = orderService.create(userId, credential.getId(), null, null,
             orderReq.symbol(), side, "MARKET", req.getQuantity(), null, clientOrderId);
-        order.setBroker(credential.getBroker());
-        order.setMode(credential.getMode());
-        order.setTriggerSource("MANUAL");
-        // Real bug, confirmed by the person's own live test ("Illegal order state transition...
-        // CREATED -> UNKNOWN is not a legal transition"): this comment used to claim create()
-        // then recordBrokerResult() alone "is the exact same lifecycle AutoTradeService's own
-        // entry-order path already uses" -- checked directly against AutoTradeService's own
-        // actual code, and that claim was false; AutoTradeService always calls
-        // markRiskAccepted()/markSubmitting() in between. Without them, an order stayed at
-        // CREATED, and recordBrokerResult's own markUnknown() path (reached whenever the broker
-        // result is ambiguous) requires SUBMITTING/ACKNOWLEDGED/etc. -- CREATED -> UNKNOWN was
-        // never a legal transition in OrderService's own LEGAL_TRANSITIONS map, so this failed
-        // every time that specific broker-result path was reached.
+        // Real bug, confirmed directly against OrderService below (not assumed), found while
+        // wiring manual TP/SL through this path: broker/mode/triggerSource/rawResponse used to
+        // be set directly on this in-memory `order` object right here and never persisted at
+        // all -- create() above already saved the order before these setters ran, and none of
+        // markRiskAccepted/markSubmitting/recordBrokerResult below ever write these particular
+        // fields (recordBrokerResult's own atomicUpdate only ever $sets the fields its own state
+        // transition owns -- status, failureReason, brokerOrderId, quantities -- by design,
+        // checked directly against its own code). So broker/mode/triggerSource/rawResponse
+        // silently never reached Mongo for any manual order; whatever reloaded this order later
+        // (reconciliation, the late-fill path) saw them null/default. Fixed by routing through
+        // recordEntryMetadata below instead, the same dedicated, already-tested write
+        // AutoTradeService's own entry path uses for exactly this set of fields -- now also
+        // carrying takeProfitPrice/stopLossTriggerPrice when provided, which is the actual point
+        // of this change (see PlaceTestOrderRequest's own field comment).
+        // Real bug, confirmed by a live test ("Illegal order state transition... CREATED ->
+        // UNKNOWN is not a legal transition"): create() then recordBrokerResult() alone is NOT
+        // the same lifecycle AutoTradeService's own entry-order path actually uses -- checked
+        // directly against its code, which always calls markRiskAccepted()/markSubmitting() in
+        // between. Without them, an order stayed at CREATED, and recordBrokerResult's own
+        // markUnknown() path (reached whenever the broker result is ambiguous) requires
+        // SUBMITTING/ACKNOWLEDGED/etc. -- CREATED -> UNKNOWN was never a legal transition in
+        // OrderService's own LEGAL_TRANSITIONS map, so this failed every time that specific
+        // broker-result path was reached.
         orderService.markRiskAccepted(order);
         orderService.markSubmitting(order);
 
         OrderResult result = adapter.placeOrder(apiKey, apiSecret, credential.getMode(), orderReq);
-        order.setRawResponse(result.rawResponse());
         order = orderService.recordBrokerResult(order, result);
+        // Persists broker/mode/triggerSource/rawResponse (see this method's own comment above on
+        // why this moved here) and, when provided, the TP/SL a later reconciliation pass needs
+        // to protect this fill with a real OCO instead of emergency-flattening it unprotected.
+        order = orderService.recordEntryMetadata(order, credential.getBroker(), credential.getMode(), "MANUAL",
+            result.rawResponse(), stopLossTriggerPrice, takeProfitPrice);
 
         credentialService.audit(userId, credential.getId(), credential.getBroker(),
             result.success() ? "ORDER_PLACED" : "ORDER_FAILED",

@@ -788,12 +788,10 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
         if (cached != null && cached.fetchedAt().isAfter(Instant.now().minusSeconds(3600))) {
             return cached.rules();
         }
-        String base = mode == BrokerMode.LIVE ? LIVE_BASE : TESTNET_BASE;
-        String url = base + "/api/v3/exchangeInfo?symbol=" + symbol.toUpperCase();
-        long startedAt = System.currentTimeMillis();
+        String path = "/api/v3/exchangeInfo?symbol=" + symbol.toUpperCase();
         try {
-            ResponseEntity<String> resp = http.exchange(url, HttpMethod.GET, HttpEntity.EMPTY, String.class);
-            JsonNode root = mapper.readTree(resp.getBody());
+            // Audit finding (P1-3, full context in publicGet's own javadoc).
+            JsonNode root = publicGet(mode, path);
             JsonNode symbolNode = root.path("symbols").get(0);
             String baseAsset = symbolNode.path("baseAsset").asText(null);
             String quoteAsset = symbolNode.path("quoteAsset").asText(null);
@@ -861,10 +859,8 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
                 decimalPlaces(tickSize), decimalPlaces(stepSize), maxNotional, applyMinNotionalToMarket, applyMaxNotionalToMarket,
                 multiplierUp, multiplierDown);
             ref.set(new CachedRules(rules, Instant.now()));
-            exchangeHealth.record("PUBLIC_ENDPOINT", true, System.currentTimeMillis() - startedAt);
             return rules;
         } catch (Exception e) {
-            exchangeHealth.record("PUBLIC_ENDPOINT", false, System.currentTimeMillis() - startedAt);
             // P2-16 fix ("GlobalExceptionHandler.handleBadState returns IllegalStateException
             // messages to clients verbatim" -- external review, full context in
             // GlobalExceptionHandler's own updated javadoc): confirmed real here specifically --
@@ -922,16 +918,14 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
         // risk-checked and price-validated against LIVE market data, not the testnet environment
         // it was actually about to trade against. Testnet and live are genuinely different
         // markets (different liquidity, different prices) — this now routes to the correct host.
-        String base = mode == BrokerMode.LIVE ? LIVE_BASE : TESTNET_BASE;
-        String url = base + "/api/v3/ticker/price?symbol=" + symbol.toUpperCase();
-        long startedAt = System.currentTimeMillis();
+        String path = "/api/v3/ticker/price?symbol=" + symbol.toUpperCase();
         try {
-            ResponseEntity<String> resp = http.exchange(url, HttpMethod.GET, HttpEntity.EMPTY, String.class);
-            JsonNode root = mapper.readTree(resp.getBody());
-            exchangeHealth.record("PUBLIC_ENDPOINT", true, System.currentTimeMillis() - startedAt);
+            // Audit finding (P1-3, full context in publicGet's own javadoc): routed through the
+            // same circuit-aware path every signed call already used -- this used to call
+            // http.exchange(...) directly here, bypassing the shared 418/429 circuit entirely.
+            JsonNode root = publicGet(mode, path);
             return new BigDecimal(root.path("price").asText("0"));
         } catch (Exception e) {
-            exchangeHealth.record("PUBLIC_ENDPOINT", false, System.currentTimeMillis() - startedAt);
             log.error("Failed to fetch current price for {} ({}): {}", symbol, mode, e.getMessage(), e);
             throw new IllegalStateException("Failed to fetch current price for " + symbol + ". Please try again shortly.");
         }
@@ -957,12 +951,10 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
 
     @Override
     public OrderBookDepth getOrderBookDepth(String symbol, BrokerMode mode, int limit) {
-        String base = mode == BrokerMode.LIVE ? LIVE_BASE : TESTNET_BASE;
-        String url = base + "/api/v3/depth?symbol=" + symbol.toUpperCase() + "&limit=" + limit;
-        long startedAt = System.currentTimeMillis();
+        String path = "/api/v3/depth?symbol=" + symbol.toUpperCase() + "&limit=" + limit;
         try {
-            ResponseEntity<String> resp = http.exchange(url, HttpMethod.GET, HttpEntity.EMPTY, String.class);
-            JsonNode root = mapper.readTree(resp.getBody());
+            // Audit finding (P1-3, full context in publicGet's own javadoc).
+            JsonNode root = publicGet(mode, path);
             List<OrderBookDepth.PriceLevel> bids = new ArrayList<>();
             for (JsonNode b : root.path("bids")) {
                 bids.add(new OrderBookDepth.PriceLevel(new BigDecimal(b.get(0).asText("0")), new BigDecimal(b.get(1).asText("0"))));
@@ -971,10 +963,8 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
             for (JsonNode a : root.path("asks")) {
                 asks.add(new OrderBookDepth.PriceLevel(new BigDecimal(a.get(0).asText("0")), new BigDecimal(a.get(1).asText("0"))));
             }
-            exchangeHealth.record("PUBLIC_ENDPOINT", true, System.currentTimeMillis() - startedAt);
             return new OrderBookDepth(bids, asks);
         } catch (Exception e) {
-            exchangeHealth.record("PUBLIC_ENDPOINT", false, System.currentTimeMillis() - startedAt);
             log.error("Failed to fetch order book depth for {} ({}): {}", symbol, mode, e.getMessage(), e);
             throw new IllegalStateException("Failed to fetch order book depth for " + symbol + ". Please try again shortly.");
         }
@@ -982,21 +972,17 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
 
     @Override
     public SpreadInfo getSpread(String symbol, BrokerMode mode) {
-        String base = mode == BrokerMode.LIVE ? LIVE_BASE : TESTNET_BASE;
-        String url = base + "/api/v3/ticker/bookTicker?symbol=" + symbol.toUpperCase();
-        long startedAt = System.currentTimeMillis();
+        String path = "/api/v3/ticker/bookTicker?symbol=" + symbol.toUpperCase();
         try {
-            ResponseEntity<String> resp = http.exchange(url, HttpMethod.GET, HttpEntity.EMPTY, String.class);
-            JsonNode root = mapper.readTree(resp.getBody());
+            // Audit finding (P1-3, full context in publicGet's own javadoc).
+            JsonNode root = publicGet(mode, path);
             BigDecimal bid = new BigDecimal(root.path("bidPrice").asText("0"));
             BigDecimal ask = new BigDecimal(root.path("askPrice").asText("0"));
-            exchangeHealth.record("PUBLIC_ENDPOINT", true, System.currentTimeMillis() - startedAt);
             if (bid.signum() <= 0 || ask.signum() <= 0) return new SpreadInfo(bid, ask, 100.0);
             double mid = bid.add(ask).doubleValue() / 2.0;
             double spreadPct = ask.subtract(bid).doubleValue() / mid * 100.0;
             return new SpreadInfo(bid, ask, spreadPct);
         } catch (Exception e) {
-            exchangeHealth.record("PUBLIC_ENDPOINT", false, System.currentTimeMillis() - startedAt);
             log.error("Failed to fetch spread for {} ({}): {}", symbol, mode, e.getMessage(), e);
             throw new IllegalStateException("Failed to fetch spread for " + symbol + ". Please try again shortly.");
         }
@@ -1004,12 +990,10 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
 
     @Override
     public List<Candle> getRecentCandles(String symbol, String interval, int limit, BrokerMode mode) {
-        String base = mode == BrokerMode.LIVE ? LIVE_BASE : TESTNET_BASE;
-        String url = base + "/api/v3/klines?symbol=" + symbol.toUpperCase() + "&interval=" + interval + "&limit=" + limit;
-        long startedAt = System.currentTimeMillis();
+        String path = "/api/v3/klines?symbol=" + symbol.toUpperCase() + "&interval=" + interval + "&limit=" + limit;
         try {
-            ResponseEntity<String> resp = http.exchange(url, HttpMethod.GET, HttpEntity.EMPTY, String.class);
-            JsonNode root = mapper.readTree(resp.getBody());
+            // Audit finding (P1-3, full context in publicGet's own javadoc).
+            JsonNode root = publicGet(mode, path);
             List<Candle> candles = new ArrayList<>();
             for (JsonNode k : root) {
                 candles.add(new Candle(
@@ -1018,10 +1002,8 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
                     k.get(5).asDouble()
                 ));
             }
-            exchangeHealth.record("PUBLIC_ENDPOINT", true, System.currentTimeMillis() - startedAt);
             return candles;
         } catch (Exception e) {
-            exchangeHealth.record("PUBLIC_ENDPOINT", false, System.currentTimeMillis() - startedAt);
             log.error("Failed to fetch candles for {} ({}): {}", symbol, mode, e.getMessage(), e);
             throw new IllegalStateException("Failed to fetch candles for " + symbol + ". Please try again shortly.");
         }
@@ -1130,12 +1112,10 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
      */
     @Override
     public List<String> getAllTradableUsdtSymbols(BrokerMode mode) {
-        String base = mode == BrokerMode.LIVE ? LIVE_BASE : TESTNET_BASE;
-        String url = base + "/api/v3/exchangeInfo";
-        long startedAt = System.currentTimeMillis();
+        String path = "/api/v3/exchangeInfo";
         try {
-            ResponseEntity<String> resp = http.exchange(url, HttpMethod.GET, HttpEntity.EMPTY, String.class);
-            JsonNode root = mapper.readTree(resp.getBody());
+            // Audit finding (P1-3, full context in publicGet's own javadoc).
+            JsonNode root = publicGet(mode, path);
             List<String> symbols = new ArrayList<>();
             for (JsonNode s : root.path("symbols")) {
                 if ("TRADING".equals(s.path("status").asText())
@@ -1144,10 +1124,8 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
                     symbols.add(s.path("symbol").asText());
                 }
             }
-            exchangeHealth.record("PUBLIC_ENDPOINT", true, System.currentTimeMillis() - startedAt);
             return symbols;
         } catch (Exception e) {
-            exchangeHealth.record("PUBLIC_ENDPOINT", false, System.currentTimeMillis() - startedAt);
             log.error("Failed to fetch tradable USDT symbols ({}): {}", mode, e.getMessage(), e);
             throw new IllegalStateException("Failed to fetch tradable USDT symbols. Please try again shortly.");
         }
@@ -1161,12 +1139,10 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
      */
     @Override
     public List<com.tradevision.service.broker.dto.TickerStats> getAll24hrTickers(BrokerMode mode) {
-        String base = mode == BrokerMode.LIVE ? LIVE_BASE : TESTNET_BASE;
-        String url = base + "/api/v3/ticker/24hr";
-        long startedAt = System.currentTimeMillis();
+        String path = "/api/v3/ticker/24hr";
         try {
-            ResponseEntity<String> resp = http.exchange(url, HttpMethod.GET, HttpEntity.EMPTY, String.class);
-            JsonNode root = mapper.readTree(resp.getBody());
+            // Audit finding (P1-3, full context in publicGet's own javadoc).
+            JsonNode root = publicGet(mode, path);
             List<com.tradevision.service.broker.dto.TickerStats> tickers = new ArrayList<>();
             for (JsonNode t : root) {
                 tickers.add(new com.tradevision.service.broker.dto.TickerStats(
@@ -1177,10 +1153,8 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
                     new BigDecimal(t.path("askPrice").asText("0"))
                 ));
             }
-            exchangeHealth.record("PUBLIC_ENDPOINT", true, System.currentTimeMillis() - startedAt);
             return tickers;
         } catch (Exception e) {
-            exchangeHealth.record("PUBLIC_ENDPOINT", false, System.currentTimeMillis() - startedAt);
             log.error("Failed to fetch 24hr tickers ({}): {}", mode, e.getMessage(), e);
             throw new IllegalStateException("Failed to fetch 24hr tickers. Please try again shortly.");
         }
@@ -1199,14 +1173,11 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
      */
     @Override
     public java.math.BigDecimal getHistoricalPrice(String symbol, long timestampMillis, BrokerMode mode) {
-        String base = mode == BrokerMode.LIVE ? LIVE_BASE : TESTNET_BASE;
-        String url = base + "/api/v3/klines?symbol=" + symbol.toUpperCase() + "&interval=1m&startTime=" + timestampMillis
+        String path = "/api/v3/klines?symbol=" + symbol.toUpperCase() + "&interval=1m&startTime=" + timestampMillis
             + "&endTime=" + (timestampMillis + 60_000L) + "&limit=1";
-        long startedAt = System.currentTimeMillis();
         try {
-            ResponseEntity<String> resp = http.exchange(url, HttpMethod.GET, HttpEntity.EMPTY, String.class);
-            JsonNode root = mapper.readTree(resp.getBody());
-            exchangeHealth.record("PUBLIC_ENDPOINT", true, System.currentTimeMillis() - startedAt);
+            // Audit finding (P1-3, full context in publicGet's own javadoc).
+            JsonNode root = publicGet(mode, path);
             if (!root.isArray() || root.isEmpty()) {
                 // No candle exists for this exact window (e.g. a timestamp Binance has no
                 // historical data for at all) -- genuinely unknown, never a fabricated guess.
@@ -1215,7 +1186,6 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
             // Kline close price is index 4, same field position as getRecentCandles above.
             return new java.math.BigDecimal(root.get(0).get(4).asText());
         } catch (Exception e) {
-            exchangeHealth.record("PUBLIC_ENDPOINT", false, System.currentTimeMillis() - startedAt);
             log.warn("Could not fetch historical price for {} at {} ({}): {} -- treating as genuinely unknown, not a fabricated value.",
                 symbol, timestampMillis, mode, e.getMessage());
             return null;
@@ -1285,6 +1255,29 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
     }
 
     private JsonNode call(String apiKey, String apiSecret, BrokerMode mode, HttpMethod method, String path, String extraParams, boolean idempotent) {
+        return withCircuitBreakerAndRetry(apiKey, path, idempotent,
+            () -> executeCall(apiKey, apiSecret, mode, method, path, extraParams));
+    }
+
+    /**
+     * Audit finding (P1-3 -- "public Binance calls bypass the circuit-aware path" -- full
+     * context in publicGet's own javadoc): the shared circuit-check-then-retry loop, extracted
+     * out of what used to be this class's ONLY entry point for an actual Binance HTTP call
+     * (signed requests, via call()/executeCall() above). Every public, unsigned market-data
+     * method below (getCurrentPrice, getSymbolRules, getOrderBookDepth, getSpread,
+     * getRecentCandles, getAllTradableUsdtSymbols, getAll24hrTickers, getHistoricalPrice) used
+     * to call http.exchange(...) directly, completely bypassing BOTH the bannedUntil/
+     * rateLimitedUntil circuit checks below AND the exponential-backoff retry on a transient 5xx
+     * -- confirmed real by direct inspection. A public call made while the shared circuit was
+     * already open (because a SIGNED call from this same process had just been 418/429'd) would
+     * still fire straight at Binance, undermining the entire point of a process-wide circuit:
+     * one banned/rate-limited IP, continuing to get hammered by "just" market-data requests,
+     * extending its own ban. Conversely, a 418/429 received on a PUBLIC call never opened the
+     * circuit at all, so every signed call right after it had no idea the IP was already in
+     * trouble. Both directions are closed by routing every Binance call -- signed or public --
+     * through this one shared loop.
+     */
+    private JsonNode withCircuitBreakerAndRetry(String healthKey, String path, boolean idempotent, java.util.function.Supplier<JsonNode> action) {
         int attempt = 0;
         while (true) {
             // Review finding (P1 #8, full context in the bannedUntil/rateLimitedUntil fields'
@@ -1307,11 +1300,11 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
 
             long startedAt = System.currentTimeMillis();
             try {
-                JsonNode result = executeCall(apiKey, apiSecret, mode, method, path, extraParams);
-                safeRecordHealth(apiKey, true, System.currentTimeMillis() - startedAt);
+                JsonNode result = action.get();
+                safeRecordHealth(healthKey, true, System.currentTimeMillis() - startedAt);
                 return result;
             } catch (BinanceApiException e) {
-                safeRecordHealth(apiKey, false, System.currentTimeMillis() - startedAt);
+                safeRecordHealth(healthKey, false, System.currentTimeMillis() - startedAt);
                 attempt++;
 
                 if (e.statusCode == 418) {
@@ -1419,7 +1412,31 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
         HttpHeaders headers = new HttpHeaders();
         headers.set("X-MBX-APIKEY", apiKey);
         HttpEntity<Void> entity = new HttpEntity<>(headers);
+        return executeHttpRequest(method, url, entity);
+    }
 
+    /**
+     * Audit finding (P1-3, full context in publicGet's own javadoc): the public-endpoint
+     * counterpart to executeCall above -- same host selection, same response handling, just no
+     * signature/API-key header, since Binance's own public market-data endpoints need neither.
+     * `path` already carries its own leading "?query=string" (each public method below builds
+     * it exactly as before this fix); nothing else about those query strings changes.
+     */
+    private JsonNode executePublicCall(BrokerMode mode, String path) {
+        String base = mode == BrokerMode.LIVE ? LIVE_BASE : TESTNET_BASE;
+        return executeHttpRequest(HttpMethod.GET, base + path, HttpEntity.EMPTY);
+    }
+
+    /**
+     * Audit finding (P1-3, full context in publicGet's own javadoc): the actual HTTP call plus
+     * Binance-error-to-BinanceApiException translation, extracted here so executeCall (signed)
+     * and executePublicCall (public) share the exact same response/error handling -- including
+     * the X-MBX-USED-WEIGHT-1M bookkeeping and the Retry-After-aware 418/429 translation that
+     * withCircuitBreakerAndRetry's own circuit logic depends on -- rather than a second,
+     * independently-maintained copy for public calls that could quietly drift out of sync with
+     * this one.
+     */
+    private JsonNode executeHttpRequest(HttpMethod method, String url, HttpEntity<?> entity) {
         try {
             ResponseEntity<String> resp = http.exchange(url, method, entity, String.class);
             // Review finding ("Broker health still incomplete" — "You don't track:
@@ -1455,6 +1472,23 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
             // failures review item #26 is about.
             throw new BinanceApiException("Binance request failed: " + e.getMessage(), null, 503);
         }
+    }
+
+    /**
+     * Audit finding (P1-3 -- "public Binance calls bypass the circuit-aware path"): confirmed
+     * real by direct inspection -- getCurrentPrice, getSymbolRules, getOrderBookDepth,
+     * getSpread, getRecentCandles, getAllTradableUsdtSymbols, getAll24hrTickers, and
+     * getHistoricalPrice all used to call http.exchange(...) directly, each with its own
+     * ad hoc try/catch, completely bypassing withCircuitBreakerAndRetry's shared circuit check
+     * and retry logic. This is the one entry point all of them now go through instead -- `path`
+     * is exactly what each of those methods already builds (leading "?query=string" included),
+     * `healthKey` is the literal "PUBLIC_ENDPOINT" string every one of them already recorded
+     * health under, and the retry is marked idempotent (true) since every single one of these
+     * is a plain GET with no side effects, same reasoning signedGet/signedDelete above already
+     * use for their own idempotent=true.
+     */
+    private JsonNode publicGet(BrokerMode mode, String path) {
+        return withCircuitBreakerAndRetry("PUBLIC_ENDPOINT", path, true, () -> executePublicCall(mode, path));
     }
 
     /** Review item #25: periodically resync against exchange server time (public endpoint, no auth) rather than trusting the local clock indefinitely. */

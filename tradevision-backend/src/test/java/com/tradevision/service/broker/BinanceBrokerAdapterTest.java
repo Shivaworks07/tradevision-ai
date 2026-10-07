@@ -421,6 +421,98 @@ class BinanceBrokerAdapterTest {
         org.mockito.Mockito.verifyNoInteractions(mockHttp);
     }
 
+    // ── P1-3: public (unsigned) market-data calls must share the SAME circuit as signed calls ──
+
+    @Test
+    @DisplayName("P1-3: a 418 ban opened by a SIGNED call also blocks a later PUBLIC market-data call with no network request at all -- before this fix, public calls bypassed the circuit entirely")
+    void call_afterBanFromSignedCall_publicCallAlsoShortCircuits() throws Exception {
+        var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
+        var adapter = new BinanceBrokerAdapter(exchangeHealth);
+        var mockHttp = org.mockito.Mockito.mock(org.springframework.web.client.RestTemplate.class);
+        injectMockRestTemplate(adapter, mockHttp);
+        org.springframework.http.HttpHeaders banHeaders = new org.springframework.http.HttpHeaders();
+        banHeaders.add("Retry-After", "120");
+        org.mockito.Mockito.when(mockHttp.exchange(
+                org.mockito.Mockito.contains("/api/v3/account"), org.mockito.Mockito.eq(org.springframework.http.HttpMethod.GET),
+                org.mockito.Mockito.any(), org.mockito.Mockito.eq(String.class)))
+            .thenThrow(org.springframework.web.client.HttpClientErrorException.create(
+                org.springframework.http.HttpStatus.I_AM_A_TEAPOT, "418", banHeaders, new byte[0], null));
+        org.mockito.Mockito.when(mockHttp.exchange(
+                org.mockito.Mockito.contains("/api/v3/time"), org.mockito.Mockito.eq(org.springframework.http.HttpMethod.GET),
+                org.mockito.Mockito.any(), org.mockito.Mockito.eq(String.class)))
+            .thenReturn(org.springframework.http.ResponseEntity.ok("{\"serverTime\":1}"));
+        // Opens the ban via a SIGNED call (getBalance).
+        assertThatThrownByRunning(() -> adapter.getBalance("key", "secret", com.tradevision.model.BrokerMode.TESTNET));
+        org.mockito.Mockito.clearInvocations(mockHttp);
+
+        // A PUBLIC, unsigned market-data call right after -- must fail immediately, without ever
+        // touching mockHttp at all, since the exact same 120-second ban is still active. Before
+        // this fix, getCurrentPrice called http.exchange(...) directly and had no idea any
+        // circuit existed, so this would have gone straight to the network.
+        Exception thrown = null;
+        try {
+            adapter.getCurrentPrice("BTCUSDT", com.tradevision.model.BrokerMode.TESTNET);
+        } catch (Exception e) {
+            thrown = e;
+        }
+        assertThat(thrown).isNotNull();
+        org.mockito.Mockito.verifyNoInteractions(mockHttp);
+    }
+
+    @Test
+    @DisplayName("P1-3: a 418 ban opened by a PUBLIC market-data call also blocks a later SIGNED call -- the circuit is genuinely shared in both directions, not just signed-to-signed")
+    void call_afterBanFromPublicCall_signedCallAlsoShortCircuits() throws Exception {
+        var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
+        var adapter = new BinanceBrokerAdapter(exchangeHealth);
+        var mockHttp = org.mockito.Mockito.mock(org.springframework.web.client.RestTemplate.class);
+        injectMockRestTemplate(adapter, mockHttp);
+        org.springframework.http.HttpHeaders banHeaders = new org.springframework.http.HttpHeaders();
+        banHeaders.add("Retry-After", "120");
+        org.mockito.Mockito.when(mockHttp.exchange(
+                org.mockito.Mockito.contains("/api/v3/ticker/price"), org.mockito.Mockito.eq(org.springframework.http.HttpMethod.GET),
+                org.mockito.Mockito.any(), org.mockito.Mockito.eq(String.class)))
+            .thenThrow(org.springframework.web.client.HttpClientErrorException.create(
+                org.springframework.http.HttpStatus.I_AM_A_TEAPOT, "418", banHeaders, new byte[0], null));
+        // Opens the ban via a PUBLIC call (getCurrentPrice) -- IllegalStateException is the
+        // friendly wrapper getCurrentPrice's own catch throws; the ban is still recorded before
+        // that wrapping happens.
+        assertThatThrownByRunning(() -> adapter.getCurrentPrice("BTCUSDT", com.tradevision.model.BrokerMode.TESTNET));
+        org.mockito.Mockito.clearInvocations(mockHttp);
+
+        // A SIGNED call right after -- must also fail immediately with no network request,
+        // proving the circuit is one shared state, not two independent ones.
+        Exception thrown = null;
+        try {
+            adapter.getBalance("key", "secret", com.tradevision.model.BrokerMode.TESTNET);
+        } catch (Exception e) {
+            thrown = e;
+        }
+        assertThat(thrown).isNotNull();
+        org.mockito.Mockito.verifyNoInteractions(mockHttp);
+    }
+
+    @Test
+    @DisplayName("P1-3: getCurrentPrice (a GET, genuinely idempotent): a 503 IS retried up to MAX_RETRIES through the shared circuit path, same as a signed call")
+    void getCurrentPrice_transientFailure_stillRetriesThroughSharedPath() throws Exception {
+        var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
+        var adapter = new BinanceBrokerAdapter(exchangeHealth);
+        var mockHttp = org.mockito.Mockito.mock(org.springframework.web.client.RestTemplate.class);
+        injectMockRestTemplate(adapter, mockHttp);
+        org.mockito.Mockito.when(mockHttp.exchange(
+                org.mockito.Mockito.contains("/api/v3/ticker/price"), org.mockito.Mockito.eq(org.springframework.http.HttpMethod.GET),
+                org.mockito.Mockito.any(), org.mockito.Mockito.eq(String.class)))
+            .thenThrow(org.springframework.web.client.HttpServerErrorException.create(
+                org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, "503", org.springframework.http.HttpHeaders.EMPTY, new byte[0], null));
+
+        assertThatThrownByRunning(() -> adapter.getCurrentPrice("BTCUSDT", com.tradevision.model.BrokerMode.TESTNET));
+
+        // MAX_RETRIES=3 -> 4 total attempts (the original + 3 retries) -- proving publicGet
+        // genuinely retries through withCircuitBreakerAndRetry rather than making one blind call.
+        org.mockito.Mockito.verify(mockHttp, org.mockito.Mockito.times(4)).exchange(
+            org.mockito.Mockito.contains("/api/v3/ticker/price"), org.mockito.Mockito.eq(org.springframework.http.HttpMethod.GET),
+            org.mockito.Mockito.any(), org.mockito.Mockito.eq(String.class));
+    }
+
     @Test
     @DisplayName("getBalance (a GET, genuinely idempotent): a 503 IS retried up to MAX_RETRIES -- this fix must not silently disable retries for the calls that were always safe to retry")
     void getBalance_transientFailureOnIdempotentCall_stillRetries() throws Exception {

@@ -794,6 +794,91 @@ class OrderServiceTest {
         assertThat(stuck.getStatus()).isEqualTo(OrderStatus.REJECTED);
     }
 
+    // ── P1-2: "partial fills on CANCELED/EXPIRED being dropped as REJECTED" ──
+
+    @Test
+    @DisplayName("P1-2: broker confirms the order was CANCELED but PARTIALLY filled first -- the real fill is preserved (PARTIALLY_FILLED), not discarded as REJECTED")
+    void recoverStuckSubmittingOrders_brokerConfirmsCanceledWithPartialFill_preservesFill() {
+        Order stuck = stuckOrder(); // requestedQuantity = 1.0
+        when(orderRepo.findByStatusAndCreatedAtBefore(eq(OrderStatus.SUBMITTING), any())).thenReturn(List.of(stuck));
+        when(credentialRepo.findById("cred1")).thenReturn(java.util.Optional.of(activeCredential()));
+        when(credentialService.adapterForCredential(any())).thenReturn(adapter);
+        when(credentialService.decrypt(any(), eq(true))).thenReturn("key");
+        when(credentialService.decrypt(any(), eq(false))).thenReturn("secret");
+        when(adapter.getOrderStatusByClientOrderId(any(), any(), any(), any(), eq("tv-s-abc123")))
+            .thenReturn(new com.tradevision.service.broker.dto.OrderStatusInfo("CANCELED", BigDecimal.valueOf(0.4),
+                BigDecimal.valueOf(100.0), "{\"orderId\":\"real-broker-order-99\",\"status\":\"CANCELED\",\"executedQty\":\"0.4\"}"));
+
+        service.recoverStuckSubmittingOrders();
+
+        // Before this fix: this landed on REJECTED, with filledQuantity never even read -- real
+        // coins already bought on the exchange, with no Order/Position ever reflecting them.
+        assertThat(stuck.getStatus()).isEqualTo(OrderStatus.PARTIALLY_FILLED);
+        assertThat(stuck.getFilledQuantity()).isEqualByComparingTo(BigDecimal.valueOf(0.4));
+        assertThat(stuck.getBrokerOrderId()).isEqualTo("real-broker-order-99");
+    }
+
+    @Test
+    @DisplayName("P1-2: broker confirms the order EXPIRED but was FULLY filled first -- the real fill is preserved (recordBrokerResult's own dedicated EXPIRED branch, now legal from UNKNOWN), not discarded as REJECTED")
+    void recoverStuckSubmittingOrders_brokerConfirmsExpiredWithFullFill_preservesFill() {
+        Order stuck = stuckOrder(); // requestedQuantity = 1.0
+        when(orderRepo.findByStatusAndCreatedAtBefore(eq(OrderStatus.SUBMITTING), any())).thenReturn(List.of(stuck));
+        when(credentialRepo.findById("cred1")).thenReturn(java.util.Optional.of(activeCredential()));
+        when(credentialService.adapterForCredential(any())).thenReturn(adapter);
+        when(credentialService.decrypt(any(), eq(true))).thenReturn("key");
+        when(credentialService.decrypt(any(), eq(false))).thenReturn("secret");
+        when(adapter.getOrderStatusByClientOrderId(any(), any(), any(), any(), eq("tv-s-abc123")))
+            .thenReturn(new com.tradevision.service.broker.dto.OrderStatusInfo("EXPIRED", BigDecimal.valueOf(1.0),
+                BigDecimal.valueOf(100.0), "{\"orderId\":\"real-broker-order-99\",\"status\":\"EXPIRED\",\"executedQty\":\"1.0\"}"));
+
+        service.recoverStuckSubmittingOrders();
+
+        // recordBrokerResult's own EXPIRED branch is checked ahead of the generic quantity-based
+        // classification (matching its "P1-14" fix -- the exchange's own reported terminal
+        // status always wins), so this correctly lands on EXPIRED with the real quantity
+        // recorded, not on REJECTED with the fill discarded (the bug this fix closes) and not on
+        // FILLED either (status already says EXPIRED, not FILLED).
+        assertThat(stuck.getStatus()).isEqualTo(OrderStatus.EXPIRED);
+        assertThat(stuck.getFilledQuantity()).isEqualByComparingTo(BigDecimal.valueOf(1.0));
+    }
+
+    @Test
+    @DisplayName("P1-2: broker confirms the order EXPIRED with a genuine PARTIAL fill -- lands on the dedicated EXPIRED branch with the real quantity recorded, not discarded")
+    void recoverStuckSubmittingOrders_brokerConfirmsExpiredWithPartialFill_preservesFill() {
+        Order stuck = stuckOrder(); // requestedQuantity = 1.0
+        when(orderRepo.findByStatusAndCreatedAtBefore(eq(OrderStatus.SUBMITTING), any())).thenReturn(List.of(stuck));
+        when(credentialRepo.findById("cred1")).thenReturn(java.util.Optional.of(activeCredential()));
+        when(credentialService.adapterForCredential(any())).thenReturn(adapter);
+        when(credentialService.decrypt(any(), eq(true))).thenReturn("key");
+        when(credentialService.decrypt(any(), eq(false))).thenReturn("secret");
+        when(adapter.getOrderStatusByClientOrderId(any(), any(), any(), any(), eq("tv-s-abc123")))
+            .thenReturn(new com.tradevision.service.broker.dto.OrderStatusInfo("EXPIRED_IN_MATCH", BigDecimal.valueOf(0.25),
+                BigDecimal.valueOf(100.0), "{\"orderId\":\"real-broker-order-99\",\"status\":\"EXPIRED_IN_MATCH\",\"executedQty\":\"0.25\"}"));
+
+        service.recoverStuckSubmittingOrders();
+
+        assertThat(stuck.getFilledQuantity()).isEqualByComparingTo(BigDecimal.valueOf(0.25));
+        assertThat(stuck.getStatus()).isNotEqualTo(OrderStatus.REJECTED);
+    }
+
+    @Test
+    @DisplayName("P1-2: broker confirms CANCELED with genuinely ZERO fill -- still safely treated as REJECTED, same as before this fix (nothing real to lose)")
+    void recoverStuckSubmittingOrders_brokerConfirmsCanceledWithZeroFill_stillRejected() {
+        Order stuck = stuckOrder();
+        when(orderRepo.findByStatusAndCreatedAtBefore(eq(OrderStatus.SUBMITTING), any())).thenReturn(List.of(stuck));
+        when(credentialRepo.findById("cred1")).thenReturn(java.util.Optional.of(activeCredential()));
+        when(credentialService.adapterForCredential(any())).thenReturn(adapter);
+        when(credentialService.decrypt(any(), eq(true))).thenReturn("key");
+        when(credentialService.decrypt(any(), eq(false))).thenReturn("secret");
+        when(adapter.getOrderStatusByClientOrderId(any(), any(), any(), any(), eq("tv-s-abc123")))
+            .thenReturn(new com.tradevision.service.broker.dto.OrderStatusInfo("CANCELED", BigDecimal.ZERO,
+                null, "{\"orderId\":\"real-broker-order-99\",\"status\":\"CANCELED\",\"executedQty\":\"0\"}"));
+
+        service.recoverStuckSubmittingOrders();
+
+        assertThat(stuck.getStatus()).isEqualTo(OrderStatus.REJECTED);
+    }
+
     @Test
     @DisplayName("P1-4: broker verification itself fails (network error, not a confirmed absence) -- transitions to RECONCILIATION_REQUIRED, not silently treated as rejected")
     void recoverStuckSubmittingOrders_verificationFails_transitionsToReconciliationRequired() {

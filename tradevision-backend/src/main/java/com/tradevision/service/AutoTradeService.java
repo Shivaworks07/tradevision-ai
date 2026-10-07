@@ -1814,7 +1814,7 @@ public class AutoTradeService {
             // RiskProfileService.resume() refuses to resume while one exists).
             position.setStatus("OPEN");
             position.setAvgEntryPriceUnverified(true);
-            position = positionRepo.save(position);
+            position = savePositionOrRaiseIncident(position, profile, credential, omsOrder, orderReq, result);
             credentialService.audit(profile.getUserId(), credential.getId(), credential.getBroker(), "ENTRY_PRICE_UNVERIFIED",
                 "Order " + result.brokerOrderId() + " on " + signal.getSymbol() + " filled " + filledQty
                     + " but neither the order response nor a fills lookup could confirm a real entry price — "
@@ -1829,7 +1829,7 @@ public class AutoTradeService {
 
         position.setAvgEntryPrice(avgEntryPrice);
         position.setStatus("OPEN");
-        position = positionRepo.save(position);
+        position = savePositionOrRaiseIncident(position, profile, credential, omsOrder, orderReq, result);
         executionContextService.recordFilled(executionId, position.getId());
         // Review finding ("reservation reconciliation is still fundamentally cache-based" --
         // external review, twenty-ninth pass, P1, full context in
@@ -2036,6 +2036,48 @@ public class AutoTradeService {
             if (availableWithinBand.compareTo(quantity) >= 0) return true;
         }
         return availableWithinBand.compareTo(quantity) >= 0;
+    }
+
+    /**
+     * Audit item P1-7 ("AutoTradeService entry flow doesn't handle a Position-save failure after
+     * a confirmed fill" -- external review, confirmed real by direct inspection: the two
+     * positionRepo.save(position) calls in evaluateForProfileLocked (the ENTRY_FILLED_UNVERIFIED
+     * emergency-flatten path and the normal open-position path) previously had no try/catch at
+     * all, unlike the post-placeOrder persistence failure just above both of them in this same
+     * method, which explicitly raises a CRITICAL incident. An exception from this specific save
+     * (e.g. a transient Mongo write failure) propagated silently up to evaluateSignal's own
+     * generic catch-all with no incident ever raised, even though a real broker fill had already
+     * happened and the position genuinely exists on the exchange, unmanaged, for however long it
+     * took anyone to notice.
+     *
+     * The position is NOT left unmanaged forever even without this fix --
+     * PositionMonitorService.reconcileEntryOrders's existing late-fill-discovery sweep (the same
+     * P0-4 machinery that already recovers a crash between recordBrokerResult and this save)
+     * still finds the FILLED order with no matching Position within its own ~60-second
+     * reconciliation cycle and recreates/protects it from there. This wraps the save so the same
+     * immediate-CRITICAL-incident treatment the rest of this method already gives every other
+     * failure mode also applies here, then rethrows unchanged so existing control flow
+     * (propagating to evaluateSignal's own EVALUATION_FAILED handling) is otherwise unaffected.
+     */
+    private Position savePositionOrRaiseIncident(Position position, RiskProfile profile, BrokerCredential credential,
+                                                  com.tradevision.model.Order omsOrder, OrderRequest orderReq, OrderResult result) {
+        try {
+            return positionRepo.save(position);
+        } catch (Exception e) {
+            log.error("Failed to persist Position for a confirmed fill on {} (clientOrderId omsOrder={}, brokerOrderId={}): {} -- "
+                    + "the broker-side fill already happened and the OMS order is already FILLED; the existing late-fill-discovery "
+                    + "reconciliation sweep (PositionMonitorService.reconcileEntryOrders, runs every ~60s) will find this order and "
+                    + "create/protect the position from it, but raising this now for immediate visibility rather than waiting on that sweep.",
+                orderReq.symbol(), omsOrder != null ? omsOrder.getId() : null, result.brokerOrderId(), e.getMessage(), e);
+            incidentService.raiseCritical(profile.getUserId(), credential.getId(), null, omsOrder != null ? omsOrder.getId() : null,
+                orderReq.symbol(), "POSITION_SAVE_FAILED",
+                "A confirmed broker fill for " + orderReq.symbol() + " (brokerOrderId=" + result.brokerOrderId() + ") could not be "
+                    + "persisted as a Position (" + e.getMessage() + "). The exchange-side fill already happened -- the existing "
+                    + "late-fill-discovery reconciliation sweep will recreate and protect this position automatically within about a "
+                    + "minute, but this must be manually confirmed rather than assumed.");
+            if (e instanceof RuntimeException re) throw re;
+            throw new IllegalStateException("Failed to persist Position after a confirmed fill on " + orderReq.symbol(), e);
+        }
     }
 
     private void placeExitOcoOrEmergencyFlatten(RiskProfile profile, BrokerCredential credential, BrokerAdapter adapter,

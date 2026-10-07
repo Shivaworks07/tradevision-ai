@@ -1618,6 +1618,27 @@ class AutoTradeServiceTest {
         verify(fillLedgerService).recordFills(eq("oms-order-1"), any(), any(), eq("user1"), eq("cred1"), eq("BTCUSDT"), eq("BUY"), any(), any(), any(), any());
     }
 
+    /**
+     * Audit item P1-7 ("AutoTradeService entry flow doesn't handle a Position-save failure after
+     * a confirmed fill" -- full context in AutoTradeService.savePositionOrRaiseIncident's own
+     * javadoc): the actual test proving the new incident is raised immediately, rather than
+     * relying silently on PositionMonitorService's own later reconciliation sweep.
+     */
+    @Test
+    @DisplayName("evaluateSignal: positionRepo.save() throwing after a confirmed fill raises a CRITICAL POSITION_SAVE_FAILED incident immediately, naming the broker order")
+    void positionSaveFailure_raisesCriticalIncidentImmediately() {
+        com.tradevision.model.Order realOmsOrder = new com.tradevision.model.Order();
+        realOmsOrder.setId("oms-order-1");
+        when(orderService.create(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(realOmsOrder);
+        when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(successfulFill(1.0, 100.0, List.of()));
+        when(positionRepo.save(any())).thenThrow(new RuntimeException("simulated Mongo write failure"));
+
+        service.evaluateSignal("user1", signal);
+
+        verify(incidentService).raiseCritical(eq("user1"), eq("cred1"), isNull(), eq("oms-order-1"), eq("BTCUSDT"),
+            eq("POSITION_SAVE_FAILED"), contains("simulated Mongo write failure"));
+    }
+
     // ── Position.ledgerRecordingIncomplete ("Position created before ledger is guaranteed") ──
 
     @Test

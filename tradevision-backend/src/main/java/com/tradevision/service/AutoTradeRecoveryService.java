@@ -188,7 +188,22 @@ public class AutoTradeRecoveryService {
                 TradeCallRecord.class);
             if (reset == null) continue; // already completed since the query above — nothing to recover
             log.warn("Recovering stuck signal {} on {} for user {} — re-dispatching.", signal.getId(), signal.getSymbol(), signal.getUserId());
-            autoTradeService.evaluateSignal(signal.getUserId(), signal);
+            // Audit item P1-7 ("AsyncConfig's autoTradeExecutor has no explicit rejection
+            // policy, and this call site assumed it couldn't fail" -- full context in
+            // TradeCallService.saveCall's own identical fix): autoTradeExecutor's real default
+            // rejection policy is AbortPolicy, which throws RejectedExecutionException
+            // SYNCHRONOUSLY under real queue saturation -- uncaught here, that would abort this
+            // entire recovery pass partway through its loop, leaving every signal after this one
+            // un-recovered this cycle. The signal was already reset to PENDING just above
+            // regardless of dispatch outcome, so it's already eligible for the next 2-minute
+            // pass to pick back up -- catching and continuing is strictly better than letting
+            // one saturated dispatch abort the rest of this pass.
+            try {
+                autoTradeService.evaluateSignal(signal.getUserId(), signal);
+            } catch (java.util.concurrent.RejectedExecutionException e) {
+                log.warn("Re-dispatch of stuck signal {} was rejected (autoTradeExecutor saturated) -- it's already reset to PENDING "
+                    + "and will be retried on the next recovery pass.", signal.getId(), e);
+            }
         }
     }
 

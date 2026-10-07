@@ -16,6 +16,8 @@ import java.util.function.Function;
 @RequiredArgsConstructor
 public class TradeCallService {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(TradeCallService.class);
+
     private final TradeCallRepository callRepo;
     private final AutoTradeService autoTradeService;
     // Review finding ("OMS/ExecutedOrder full unification" -- P1, full context in
@@ -192,8 +194,27 @@ public class TradeCallService {
         callRepo.save(r);
 
         // Never let auto-trade evaluation break signal saving for the caller.
+        //
+        // Audit item P1-7 ("AsyncConfig's autoTradeExecutor has no explicit rejection policy,
+        // and this call site assumed it couldn't fail" -- external review, confirmed real by
+        // direct inspection: autoTradeExecutor never calls setRejectedExecutionHandler, so its
+        // real default is ThreadPoolExecutor.AbortPolicy -- under real queue saturation (core 4
+        // / max 16 / queue 200 all exhausted), Spring's @Async proxy throws
+        // RejectedExecutionException SYNCHRONOUSLY, on THIS thread, right out of the call below
+        // -- not asynchronously, and not silently. That directly broke the invariant this
+        // comment already promised. The signal itself is safe either way -- it was already
+        // saved above, unconditionally, before this call -- and AutoTradeRecoveryService's own
+        // recoverStuckSignals() sweep (every 2 minutes) will pick up and re-dispatch any
+        // PENDING signal whose evaluation never actually started, so catching and logging here
+        // rather than reinventing a retry is the correct, minimal fix.
         if (dispatchToAutoTrade) {
-            autoTradeService.evaluateSignal(userId, r);
+            try {
+                autoTradeService.evaluateSignal(userId, r);
+            } catch (java.util.concurrent.RejectedExecutionException e) {
+                log.warn("Auto-trade evaluation for signal {} was rejected (autoTradeExecutor saturated) -- the signal itself is "
+                    + "already saved as PENDING, and AutoTradeRecoveryService's own recovery sweep will dispatch it shortly.",
+                    r.getId(), e);
+            }
         }
 
         return ApiResponse.ok("Saved.", r);

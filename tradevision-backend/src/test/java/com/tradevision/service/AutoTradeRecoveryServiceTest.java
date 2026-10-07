@@ -19,6 +19,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -86,6 +87,30 @@ class AutoTradeRecoveryServiceTest {
             .thenReturn(stuck); // reset succeeded
 
         service.recoverStuckSignals();
+
+        verify(autoTradeService).evaluateSignal("user1", stuck);
+    }
+
+    /**
+     * Audit item P1-7 ("AsyncConfig's autoTradeExecutor has no explicit rejection policy, and
+     * this call site assumed it couldn't fail" -- full context in recoverStuckSignals' own
+     * updated comment): confirms a RejectedExecutionException from a saturated autoTradeExecutor
+     * doesn't propagate out of recoverStuckSignals() and abort the rest of its pass -- the
+     * signal was already reset to PENDING before the dispatch, so it's already eligible for the
+     * next recovery pass regardless of this one's outcome.
+     */
+    @Test
+    @DisplayName("recoverStuckSignals: autoTradeExecutor rejecting the re-dispatch (RejectedExecutionException) does not propagate out of this method -- the signal stays reset to PENDING for the next pass")
+    void stuckPendingSignal_dispatchRejected_doesNotPropagate() {
+        stubAllEmpty();
+        TradeCallRecord stuck = stuckSignal("PENDING");
+        when(callRepo.findByAutoTradeEvalStatusAndCalledAtBeforeAndSignalStatusNotIn(eq("PENDING"), any(), any())).thenReturn(List.of(stuck));
+        when(mongoTemplate.findAndModify(any(Query.class), any(Update.class), eq(TradeCallRecord.class)))
+            .thenReturn(stuck); // reset succeeded
+        doThrow(new java.util.concurrent.RejectedExecutionException("pool saturated"))
+            .when(autoTradeService).evaluateSignal(any(), any());
+
+        assertThatCode(() -> service.recoverStuckSignals()).doesNotThrowAnyException();
 
         verify(autoTradeService).evaluateSignal("user1", stuck);
     }

@@ -212,10 +212,17 @@ public class BrokerCredentialService {
         }
 
         BrokerCredential credential = new BrokerCredential();
+        // Audit item P2 ("weak AAD binding"), full context in CredentialEncryptionService's own
+        // header javadoc: the id is pre-generated here (same UUID-string-as-Mongo-_id pattern
+        // already used elsewhere in this codebase -- see AutoTradeService's identical
+        // position.setId(UUID.randomUUID().toString())) specifically so it exists BEFORE
+        // encryption, letting the ciphertext be bound to the exact row it will live in from the
+        // very first write, rather than needing a separate re-encrypt-after-save step.
+        credential.setId(java.util.UUID.randomUUID().toString());
         credential.setUserId(userId);
         credential.setBroker(req.getBroker());
-        credential.setEncryptedApiKey(encryption.encrypt(req.getApiKey(), "apiKey")); // P2-6 fix: AAD-bound to which field this ciphertext belongs to
-        credential.setEncryptedApiSecret(encryption.encrypt(req.getApiSecret(), "apiSecret"));
+        credential.setEncryptedApiKey(encryption.encrypt(req.getApiKey(), fieldContext(credential.getId(), "apiKey")));
+        credential.setEncryptedApiSecret(encryption.encrypt(req.getApiSecret(), fieldContext(credential.getId(), "apiSecret")));
         credential.setKeyHint(lastFour(req.getApiKey()));
         credential.setMode(mode);
         credential.setWithdrawalEnabled(false);
@@ -260,8 +267,13 @@ public class BrokerCredentialService {
         pending.setToken(token);
         pending.setUserId(userId);
         pending.setBroker(req.getBroker());
-        pending.setEncryptedApiKey(encryption.encrypt(req.getApiKey(), "apiKey")); // P2-6 fix: AAD-bound context
-        pending.setEncryptedApiSecret(encryption.encrypt(req.getApiSecret(), "apiSecret"));
+        // Audit item P2 ("weak AAD binding"), full context in PendingLiveConnect's own updated
+        // class javadoc: the FUTURE credential's id, pre-generated now so the ciphertexts below
+        // are bound (via AAD) to the exact row confirmLiveConnect will actually save them into.
+        String futureCredentialId = java.util.UUID.randomUUID().toString();
+        pending.setCredentialId(futureCredentialId);
+        pending.setEncryptedApiKey(encryption.encrypt(req.getApiKey(), fieldContext(futureCredentialId, "apiKey")));
+        pending.setEncryptedApiSecret(encryption.encrypt(req.getApiSecret(), fieldContext(futureCredentialId, "apiSecret")));
         pending.setKeyHint(lastFour(req.getApiKey()));
         pending.setAccountUid(safeGetAccountUid(adapter, req.getApiKey(), req.getApiSecret(), BrokerMode.LIVE));
         pending.setExpiresAt(Instant.now().plus(LIVE_CONNECT_CONFIRM_WINDOW));
@@ -285,6 +297,11 @@ public class BrokerCredentialService {
         pendingLiveConnectRepo.deleteById(token); // one-time use, same as the old map's own remove() semantics
 
         BrokerCredential credential = new BrokerCredential();
+        // Audit item P2 ("weak AAD binding"), full context in PendingLiveConnect's own updated
+        // class javadoc: MUST reuse the same pre-generated id the pending record's own ciphertexts
+        // were already bound to -- a freshly-generated id here would make them unreadable (the
+        // AAD context would no longer match what they were actually encrypted under).
+        credential.setId(pending.getCredentialId());
         credential.setUserId(userId);
         credential.setBroker(pending.getBroker());
         credential.setEncryptedApiKey(pending.getEncryptedApiKey());
@@ -396,13 +413,25 @@ public class BrokerCredentialService {
             .orElseThrow(() -> new IllegalArgumentException("No active broker credential found for this user with that id."));
     }
 
+    /** Audit item P2 ("weak AAD binding"), full context in CredentialEncryptionService's own
+     *  header javadoc: row-scoped context, not just field-scoped -- a ciphertext that ended up
+     *  on the WRONG credential's row (not just the wrong field) now fails decryption outright. */
+    private static String fieldContext(String credentialId, String field) {
+        return credentialId + ":" + field;
+    }
+
     String decrypt(BrokerCredential credential, boolean apiKeyNotSecret) {
         // P2-6 fix ("no AAD" -- full context in CredentialEncryptionService's own header
-        // javadoc): the same "apiKey"/"apiSecret" context each value was originally encrypted
-        // under above -- a ciphertext accidentally stored in, or read from, the wrong field
-        // fails decryption outright instead of silently succeeding.
-        return apiKeyNotSecret ? encryption.decrypt(credential.getEncryptedApiKey(), "apiKey")
-                                : encryption.decrypt(credential.getEncryptedApiSecret(), "apiSecret");
+        // javadoc): field-scoped context -- a ciphertext accidentally stored in, or read from,
+        // the wrong field fails decryption outright instead of silently succeeding.
+        //
+        // Audit item P2 ("weak AAD binding"): the strong context above is additionally
+        // row-scoped (fieldContext), with decryptWithLegacyFallback covering every row still
+        // encrypted under the old, generic field-only context from before this fix -- see that
+        // method's own javadoc for exactly when the fallback does and doesn't apply.
+        String field = apiKeyNotSecret ? "apiKey" : "apiSecret";
+        String encoded = apiKeyNotSecret ? credential.getEncryptedApiKey() : credential.getEncryptedApiSecret();
+        return encryption.decryptWithLegacyFallback(encoded, fieldContext(credential.getId(), field), field);
     }
 
     BrokerAdapter adapterForCredential(BrokerCredential credential) {
@@ -468,8 +497,8 @@ public class BrokerCredentialService {
         String newAccountUid = safeGetAccountUid(adapter, newApiKey, newApiSecret, credential.getMode());
         checkAccountUidMatches(userId, credential, newAccountUid);
 
-        credential.setEncryptedApiKey(encryption.encrypt(newApiKey, "apiKey"));
-        credential.setEncryptedApiSecret(encryption.encrypt(newApiSecret, "apiSecret"));
+        credential.setEncryptedApiKey(encryption.encrypt(newApiKey, fieldContext(credential.getId(), "apiKey")));
+        credential.setEncryptedApiSecret(encryption.encrypt(newApiSecret, fieldContext(credential.getId(), "apiSecret")));
         credential.setKeyHint(lastFour(newApiKey));
         credential.setLastValidatedAt(LocalDateTime.now());
         if (credential.getAccountUid() == null) credential.setAccountUid(newAccountUid); // backfill, see field javadoc
@@ -503,8 +532,13 @@ public class BrokerCredentialService {
         checkAccountUidMatches(userId, credential, newAccountUid);
 
         String token = java.util.UUID.randomUUID().toString();
-        pendingRotations.put(token, new PendingRotation(userId, credentialId, encryption.encrypt(newApiKey, "apiKey"),
-            encryption.encrypt(newApiSecret, "apiSecret"), lastFour(newApiKey), newAccountUid, Instant.now().plus(LIVE_CONNECT_CONFIRM_WINDOW)));
+        // Audit item P2 ("weak AAD binding"): rotation keeps the SAME credentialId throughout
+        // (confirmApiKeyRotation writes these ciphertexts straight onto the existing credential,
+        // never a new row), so it's already known here and used directly -- no pre-generation
+        // or later re-encrypt-after-save step needed, unlike the brand-new-credential case in
+        // requestLiveConnect/confirmLiveConnect below.
+        pendingRotations.put(token, new PendingRotation(userId, credentialId, encryption.encrypt(newApiKey, fieldContext(credentialId, "apiKey")),
+            encryption.encrypt(newApiSecret, fieldContext(credentialId, "apiSecret")), lastFour(newApiKey), newAccountUid, Instant.now().plus(LIVE_CONNECT_CONFIRM_WINDOW)));
         audit(userId, credentialId, credential.getBroker(), "API_KEY_ROTATION_REQUESTED",
             "LIVE API key rotation validated (permissions and account identity both confirmed), awaiting explicit confirmation.");
         return token;

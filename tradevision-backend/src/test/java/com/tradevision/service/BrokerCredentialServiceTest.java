@@ -120,6 +120,54 @@ class BrokerCredentialServiceTest {
         verify(credentialRepo).save(any());
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Audit item P2 ("CredentialEncryptionService weak AAD binding"), full context in that
+    // class's own header javadoc: proves BrokerCredentialService's own side of the fix -- the
+    // context strings it actually passes to encrypt()/decryptWithLegacyFallback are bound to
+    // the specific credential row, not just the field name, and the row id used is the SAME one
+    // the saved credential itself ends up with (so the ciphertext and the row it's bound to
+    // never drift apart). The cryptographic half of the fix (that a mismatched context really
+    // does fail decryption) is covered directly against the real CredentialEncryptionService in
+    // CredentialEncryptionServiceTest; this mock-based test is about call-site correctness.
+    // ---------------------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("P2 fix (weak AAD binding): connect() encrypts apiKey/apiSecret under a context bound to the SAME id the saved credential itself carries, not a bare field name")
+    void connect_encryptsUnderRowScopedContext_matchingTheSavedCredentialId() {
+        when(adapter.getAccountPermissions("testnet-key", "testnet-secret", BrokerMode.TESTNET))
+            .thenReturn(new AccountPermissions(true, false, true));
+        ArgumentCaptor<BrokerCredential> savedCaptor = ArgumentCaptor.forClass(BrokerCredential.class);
+        ArgumentCaptor<String> apiKeyContextCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> apiSecretContextCaptor = ArgumentCaptor.forClass(String.class);
+
+        service.connect("user1", testnetReq());
+
+        verify(encryption).encrypt(eq("testnet-key"), apiKeyContextCaptor.capture());
+        verify(encryption).encrypt(eq("testnet-secret"), apiSecretContextCaptor.capture());
+        verify(credentialRepo).save(savedCaptor.capture());
+        String savedId = savedCaptor.getValue().getId();
+
+        assertThat(savedId).isNotBlank(); // pre-generated BEFORE encryption, not left to Mongo to assign after
+        assertThat(apiKeyContextCaptor.getValue()).isEqualTo(savedId + ":apiKey");
+        assertThat(apiSecretContextCaptor.getValue()).isEqualTo(savedId + ":apiSecret");
+    }
+
+    @Test
+    @DisplayName("P2 fix (weak AAD binding): the package-private decrypt(credential, ...) helper asks for the row-scoped context first, with the bare field name only as CredentialEncryptionService's own legacy fallback -- never the other way around")
+    void decrypt_requestsRowScopedContext_withBareFieldNameAsLegacyFallbackOnly() {
+        BrokerCredential credential = new BrokerCredential();
+        credential.setId("cred-123");
+        credential.setEncryptedApiKey("enc(the-api-key)");
+        credential.setEncryptedApiSecret("enc(the-api-secret)");
+        when(encryption.decryptWithLegacyFallback(eq("enc(the-api-key)"), eq("cred-123:apiKey"), eq("apiKey")))
+            .thenReturn("the-api-key");
+        when(encryption.decryptWithLegacyFallback(eq("enc(the-api-secret)"), eq("cred-123:apiSecret"), eq("apiSecret")))
+            .thenReturn("the-api-secret");
+
+        assertThat(service.decrypt(credential, true)).isEqualTo("the-api-key");
+        assertThat(service.decrypt(credential, false)).isEqualTo("the-api-secret");
+    }
+
     /**
      * Real bug, confirmed by the person's own live test against Binance's actual Spot Testnet:
      * this check used to apply unconditionally to both LIVE and TESTNET, rejecting every genuine

@@ -2115,6 +2115,13 @@ public class AutoTradeService {
         if (omsOrder != null) {
             omsOrder.setStopLossTriggerPrice(stopTrigger);
             omsOrder.setTakeProfitPrice(takeProfit);
+            // Audit fix (P0-3 follow-up, full context in Order.stopLossLimitGapPercent's own
+            // field javadoc): stamped on the ENTRY order record (the one every later
+            // resize/late-fill/remainder re-placement for this position reads TP/SL back from)
+            // so this position's protection always re-derives its stop-limit using the SAME gap
+            // its original OCO was placed under, never a live config value that may have since
+            // changed.
+            omsOrder.setStopLossLimitGapPercent(stopLossLimitGapPercent);
         }
 
         // Review item #6: the signal's TP/SL were validated against price at signal time, but
@@ -2179,6 +2186,7 @@ public class AutoTradeService {
             ocoOmsOrder.setTakeProfitPrice(takeProfit);
             ocoOmsOrder.setStopLossTriggerPrice(stopTrigger);
             ocoOmsOrder.setStopLossLimitPrice(stopLimit);
+            ocoOmsOrder.setStopLossLimitGapPercent(stopLossLimitGapPercent);
             orderService.markRiskAccepted(ocoOmsOrder);
             orderService.markSubmitting(ocoOmsOrder);
         } catch (Exception e) {

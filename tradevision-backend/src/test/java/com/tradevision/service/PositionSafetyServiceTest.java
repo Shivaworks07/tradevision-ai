@@ -421,7 +421,66 @@ class PositionSafetyServiceTest {
         assertThat(position.getStatus()).isEqualTo("FLATTENING"); // naked, never falsely marked closed
         assertThat(profile.isTradingHalted()).isTrue();
         verify(credentialService).audit(any(), any(), any(), eq("EMERGENCY_FLATTEN_THROUGH_STOP_ESCALATING"), any());
-        verify(credentialService).audit(any(), any(), any(), eq("EMERGENCY_FLATTEN_FAILED"), contains("through-stop escalation retry"));
+        verify(credentialService).audit(any(), any(), any(), eq("EMERGENCY_FLATTEN_FAILED"), contains("re-protect escalation retry"));
+    }
+
+    /**
+     * Audit fix (P0-2 follow-up #3 — user-flagged, confirmed real: "if the price is above the
+     * old take-profit when re-protection runs, it returns FAILED and the position stays
+     * unprotected. That means the position is in profit, so a plain market sell is the right
+     * move" — full context in tryReprotectAfterFailedFlatten's own updated javadoc). Mirrors the
+     * through-stop escalation tests above, but for the OPPOSITE, favorable direction: price has
+     * moved past the old take-profit, not through the old stop.
+     */
+    @Test
+    @DisplayName("attemptFlatten: outright failure exhausts its retry, and price has already moved past the old take-profit (re-protect OCO unsafe) -- escalates to a market sell that locks in the gain")
+    void orderFailsOutrightTwice_priceThroughTakeProfit_escalatesAndSellSucceeds() {
+        Position position = openPosition(1.0, 100, 10.0);
+        when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(
+            new OrderResult(false, null, "c1", "REJECTED", null, null, "{}", "insufficient balance", List.of()), // attempt 0
+            new OrderResult(false, null, "c2", "REJECTED", null, null, "{}", "insufficient balance", List.of()), // attempt 1 retry
+            fullSuccess(1.0, 121, List.of())); // escalation attempt — succeeds, locking in the gain
+        com.tradevision.model.Order priorOco = new com.tradevision.model.Order();
+        priorOco.setId("oco-order-1");
+        priorOco.setTakeProfitPrice(BigDecimal.valueOf(120));
+        priorOco.setStopLossTriggerPrice(BigDecimal.valueOf(90));
+        priorOco.setStopLossLimitPrice(BigDecimal.valueOf(89.5));
+        when(orderRepository.findByPositionIdAndOrderRoleOrderByCreatedAtDesc(position.getId(), "OCO_EXIT"))
+            .thenReturn(List.of(priorOco));
+        // Price has risen to 121 -- PAST the old take-profit of 120, not still bracketed by it.
+        when(adapter.getCurrentPrice(position.getSymbol(), credential.getMode())).thenReturn(BigDecimal.valueOf(121));
+
+        service.emergencyFlatten(credential, adapter, "key", "secret", position, "test reason");
+
+        verify(adapter, times(3)).placeOrder(any(), any(), any(), any()); // attempt 0, its one retry, then exactly one escalation attempt
+        verify(adapter, org.mockito.Mockito.never()).placeExitOco(any(), any(), any(), any(), any(), any(), any(), any(), any()); // never tried to re-place the old, now-unsafe OCO
+        verify(credentialService).audit(any(), any(), any(), eq("EMERGENCY_FLATTEN_THROUGH_TAKEPROFIT_ESCALATING"), any());
+        assertThat(position.getStatus()).isEqualTo("NAKED_FLATTENED"); // the escalation sell closed it
+        assertThat(profile.isTradingHalted()).isTrue();
+    }
+
+    @Test
+    @DisplayName("attemptFlatten: outright failure exhausts its retry, price has moved past the old take-profit, AND the escalation sell also fails -- halts naked with no further recursion")
+    void orderFailsOutrightTwice_priceThroughTakeProfit_escalationAlsoFails_haltsNakedNoRecursion() {
+        Position position = openPosition(1.0, 100, 10.0);
+        when(adapter.placeOrder(any(), any(), any(), any()))
+            .thenReturn(new OrderResult(false, null, "c1", "REJECTED", null, null, "{}", "insufficient balance", List.of()));
+        com.tradevision.model.Order priorOco = new com.tradevision.model.Order();
+        priorOco.setId("oco-order-1");
+        priorOco.setTakeProfitPrice(BigDecimal.valueOf(120));
+        priorOco.setStopLossTriggerPrice(BigDecimal.valueOf(90));
+        priorOco.setStopLossLimitPrice(BigDecimal.valueOf(89.5));
+        when(orderRepository.findByPositionIdAndOrderRoleOrderByCreatedAtDesc(position.getId(), "OCO_EXIT"))
+            .thenReturn(List.of(priorOco));
+        when(adapter.getCurrentPrice(position.getSymbol(), credential.getMode())).thenReturn(BigDecimal.valueOf(121));
+
+        service.emergencyFlatten(credential, adapter, "key", "secret", position, "test reason");
+
+        verify(adapter, times(3)).placeOrder(any(), any(), any(), any());
+        assertThat(position.getStatus()).isEqualTo("FLATTENING");
+        assertThat(profile.isTradingHalted()).isTrue();
+        verify(credentialService).audit(any(), any(), any(), eq("EMERGENCY_FLATTEN_THROUGH_TAKEPROFIT_ESCALATING"), any());
+        verify(credentialService).audit(any(), any(), any(), eq("EMERGENCY_FLATTEN_FAILED"), contains("re-protect escalation retry"));
     }
 
     @Test

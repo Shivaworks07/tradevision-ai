@@ -80,6 +80,23 @@
 #    partially-out-of-memory state inside a container Kubernetes doesn't consider unhealthy.
 #    STILL a disclosed starting guess, same as the rest of this section -- profile against real
 #    traffic and adjust.
+#
+# Audit item P2 ("k8s hardening"): external review, confirmed real by direct inspection -- this
+# manifest had no securityContext at all, at either the Pod or container level, before this fix.
+# With nothing set, a container runs exactly as its image's own Dockerfile built it: typically as
+# root, with privilege escalation allowed, every default Linux capability retained, and a
+# writable root filesystem -- none of which this application's own code actually needs (confirmed
+# by direct inspection: this codebase has no file-write anywhere in src/main/java, Spring Boot
+# serves everything over HTTP from memory/Mongo, and logging goes to stdout, never a local file).
+# Fixed below with the standard, minimal-privilege baseline for a stateless HTTP service:
+# runAsNonRoot + a fixed non-root UID/GID (so this works even if the image's own Dockerfile never
+# declared a USER), a read-only root filesystem (with the one genuinely needed writable path --
+# the JVM/Tomcat's own temp-file usage -- given its own small emptyDir volume rather than loosened
+# wholesale), privilege escalation disabled, and every Linux capability dropped (none are used).
+# Still a disclosed starting point, same honesty as the rest of this manifest: if your actual
+# Dockerfile's ENTRYPOINT needs a capability this drops (it shouldn't, for a plain java -jar), or
+# your build process writes somewhere this UID can't reach, that's a real, separate thing to fix
+# in the image itself -- not a reason to loosen this baseline back open.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -122,6 +139,17 @@ spec:
       labels:
         app: tradevision-backend
     spec:
+      # Audit item P2 ("k8s hardening"), full context in this Deployment's own header comment
+      # above: Pod-level baseline -- a fixed non-root UID/GID/fsGroup so the emptyDir volumes
+      # below are actually writable by the container's own non-root user, and the default
+      # (RuntimeDefault) seccomp profile rather than Unconfined.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: tradevision-backend
           # Review finding ("Kubernetes remains a starting manifest" -- twenty-fourth pass, P2):
@@ -133,6 +161,19 @@ spec:
           # generate a real one, so a concrete, non-`latest` placeholder is the honest fix here.
           image: tradevision-backend:REPLACE_WITH_YOUR_BUILD_TAG_OR_DIGEST
 
+          # Audit item P2 ("k8s hardening"), full context in this Deployment's own header comment
+          # above: container-level baseline -- no capabilities, no privilege escalation, no
+          # writable root filesystem, matching the Pod-level runAsNonRoot above with its own
+          # explicit restatement (defense in depth against either being set without the other).
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities:
+              drop:
+                - ALL
           ports:
             - containerPort: 8080
           envFrom:
@@ -146,8 +187,19 @@ spec:
             # makes a genuine OOM kill the JVM outright so Kubernetes' own restart policy handles
             # it cleanly, instead of the process limping on in a partially-out-of-memory state
             # that this container's own liveness probe might not catch quickly.
+            #
+            # Audit item P2 ("k8s hardening"): java.io.tmpdir pinned to the writable emptyDir
+            # mounted below -- with readOnlyRootFilesystem: true just above, the JVM's own default
+            # temp directory (normally under the now-read-only /tmp) would otherwise be
+            # unwritable, which can break things as basic as JIT/NIO scratch files.
             - name: JAVA_TOOL_OPTIONS
-              value: "-XX:MaxRAMPercentage=70.0 -XX:+ExitOnOutOfMemoryError"
+              value: "-XX:MaxRAMPercentage=70.0 -XX:+ExitOnOutOfMemoryError -Djava.io.tmpdir=/tmp"
+          volumeMounts:
+            # Audit item P2 ("k8s hardening"): the one writable path this container genuinely
+            # needs with readOnlyRootFilesystem: true -- JVM/Tomcat scratch files -- given its own
+            # small, non-persistent emptyDir rather than loosening the root filesystem itself.
+            - name: tmp
+              mountPath: /tmp
           readinessProbe:
             httpGet:
               path: /actuator/health/readiness
@@ -180,6 +232,14 @@ spec:
             preStop:
               exec:
                 command: ["sleep", "5"]
+      # Audit item P2 ("k8s hardening"), full context on this Deployment's own header comment and
+      # the container's own volumeMounts above: backs the one writable path this container needs
+      # under readOnlyRootFilesystem: true. emptyDir is ephemeral and node-local by design --
+      # correct here, since JVM/Tomcat scratch files have no reason to survive a pod restart or
+      # be shared across replicas.
+      volumes:
+        - name: tmp
+          emptyDir: {}
       terminationGracePeriodSeconds: 45
 ---
 apiVersion: v1

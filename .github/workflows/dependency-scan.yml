@@ -123,7 +123,7 @@ jobs:
           -Dformats=HTML,JSON
       - name: Upload Dependency-Check report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: backend-dependency-check-report
           path: tradevision-backend/target/dependency-check-report.*

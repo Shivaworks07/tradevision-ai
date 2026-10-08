@@ -143,6 +143,14 @@ public class BrokerCredentialService {
      */
     private final com.tradevision.repository.PendingLiveConnectRepository pendingLiveConnectRepo;
 
+    // Audit fix (P1-1 follow-up -- external review, second pass: "check it when a LIVE
+    // credential is connected" -- full context in AlertChannelStartupGuard's own
+    // requireAlertChannelCoverage javadoc): the runtime half of that fix. confirmLiveConnect is
+    // the actual moment a LIVE credential is persisted, so it is the right place to refuse the
+    // connection outright for a user with no alert channel, rather than waiting for this to be
+    // caught (or not) at the next process restart.
+    private final com.tradevision.config.AlertChannelStartupGuard alertChannelStartupGuard;
+
     /** Review finding (P1 #9, full context in rotateApiKey's own javadoc): the same in-memory,
      *  deliberately-not-durable pattern as pendingLiveConnects above, for a LIVE credential's
      *  own two-step key rotation. */
@@ -295,6 +303,14 @@ public class BrokerCredentialService {
             throw new IllegalArgumentException("Confirmation token is invalid or expired — request LIVE connect again.");
         }
         pendingLiveConnectRepo.deleteById(token); // one-time use, same as the old map's own remove() semantics
+
+        // Audit fix (P1-1 follow-up, full context in AlertChannelStartupGuard's own
+        // requireAlertChannelCoverage javadoc): refuse to actually create this LIVE credential
+        // if this account has no alert channel reachable for them -- same
+        // fail-before-the-row-exists posture as the withdrawal/trading-permission checks in
+        // doConnect above, applied to the "would a CRITICAL incident on this account page
+        // anybody" question instead.
+        alertChannelStartupGuard.requireAlertChannelCoverage(userId);
 
         BrokerCredential credential = new BrokerCredential();
         // Audit item P2 ("weak AAD binding"), full context in PendingLiveConnect's own updated

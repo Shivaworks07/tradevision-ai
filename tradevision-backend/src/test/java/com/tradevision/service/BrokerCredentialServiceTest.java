@@ -55,6 +55,14 @@ class BrokerCredentialServiceTest {
     // an instance-local map -- backed here by a real in-memory map (see setup() below) so this
     // mock behaves statefully across the two calls, exactly like the map it replaces used to.
     @Mock com.tradevision.repository.PendingLiveConnectRepository pendingLiveConnectRepo;
+    // Audit fix (P1-1 follow-up, full context in AlertChannelStartupGuard's own
+    // requireAlertChannelCoverage javadoc): confirmLiveConnect now calls this synchronously
+    // before persisting -- an unstubbed mock's void method already no-ops (Mockito's own real
+    // default), so every existing confirmLiveConnect test here continues to represent "this user
+    // has an alert channel configured" exactly as it implicitly did before this fix existed. A
+    // test that specifically wants to exercise the "no alert channel" refusal stubs this to
+    // throw instead.
+    @Mock com.tradevision.config.AlertChannelStartupGuard alertChannelStartupGuard;
     private final java.util.Map<String, com.tradevision.model.PendingLiveConnect> fakePendingLiveConnectStore = new java.util.HashMap<>();
 
     @InjectMocks BrokerCredentialService service;
@@ -316,6 +324,28 @@ class BrokerCredentialServiceTest {
         assertThatThrownBy(() -> service.confirmLiveConnect("some-other-user", token))
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessageContaining("invalid or expired");
+    }
+
+    /**
+     * Audit fix (P1-1 follow-up -- external review, second pass: "check it when a LIVE
+     * credential is connected" -- full context in AlertChannelStartupGuard's own
+     * requireAlertChannelCoverage javadoc). This is the runtime check's own test: a user with no
+     * alert channel at all must not be allowed to end up with a LIVE credential, even though
+     * every other validation (key permissions, token, user match) passes cleanly.
+     */
+    @Test
+    @DisplayName("confirmLiveConnect: refuses to persist a LIVE credential for a user with no alert channel configured, and consumes the one-time token regardless")
+    void confirmLiveConnect_refusesWhenNoAlertChannelConfigured() {
+        when(adapter.getAccountPermissions(any(), any(), eq(BrokerMode.LIVE)))
+            .thenReturn(new AccountPermissions(true, false, true));
+        String token = service.requestLiveConnect("user1", liveReq());
+        doThrow(new IllegalStateException("Cannot connect a LIVE broker credential: your account has no alert channel configured"))
+            .when(alertChannelStartupGuard).requireAlertChannelCoverage("user1");
+
+        assertThatThrownBy(() -> service.confirmLiveConnect("user1", token))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("alert channel");
+        verify(credentialRepo, never()).save(any());
     }
 
     /**

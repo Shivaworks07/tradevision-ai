@@ -13,10 +13,4 @@ public interface UserRepository extends MongoRepository<User, String> {
     long countByCreatedAtAfter(java.time.LocalDateTime since);
     long countByLastLoginAfter(java.time.LocalDateTime since);
     long countByRole(String role);
-    // P1-1 fix ("No startup check that an alert channel is configured before LIVE trading is
-    // possible" -- full context in AlertChannelStartupGuard's own class javadoc): AuthService.
-    // setAlertWebhookUrl always normalizes a blank/whitespace-only URL to null before saving
-    // (see that method's own javadoc), so "not null" here is already exactly "a real, non-blank
-    // webhook URL is configured" -- no separate blank-string filtering is needed.
-    boolean existsByAlertWebhookUrlIsNotNull();
 }

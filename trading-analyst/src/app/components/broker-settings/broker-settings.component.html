@@ -98,13 +98,20 @@
         <div class="ss-title">Balance — {{ sel.broker }} ({{ sel.mode }})</div>
         @if (balances().length) {
           <div class="bs-balances">
-            @for (b of balances(); track b) {
+            @for (b of pagedBalances(); track b) {
               <div class="bal-row">
                 <span>{{ b.asset }}</span>
                 <span>{{ b.free }}</span>
               </div>
             }
           </div>
+          @if (balTotalPages() > 1) {
+            <div class="bs-pager">
+              <button class="btn-ghost-sm" [disabled]="balPage() === 0" (click)="balPrevPage()">← Prev</button>
+              <span class="bs-pager-info">Page {{ balPage() + 1 }} of {{ balTotalPages() }}</span>
+              <button class="btn-ghost-sm" [disabled]="balPage() >= balTotalPages() - 1" (click)="balNextPage()">Next →</button>
+            </div>
+          }
         } @else {
           <div class="ss-desc">No non-zero balances (normal on a fresh testnet account).</div>
         }

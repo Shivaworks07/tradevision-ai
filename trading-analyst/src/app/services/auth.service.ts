@@ -56,8 +56,8 @@ export class AuthService {
   initiateRegister(data: any): Observable<any> {
     return this.http.post(`${this.API}/auth/register/initiate`, data);
   }
-  verifyRegister(email: string, otp: string): Observable<any> {
-    return this.http.post(`${this.API}/auth/register/verify`, { email, otp, purpose:'REGISTER' }, { withCredentials: true }).pipe(
+  verifyRegister(email: string, otp: string, firstName?: string, lastName?: string): Observable<any> {
+    return this.http.post(`${this.API}/auth/register/verify`, { email, otp, purpose:'REGISTER', firstName, lastName }, { withCredentials: true }).pipe(
       tap((r: any) => { if (r.success && r.data) this.saveSession(r.data); })
     );
   }

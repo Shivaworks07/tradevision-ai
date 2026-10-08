@@ -65,6 +65,21 @@ public class PositionMonitorService {
     @org.springframework.beans.factory.annotation.Value("${app.trading.stop-loss-limit-gap-percent:0.005}")
     private BigDecimal stopLossLimitGapPercent;
 
+    /**
+     * Audit fix (P0-3 follow-up #2 — external re-review, confirmed real: "changing it while
+     * positions are open can make later resizes use a different gap than the original OCO" --
+     * full context in Order.stopLossLimitGapPercent's own field javadoc). Every resize/late-fill/
+     * remainder re-placement site in this class used to read the LIVE stopLossLimitGapPercent
+     * field above directly, every time -- so a config change made between this position's entry
+     * and a later re-placement would silently use a different gap than the position's own
+     * original OCO. Now reads the gap stamped on the order record itself (set at that same
+     * record's own original placement time) when present, falling back to the live config value
+     * only for a pre-existing record written before that field existed.
+     */
+    private BigDecimal resolveStopLossLimitGapPercent(com.tradevision.model.Order order) {
+        return order.getStopLossLimitGapPercent() != null ? order.getStopLossLimitGapPercent() : stopLossLimitGapPercent;
+    }
+
     private final BrokerCredentialRepository credentialRepo;
     // Review finding ("OMS/ExecutedOrder full unification" -- P1, full context in
     // reconcileEntryOrders's own updated javadoc): confirmed genuinely unused after this pass's
@@ -2315,7 +2330,7 @@ public class PositionMonitorService {
             return;
         }
 
-        BigDecimal stopLimit = order.getStopLossTriggerPrice().multiply(BigDecimal.ONE.subtract(stopLossLimitGapPercent));
+        BigDecimal stopLimit = order.getStopLossTriggerPrice().multiply(BigDecimal.ONE.subtract(resolveStopLossLimitGapPercent(order)));
         // Review finding ("OCO client IDs are STILL TOO LONG" -- P0, full context in
         // AutoTradeService's own identical fix): confirmed real and fixed. Kept the timestamp
         // in the basis string (unlike the entry OCO's own deterministic fix) -- a resize can
@@ -2339,6 +2354,7 @@ public class PositionMonitorService {
             resizeOmsOrder.setTakeProfitPrice(order.getTakeProfitPrice());
             resizeOmsOrder.setStopLossTriggerPrice(order.getStopLossTriggerPrice());
             resizeOmsOrder.setStopLossLimitPrice(stopLimit);
+            resizeOmsOrder.setStopLossLimitGapPercent(resolveStopLossLimitGapPercent(order));
             orderService.markRiskAccepted(resizeOmsOrder);
             orderService.markSubmitting(resizeOmsOrder);
         } catch (Exception e) {
@@ -2803,7 +2819,7 @@ public class PositionMonitorService {
             return;
         }
 
-        BigDecimal stopLimit = order.getStopLossTriggerPrice().multiply(BigDecimal.ONE.subtract(stopLossLimitGapPercent));
+        BigDecimal stopLimit = order.getStopLossTriggerPrice().multiply(BigDecimal.ONE.subtract(resolveStopLossLimitGapPercent(order)));
         // Review finding ("OCO client IDs are STILL TOO LONG" -- P0, full context in
         // AutoTradeService's own identical fix): confirmed real and fixed. Timestamp kept in
         // the basis for the same reason as the resize site's own fix -- a retry of this method
@@ -2826,6 +2842,7 @@ public class PositionMonitorService {
             lateFillOmsOrder.setTakeProfitPrice(order.getTakeProfitPrice());
             lateFillOmsOrder.setStopLossTriggerPrice(order.getStopLossTriggerPrice());
             lateFillOmsOrder.setStopLossLimitPrice(stopLimit);
+            lateFillOmsOrder.setStopLossLimitGapPercent(resolveStopLossLimitGapPercent(order));
             orderService.markRiskAccepted(lateFillOmsOrder);
             orderService.markSubmitting(lateFillOmsOrder);
         } catch (Exception e) {
@@ -3586,7 +3603,7 @@ public class PositionMonitorService {
             return;
         }
         Order entryOrder = entryOrderOpt.get();
-        BigDecimal stopLimit = entryOrder.getStopLossTriggerPrice().multiply(BigDecimal.ONE.subtract(stopLossLimitGapPercent));
+        BigDecimal stopLimit = entryOrder.getStopLossTriggerPrice().multiply(BigDecimal.ONE.subtract(resolveStopLossLimitGapPercent(entryOrder)));
         // Review finding ("OCO client IDs are STILL TOO LONG" -- P0, full context in
         // AutoTradeService's own identical fix): confirmed real and fixed. Timestamp kept for
         // the same reason as the resize site's own fix -- re-protecting the remainder can
@@ -3607,6 +3624,7 @@ public class PositionMonitorService {
             remainderOmsOrder.setTakeProfitPrice(entryOrder.getTakeProfitPrice());
             remainderOmsOrder.setStopLossTriggerPrice(entryOrder.getStopLossTriggerPrice());
             remainderOmsOrder.setStopLossLimitPrice(stopLimit);
+            remainderOmsOrder.setStopLossLimitGapPercent(resolveStopLossLimitGapPercent(entryOrder));
             orderService.markRiskAccepted(remainderOmsOrder);
             orderService.markSubmitting(remainderOmsOrder);
         } catch (Exception e) {

@@ -222,6 +222,21 @@ public class Order {
     private java.math.BigDecimal takeProfitPrice;
     private java.math.BigDecimal stopLossTriggerPrice;
     private java.math.BigDecimal stopLossLimitPrice;
+    /**
+     * Audit fix (P0-3 follow-up — external re-review, confirmed real: "changing it while
+     * positions are open can make later resizes use a different gap than the original OCO" --
+     * app.trading.stop-loss-limit-gap-percent is read live via @Value at every OCO placement
+     * site, so a config change made while a position is already open would otherwise make its
+     * LATER resize/late-fill/remainder OCO re-placements use a gap different from the one the
+     * position's own original entry OCO was placed under. Stamped onto the ENTRY order record
+     * (alongside stopLossTriggerPrice/takeProfitPrice, which this exact value derived
+     * stopLossLimitPrice from at placement time) so every later re-placement for THIS position
+     * can read back and reuse the SAME gap its protection has always used, rather than whatever
+     * the live config happens to say at resize time. Null for pre-existing records written
+     * before this field existed -- every read site falls back to the live config value in that
+     * case, exactly matching this field's own behavior before this fix existed.
+     */
+    private java.math.BigDecimal stopLossLimitGapPercent;
 
     // Review finding ("OMS/ExecutedOrder full unification" -- P1, full context in this class's
     // own "HONEST SCOPE" comment above, which this update supersedes): the fields ExecutedOrder

@@ -2,6 +2,7 @@ package com.tradevision.controller;
 
 import com.tradevision.service.DistributedRateLimitService;
 import jakarta.servlet.http.HttpServletRequest;
+import java.nio.ByteBuffer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -88,10 +89,22 @@ class ProxyControllerTest {
         assertThat(response.getStatusCode().value()).isEqualTo(429);
     }
 
-    private void injectMockRestTemplate(ProxyController target, org.springframework.web.client.RestTemplate mockHttp) throws Exception {
+    // P2 fix ("size-check-after-full-download"): ProxyController's own HTTP client changed from
+    // RestTemplate to java.net.http.HttpClient (streaming size cap, see ProxyController's own
+    // updated forward()/SizeCappedBodySubscriber javadoc) -- this reflection helper and the mock
+    // type below changed to match. The field name ("http") is unchanged.
+    private void injectMockHttpClient(ProxyController target, java.net.http.HttpClient mockHttp) throws Exception {
         java.lang.reflect.Field httpField = ProxyController.class.getDeclaredField("http");
         httpField.setAccessible(true);
         httpField.set(target, mockHttp);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static java.net.http.HttpResponse<String> mockUpstreamResponse(int statusCode, String body) {
+        var resp = org.mockito.Mockito.mock(java.net.http.HttpResponse.class);
+        org.mockito.Mockito.lenient().when(resp.statusCode()).thenReturn(statusCode);
+        org.mockito.Mockito.lenient().when(resp.body()).thenReturn(body);
+        return resp;
     }
 
     /**
@@ -109,10 +122,10 @@ class ProxyControllerTest {
         when(request.getRequestURI()).thenReturn("/fng-api/fng/");
         when(distributedRateLimitService.allow(eq("proxy_rate_limit"), eq("203.0.113.10"), anyInt(), anyLong())).thenReturn(true);
 
-        var mockHttp = org.mockito.Mockito.mock(org.springframework.web.client.RestTemplate.class);
-        injectMockRestTemplate(controller, mockHttp);
-        var upstreamResponse = org.springframework.http.ResponseEntity.ok("{\"value\":\"42\"}");
-        when(mockHttp.exchange(any(java.net.URI.class), any(), any(), eq(String.class)))
+        var mockHttp = org.mockito.Mockito.mock(java.net.http.HttpClient.class);
+        injectMockHttpClient(controller, mockHttp);
+        var upstreamResponse = mockUpstreamResponse(200, "{\"value\":\"42\"}");
+        when(mockHttp.send(any(java.net.http.HttpRequest.class), any(java.net.http.HttpResponse.BodyHandler.class)))
             .thenReturn(upstreamResponse);
 
         var first = controller.fngApi(request);
@@ -122,7 +135,7 @@ class ProxyControllerTest {
         assertThat(second.getStatusCode().value()).isEqualTo(200);
         assertThat(second.getBody()).isEqualTo(first.getBody());
         verify(mockHttp, org.mockito.Mockito.times(1))
-            .exchange(any(java.net.URI.class), any(), any(), eq(String.class));
+            .send(any(java.net.http.HttpRequest.class), any(java.net.http.HttpResponse.BodyHandler.class));
     }
 
     @Test
@@ -132,10 +145,10 @@ class ProxyControllerTest {
         when(request.getRequestURI()).thenReturn("/fng-api/fng/");
         when(distributedRateLimitService.allow(eq("proxy_rate_limit"), eq("203.0.113.11"), anyInt(), anyLong())).thenReturn(true);
 
-        var mockHttp = org.mockito.Mockito.mock(org.springframework.web.client.RestTemplate.class);
-        injectMockRestTemplate(controller, mockHttp);
-        when(mockHttp.exchange(any(java.net.URI.class), any(), any(), eq(String.class)))
-            .thenThrow(new org.springframework.web.client.ResourceAccessException("upstream unreachable"));
+        var mockHttp = org.mockito.Mockito.mock(java.net.http.HttpClient.class);
+        injectMockHttpClient(controller, mockHttp);
+        when(mockHttp.send(any(java.net.http.HttpRequest.class), any(java.net.http.HttpResponse.BodyHandler.class)))
+            .thenThrow(new java.io.IOException("upstream unreachable"));
 
         var first = controller.fngApi(request);
         var second = controller.fngApi(request);
@@ -143,6 +156,47 @@ class ProxyControllerTest {
         assertThat(first.getStatusCode().value()).isEqualTo(502);
         assertThat(second.getStatusCode().value()).isEqualTo(502);
         verify(mockHttp, org.mockito.Mockito.times(2))
-            .exchange(any(java.net.URI.class), any(), any(), eq(String.class));
+            .send(any(java.net.http.HttpRequest.class), any(java.net.http.HttpResponse.BodyHandler.class));
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Audit item P2 ("ProxyController size-check-after-full-download"): external review,
+    // confirmed real by direct inspection -- forward()'s own MAX_RESPONSE_BYTES check used to
+    // run AFTER RestTemplate had already fully downloaded and buffered the entire upstream
+    // body, so an oversized response still cost this server the full download before being
+    // rejected. The fix streams the response through a custom BodySubscriber
+    // (SizeCappedBodySubscriber) that counts bytes as they arrive and cancels the subscription
+    // the instant the cap is exceeded -- this test proves the ABORT behavior itself: a
+    // BodyHandler that simulates exactly what SizeCappedBodySubscriber does (feed it chunks one
+    // at a time, same as the real HttpClient would) must cancel the subscription as soon as the
+    // running total crosses the cap, and must never accumulate a chunk that would push it over.
+    // ---------------------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("SizeCappedBodySubscriber: cancels the subscription and fails the body future the instant the running byte total exceeds the cap, without ever buffering the chunk that crossed it")
+    void sizeCappedBodySubscriber_abortsMidStream_onceCapExceeded() throws Exception {
+        long cap = 10L; // tiny cap so the test's own chunk sizes can straightforwardly cross it
+        var handlerClass = Class.forName("com.tradevision.controller.ProxyController$SizeCappedBodyHandler");
+        var handlerCtor = handlerClass.getDeclaredConstructor(long.class);
+        handlerCtor.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        var handler = (java.net.http.HttpResponse.BodyHandler<String>) handlerCtor.newInstance(cap);
+
+        var subscriber = handler.apply(null);
+
+        var subscription = org.mockito.Mockito.mock(java.util.concurrent.Flow.Subscription.class);
+        subscriber.onSubscribe(subscription);
+
+        // First chunk (6 bytes) stays under the 10-byte cap -- must be accepted, no cancel yet.
+        subscriber.onNext(java.util.List.of(ByteBuffer.wrap("abcdef".getBytes(java.nio.charset.StandardCharsets.UTF_8))));
+        verify(subscription, org.mockito.Mockito.never()).cancel();
+
+        // Second chunk (6 more bytes) pushes the running total to 12, past the 10-byte cap --
+        // must cancel immediately and fail the body future, never reach onComplete.
+        subscriber.onNext(java.util.List.of(ByteBuffer.wrap("ghijkl".getBytes(java.nio.charset.StandardCharsets.UTF_8))));
+
+        verify(subscription, org.mockito.Mockito.times(1)).cancel();
+        var bodyFuture = subscriber.getBody().toCompletableFuture();
+        assertThat(bodyFuture.isCompletedExceptionally()).isTrue();
     }
 }

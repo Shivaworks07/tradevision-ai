@@ -5,9 +5,9 @@ import org.springframework.http.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.client.RestTemplate;
 import jakarta.servlet.http.HttpServletRequest;
 import java.net.URI;
+import java.nio.ByteBuffer;
 import com.tradevision.service.DistributedRateLimitService;
 import lombok.RequiredArgsConstructor;
 
@@ -32,7 +32,23 @@ import lombok.RequiredArgsConstructor;
 public class ProxyController {
 
     private static final Logger log = LoggerFactory.getLogger(ProxyController.class);
-    private final RestTemplate http = buildRestTemplate();
+    /**
+     * Audit item P2 ("ProxyController size-check-after-full-download"): external review,
+     * confirmed real by direct inspection -- this class's own forward() javadoc already
+     * honestly disclosed the gap (see the comment that used to sit on the MAX_RESPONSE_BYTES
+     * check below, before this fix): RestTemplate's default client buffers the ENTIRE upstream
+     * response into memory before this code ever gets a chance to look at its length, so the
+     * old size check only ever rejected an oversized body AFTER this server had already paid
+     * the full memory and bandwidth cost of downloading it -- exactly the resource-amplification
+     * risk this class's own six proxy endpoints otherwise work to prevent (rate limiting, auth,
+     * timeouts). Fixed by switching from RestTemplate to the JDK's own java.net.http.HttpClient
+     * with a custom streaming BodySubscriber (SizeCappedBodySubscriber, below) that counts bytes
+     * as each chunk arrives and cancels the subscription -- aborting the download mid-flight,
+     * never buffering past the cap -- the instant MAX_RESPONSE_BYTES is exceeded, rather than
+     * after the fact. No new dependency needed: HttpClient has been a JDK-bundled API since
+     * Java 11, and this project targets Java 21.
+     */
+    private final java.net.http.HttpClient http = buildHttpClient();
 
     private static final int CONNECT_TIMEOUT_MS = 5_000;
     private static final int READ_TIMEOUT_MS = 8_000;
@@ -234,34 +250,31 @@ public class ProxyController {
     // ── Helper ────────────────────────────────────────────────
     private ResponseEntity<String> forward(String url, HttpServletRequest req, String body) {
         try {
-            HttpHeaders headers = new HttpHeaders();
-            headers.set("User-Agent", "Mozilla/5.0 TradeVisionAI/1.0");
-            headers.set("Accept", "application/json");
+            java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .GET()
+                .timeout(java.time.Duration.ofMillis(READ_TIMEOUT_MS))
+                .header("User-Agent", "Mozilla/5.0 TradeVisionAI/1.0")
+                .header("Accept", "application/json")
+                .build();
 
-            HttpEntity<String> entity = new HttpEntity<>(headers);
-
-            ResponseEntity<String> resp = http.exchange(
-                URI.create(url), HttpMethod.GET, entity, String.class);
-
-            // Review finding ("public API proxy endpoints deserve hardening" — response-size
-            // limits): RestTemplate with a String return type already buffers the full response
-            // before we see it here, so this caps what gets RETURNED to the client and bounds
-            // how much this app holds in memory per request — it does not stop the upstream
-            // fetch itself from happening. A true streaming byte-cap would need a lower-level
-            // HTTP client; stated honestly rather than implied to be a complete download cap.
-            String respBody = resp.getBody();
-            if (respBody != null && respBody.length() > MAX_RESPONSE_BYTES) {
-                return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
-                    .body("{\"error\":\"Upstream response too large to proxy.\"}");
-            }
+            // Audit item P2 ("size-check-after-full-download"): the cap is enforced INSIDE the
+            // streaming subscriber below -- by the time send() returns (successfully or not),
+            // either the whole body arrived under MAX_RESPONSE_BYTES, or the download was
+            // already aborted mid-stream and never finished buffering past the cap.
+            java.net.http.HttpResponse<String> resp = http.send(request, new SizeCappedBodyHandler(MAX_RESPONSE_BYTES));
 
             HttpHeaders respHeaders = new HttpHeaders();
             respHeaders.setContentType(MediaType.APPLICATION_JSON);
-            return ResponseEntity.status(resp.getStatusCode())
+            return ResponseEntity.status(resp.statusCode())
                 .headers(respHeaders)
-                .body(respBody);
+                .body(resp.body());
 
         } catch (Exception e) {
+            if (isResponseTooLarge(e)) {
+                return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                    .body("{\"error\":\"Upstream response too large to proxy.\"}");
+            }
             // Review finding (P1 — "Global exception handling leaks internal messages"): this
             // is a public, unauthenticated endpoint — arguably more sensitive than the
             // authenticated broker endpoints for the same class of leak, since any anonymous
@@ -273,10 +286,103 @@ public class ProxyController {
         }
     }
 
-    private RestTemplate buildRestTemplate() {
-        var factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(CONNECT_TIMEOUT_MS);
-        factory.setReadTimeout(READ_TIMEOUT_MS);
-        return new RestTemplate(factory);
+    /** Walks the full cause chain (java.net.http.HttpClient wraps a BodySubscriber failure in
+     *  an IOException) looking for the specific marker thrown by SizeCappedBodySubscriber below,
+     *  the same pattern this codebase already uses elsewhere for recognizing a specific cause
+     *  buried under a generic wrapper (see ExposureReservationService.isStandaloneMongoTransactionError). */
+    private boolean isResponseTooLarge(Throwable e) {
+        Throwable current = e;
+        int depth = 0;
+        while (current != null && depth < 10) {
+            if (current instanceof ResponseTooLargeException) return true;
+            current = current.getCause();
+            depth++;
+        }
+        return false;
+    }
+
+    private static final class ResponseTooLargeException extends RuntimeException {
+        ResponseTooLargeException() {
+            super("Upstream response exceeded the proxy's byte cap", null, false, false); // no stack trace needed -- this is a control-flow signal, not a real error
+        }
+    }
+
+    /** Streaming response-size cap: a java.net.http.HttpResponse.BodyHandler that hands out a
+     *  SizeCappedBodySubscriber per request, so the byte limit is enforced as data arrives, not
+     *  after the fact. */
+    private static final class SizeCappedBodyHandler implements java.net.http.HttpResponse.BodyHandler<String> {
+        private final long maxBytes;
+
+        SizeCappedBodyHandler(long maxBytes) {
+            this.maxBytes = maxBytes;
+        }
+
+        @Override
+        public java.net.http.HttpResponse.BodySubscriber<String> apply(java.net.http.HttpResponse.ResponseInfo responseInfo) {
+            return new SizeCappedBodySubscriber(maxBytes);
+        }
+    }
+
+    /** The actual streaming cap. Counts bytes as each chunk is delivered by the HTTP client and,
+     *  the moment the running total exceeds maxBytes, cancels the upstream subscription (aborting
+     *  the in-flight download immediately) and fails the body future with ResponseTooLargeException
+     *  -- never buffers a single byte past the cap, unlike the prior RestTemplate-based approach
+     *  this replaces, which had already fully downloaded and buffered the whole oversized body
+     *  before its own after-the-fact length check ever ran. */
+    private static final class SizeCappedBodySubscriber implements java.net.http.HttpResponse.BodySubscriber<String> {
+        private final long maxBytes;
+        private final java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
+        private final java.util.concurrent.CompletableFuture<String> result = new java.util.concurrent.CompletableFuture<>();
+        private java.util.concurrent.Flow.Subscription subscription;
+        private long receivedBytes = 0;
+
+        SizeCappedBodySubscriber(long maxBytes) {
+            this.maxBytes = maxBytes;
+        }
+
+        @Override
+        public void onSubscribe(java.util.concurrent.Flow.Subscription subscription) {
+            this.subscription = subscription;
+            subscription.request(Long.MAX_VALUE);
+        }
+
+        @Override
+        public void onNext(java.util.List<ByteBuffer> buffers) {
+            for (ByteBuffer bb : buffers) {
+                int chunkLen = bb.remaining();
+                receivedBytes += chunkLen;
+                if (receivedBytes > maxBytes) {
+                    // Abort mid-stream -- this is the actual fix: never finish buffering (or
+                    // even keep receiving) a response that has already exceeded the cap.
+                    subscription.cancel();
+                    result.completeExceptionally(new ResponseTooLargeException());
+                    return;
+                }
+                byte[] chunk = new byte[chunkLen];
+                bb.get(chunk);
+                buffer.write(chunk, 0, chunk.length);
+            }
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+            result.completeExceptionally(throwable);
+        }
+
+        @Override
+        public void onComplete() {
+            result.complete(buffer.toString(java.nio.charset.StandardCharsets.UTF_8));
+        }
+
+        @Override
+        public java.util.concurrent.CompletionStage<String> getBody() {
+            return result;
+        }
+    }
+
+    private java.net.http.HttpClient buildHttpClient() {
+        return java.net.http.HttpClient.newBuilder()
+            .connectTimeout(java.time.Duration.ofMillis(CONNECT_TIMEOUT_MS))
+            .build();
     }
 }

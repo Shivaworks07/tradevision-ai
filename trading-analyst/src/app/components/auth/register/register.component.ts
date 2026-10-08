@@ -75,7 +75,7 @@ export class RegisterComponent {
   verify() {
     if (!this.otp || this.otp.length !== 6) { this.error = 'Enter 6-digit OTP'; return; }
     this.loading = true; this.error = '';
-    this.auth.verifyRegister(this.form.mobile, this.otp).subscribe({
+    this.auth.verifyRegister(this.form.mobile, this.otp, this.form.firstName, this.form.lastName).subscribe({
       next: r => {
         this.loading = false;
         if (r.success) { this.success = r.message; setTimeout(() => this.router.navigate(['/app']), 1000); }

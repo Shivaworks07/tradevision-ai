@@ -38,8 +38,10 @@ export class BrokerSettingsComponent implements OnInit {
   // the manual-order/auto-trade sections below reachable without a long scroll.
   readonly credPageSize = 5;
   readonly ordPageSize = 8;
+  readonly balPageSize = 6;
   credPage = signal(0);
   ordPage = signal(0);
+  balPage = signal(0);
 
   credTotalPages = computed(() => Math.max(1, Math.ceil(this.credentials().length / this.credPageSize)));
   pagedCredentials = computed(() => {
@@ -53,10 +55,21 @@ export class BrokerSettingsComponent implements OnInit {
     return this.orders().slice(start, start + this.ordPageSize);
   });
 
+  // Testnet accounts often carry dozens of near-zero asset balances; paging this list keeps
+  // it a fixed, short height so the manual-order/auto-trade sections right below it stay
+  // reachable without a long scroll.
+  balTotalPages = computed(() => Math.max(1, Math.ceil(this.balances().length / this.balPageSize)));
+  pagedBalances = computed(() => {
+    const start = this.balPage() * this.balPageSize;
+    return this.balances().slice(start, start + this.balPageSize);
+  });
+
   credPrevPage() { this.credPage.set(Math.max(0, this.credPage() - 1)); }
   credNextPage() { this.credPage.set(Math.min(this.credTotalPages() - 1, this.credPage() + 1)); }
   ordPrevPage() { this.ordPage.set(Math.max(0, this.ordPage() - 1)); }
   ordNextPage() { this.ordPage.set(Math.min(this.ordTotalPages() - 1, this.ordPage() + 1)); }
+  balPrevPage() { this.balPage.set(Math.max(0, this.balPage() - 1)); }
+  balNextPage() { this.balPage.set(Math.min(this.balTotalPages() - 1, this.balPage() + 1)); }
 
   // Connect form
   connectApiKey = '';
@@ -162,7 +175,7 @@ export class BrokerSettingsComponent implements OnInit {
 
   loadBalance(credentialId: string) {
     this.broker.balance(credentialId).subscribe({
-      next: (r: any) => this.balances.set(r.data || []),
+      next: (r: any) => { this.balances.set(r.data || []); this.balPage.set(0); },
       error: (e) => this.show('error', e?.error?.message || 'Could not load balance.')
     });
   }

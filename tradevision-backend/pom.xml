@@ -259,6 +259,44 @@
           </systemPropertyVariables>
         </configuration>
       </plugin>
+      <!-- Audit item P2 ("no JaCoCo coverage"): external review, confirmed real by direct
+           inspection. This project has over a thousand tests (see this branch's own commit
+           history) but no actual coverage measurement anywhere in the build, so "is this test
+           suite actually exercising the code it claims to" has never had a real, objective
+           answer, only the subjective sense of "there are a lot of tests." Wired the standard
+           way: prepare-agent attaches the coverage agent to every test JVM fork (unit tests via
+           the default test execution, integration tests via maven-surefire-plugin/failsafe if
+           this project adds one later; the agent itself doesn't care which plugin runs the
+           fork), and report generates a human-readable HTML report
+           (target/site/jacoco/index.html) plus the machine-readable jacoco.xml a CI pipeline or
+           a badge/gate can consume, right after the test phase. Deliberately NOT adding a
+           check/enforcement goal with a hard coverage-percentage gate in this same pass; this
+           repo has never measured its own coverage before, so there is no real baseline number
+           to gate against yet, and fabricating one (e.g. an arbitrary "80% line coverage or the
+           build fails") would be a guess dressed up as a requirement. Run `mvn test` once with
+           this in place, read the real number off the generated report, and set an honest,
+           deliberate gate from that as a separate, informed decision, not bundled into just
+           turning measurement on for the first time. -->
+      <plugin>
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <version>0.8.12</version>
+        <executions>
+          <execution>
+            <id>jacoco-prepare-agent</id>
+            <goals>
+              <goal>prepare-agent</goal>
+            </goals>
+          </execution>
+          <execution>
+            <id>jacoco-report</id>
+            <phase>test</phase>
+            <goals>
+              <goal>report</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
     </plugins>
   </build>
 </project>

@@ -2,6 +2,7 @@ import { Component, OnInit, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
+import { Router } from '@angular/router';
 import { PositionService, PositionSummary } from '../../services/position.service';
 import { BrokerService, BrokerCredentialResponse } from '../../services/broker.service';
 import { environment } from '../../../environments/environment';
@@ -33,8 +34,13 @@ export class PositionsComponent implements OnInit, OnDestroy {
   constructor(
     private positionService: PositionService,
     private brokerService: BrokerService,
-    private http: HttpClient
+    private http: HttpClient,
+    private router: Router
   ) {}
+
+  goBack(): void {
+    this.router.navigate(['/app/broker']);
+  }
 
   ngOnInit() {
     this.brokerService.list().subscribe({

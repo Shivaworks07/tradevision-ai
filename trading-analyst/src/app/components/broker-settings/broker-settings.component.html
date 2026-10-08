@@ -1,6 +1,12 @@
 <div class="bs-wrap">
   <div class="bs-header">
-    <h2>Broker &amp; Auto-Trade</h2>
+    <button class="bs-back" (click)="goBack()" title="Back">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+        <path d="M15 18l-6-6 6-6"/>
+      </svg>
+      Back
+    </button>
+    <h2>Bot Connection</h2>
     <p>Connect a broker key, prove it with a manual test order, then optionally turn on auto-trading with hard risk caps.</p>
     <p><a routerLink="/app/positions">View positions &amp; emergency controls →</a></p>
     <p><a routerLink="/app/strategy-plans">Manage strategy plans →</a></p>
@@ -70,7 +76,7 @@
       <div class="bs-section">
         <div class="ss-title">Your broker credentials</div>
         <div class="bs-cred-list">
-          @for (c of credentials(); track c) {
+          @for (c of pagedCredentials(); track c) {
             <div class="bs-cred" [class.active]="selected()?.id === c.id" (click)="select(c)">
               <div class="bc-main">
                 <span class="bc-broker">{{ c.broker }}</span>
@@ -81,6 +87,13 @@
             </div>
           }
         </div>
+        @if (credTotalPages() > 1) {
+          <div class="bs-pager">
+            <button class="btn-ghost-sm" [disabled]="credPage() === 0" (click)="credPrevPage()">← Prev</button>
+            <span class="bs-pager-info">Page {{ credPage() + 1 }} of {{ credTotalPages() }}</span>
+            <button class="btn-ghost-sm" [disabled]="credPage() >= credTotalPages() - 1" (click)="credNextPage()">Next →</button>
+          </div>
+        }
       </div>
     }
 
@@ -248,7 +261,7 @@
         <div class="bs-section">
           <div class="ss-title">Recent orders</div>
           <div class="bs-orders">
-            @for (o of orders(); track o) {
+            @for (o of pagedOrders(); track o) {
               <div class="ord-row">
                 <span class="ord-side" [class.sell]="o.side === 'SELL'">{{ o.side }}</span>
                 <span>{{ o.quantity }} {{ o.symbol }}</span>
@@ -258,6 +271,13 @@
               </div>
             }
           </div>
+          @if (ordTotalPages() > 1) {
+            <div class="bs-pager">
+              <button class="btn-ghost-sm" [disabled]="ordPage() === 0" (click)="ordPrevPage()">← Prev</button>
+              <span class="bs-pager-info">Page {{ ordPage() + 1 }} of {{ ordTotalPages() }}</span>
+              <button class="btn-ghost-sm" [disabled]="ordPage() >= ordTotalPages() - 1" (click)="ordNextPage()">Next →</button>
+            </div>
+          }
         </div>
       }
     }

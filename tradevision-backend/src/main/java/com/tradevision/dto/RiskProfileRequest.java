@@ -37,6 +37,12 @@ import java.util.Set;
 public class RiskProfileRequest {
     @NotBlank private String credentialId;
     private boolean autoTradeEnabled;
+    // Audit fix (P1-5 follow-up, full context in RiskProfileService.RISK_PROFILE_STEPUP_PURPOSE's
+    // own javadoc): required only when credentialId resolves to a LIVE-mode credential --
+    // deliberately NOT @NotBlank here, since that would also demand it for every ordinary
+    // TESTNET/PAPER save. Request one first via POST
+    // /api/broker/risk-profile/{credentialId}/request-otp.
+    private String stepUpOtp;
     // Review finding ("Symbol list bounds" -- P2): 500 is a generous cap for any realistic
     // trading strategy (this application's own AutonomousScannerService tier1 symbol list is a
     // small fraction of that), while still ruling out an unbounded/mistaken submission.

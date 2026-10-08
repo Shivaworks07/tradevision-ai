@@ -329,9 +329,41 @@ public class RiskProfileService {
             RiskProfile.class);
     }
 
+    /**
+     * Audit fix (P1-5 follow-up -- external review, second pass: "Require a step-up OTP for
+     * risk-limit edits" -- full context in authorizeLiveAutoTrade's own javadoc for why this
+     * matters at all). Kept its own distinct purpose, same reasoning as STEPUP_OTP_PURPOSE's own
+     * javadoc: a stolen live-autotrade step-up code must never be replayable to edit risk limits
+     * instead, or vice versa.
+     */
+    public static final String RISK_PROFILE_STEPUP_PURPOSE = "RISK_PROFILE_STEPUP";
+
+    /** Request a fresh step-up verification code before calling upsert() on a LIVE credential's risk profile. */
+    public void requestRiskProfileStepUpOtp(String userId) {
+        var resp = authService.sendStepUpOtp(userId, RISK_PROFILE_STEPUP_PURPOSE);
+        if (!resp.isSuccess()) {
+            throw new IllegalArgumentException(String.valueOf(resp.getMessage()));
+        }
+    }
+
     public RiskProfile upsert(String userId, RiskProfileRequest req) {
         // Ensures the credential exists, belongs to this user, and is active — throws otherwise.
         var credential = credentialService.ownedCredential(userId, req.getCredentialId());
+        // Audit fix (P1-5 follow-up -- external review, second pass: "Require a step-up OTP for
+        // risk-limit edits" -- confirmed real by direct inspection: editing the very limits
+        // authorizeLiveAutoTrade/RiskEngineService rely on to bound a LIVE account's real-money
+        // exposure was gated only by an ordinary session, same gap P1-5 originally closed for
+        // authorizeLiveAutoTrade itself -- widening a daily loss limit or a max-position cap is
+        // just as consequential as the one-time authorization that first enabled LIVE trading.
+        // Scoped to LIVE only (not TESTNET/PAPER), same scoping P0-6's hasCompleteLiveRiskLimits
+        // check already uses -- there is no real money at stake to step up for otherwise, and
+        // this profile is edited far more often during ordinary TESTNET/PAPER strategy
+        // development, where a fresh OTP on every save would be pure friction with no safety
+        // benefit. Checked first, before any other validation below, so a stale/replayed
+        // request never reaches a state-changing write.
+        if (credential.getMode() == com.tradevision.model.BrokerMode.LIVE) {
+            authService.verifyStepUpOtp(userId, RISK_PROFILE_STEPUP_PURPOSE, req.getStepUpOtp());
+        }
         try {
             return doUpsert(userId, req, credential.getBroker());
         } catch (org.springframework.dao.DuplicateKeyException e) {

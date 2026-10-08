@@ -192,6 +192,25 @@ public class BrokerController {
 
     // ── Risk profile / auto-trade configuration ──────────────
 
+    /**
+     * Audit fix (P1-5 follow-up -- external review, second pass: "Require a step-up OTP for
+     * risk-limit edits" -- full context in RiskProfileService.RISK_PROFILE_STEPUP_PURPOSE's own
+     * javadoc): call this first when editing a LIVE credential's risk profile, then submit the
+     * code you receive as "stepUpOtp" in the upsertRiskProfile request body. A no-op (and
+     * harmless either way) for a TESTNET/PAPER credential, which upsert() never actually checks
+     * the code against.
+     */
+    @PostMapping("/risk-profile/{credentialId}/request-otp")
+    public ResponseEntity<?> requestRiskProfileStepUpOtp(@AuthenticationPrincipal String userId, @PathVariable String credentialId) {
+        try {
+            riskProfileService.requestRiskProfileStepUpOtp(userId);
+            return ResponseEntity.ok(ApiResponse.ok("A verification code has been sent. Submit it as \"stepUpOtp\" when saving "
+                + "this risk profile."));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
     @PostMapping("/risk-profile")
     public ResponseEntity<?> upsertRiskProfile(@AuthenticationPrincipal String userId,
                                                 @Valid @RequestBody RiskProfileRequest req) {
@@ -369,11 +388,28 @@ public class BrokerController {
         }
     }
 
+    /**
+     * Audit fix (P1-5 follow-up -- external review, second pass: "Require a step-up OTP for ...
+     * credential changes" -- full context in BrokerCredentialService.CREDENTIAL_CHANGE_STEPUP_PURPOSE's
+     * own javadoc): call this before confirmLiveConnect, then submit the code you receive as
+     * "stepUpOtp" in that request body.
+     */
+    @PostMapping("/connect/live/request-otp")
+    public ResponseEntity<?> requestCredentialChangeStepUpOtpForConnect(@AuthenticationPrincipal String userId) {
+        try {
+            credentialService.requestCredentialChangeStepUpOtp(userId);
+            return ResponseEntity.ok(ApiResponse.ok("A verification code has been sent. Submit it as \"stepUpOtp\" when confirming "
+                + "this LIVE connection."));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
     @PostMapping("/connect/live/confirm")
     public ResponseEntity<?> confirmLiveConnect(@AuthenticationPrincipal String userId,
                                                  @RequestBody Map<String, String> body) {
         try {
-            BrokerCredentialResponse saved = credentialService.confirmLiveConnect(userId, body.get("confirmToken"));
+            BrokerCredentialResponse saved = credentialService.confirmLiveConnect(userId, body.get("confirmToken"), body.get("stepUpOtp"));
             return ResponseEntity.ok(ApiResponse.ok("LIVE credential connected. Real funds are at risk.", saved));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(e.getMessage()));
@@ -386,7 +422,23 @@ public class BrokerController {
      * confirmLiveConnect already apply to a brand-new LIVE credential, now also required to
      * rotate an EXISTING LIVE credential's key -- full context in
      * BrokerCredentialService.rotateApiKey's own updated javadoc.
+     *
+     * Audit fix (P1-5 follow-up, full context in BrokerCredentialService.CREDENTIAL_CHANGE_STEPUP_PURPOSE's
+     * own javadoc): call .../rotate-key/request-otp before confirm here too, same ceremony as
+     * the LIVE-connect flow above -- both are "credential changes" sharing the same step-up
+     * purpose.
      */
+    @PostMapping("/{id}/rotate-key/request-otp")
+    public ResponseEntity<?> requestCredentialChangeStepUpOtpForRotation(@AuthenticationPrincipal String userId, @PathVariable String id) {
+        try {
+            credentialService.requestCredentialChangeStepUpOtp(userId);
+            return ResponseEntity.ok(ApiResponse.ok("A verification code has been sent. Submit it as \"stepUpOtp\" when confirming "
+                + "this key rotation."));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
     @PostMapping("/{id}/rotate-key/request")
     public ResponseEntity<?> requestApiKeyRotation(@AuthenticationPrincipal String userId, @PathVariable String id,
                                                     @RequestBody Map<String, String> body) {
@@ -411,7 +463,7 @@ public class BrokerController {
     public ResponseEntity<?> confirmApiKeyRotation(@AuthenticationPrincipal String userId, @PathVariable String id,
                                                     @RequestBody Map<String, String> body) {
         try {
-            var saved = credentialService.confirmApiKeyRotation(userId, body.get("confirmToken"));
+            var saved = credentialService.confirmApiKeyRotation(userId, body.get("confirmToken"), body.get("stepUpOtp"));
             return ResponseEntity.ok(ApiResponse.ok("API key rotated -- this credential's own id and all linked history are unchanged.", saved));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(e.getMessage()));

@@ -63,6 +63,14 @@ class BrokerCredentialServiceTest {
     // test that specifically wants to exercise the "no alert channel" refusal stubs this to
     // throw instead.
     @Mock com.tradevision.config.AlertChannelStartupGuard alertChannelStartupGuard;
+    // Audit fix (P1-5 follow-up, full context in BrokerCredentialService.CREDENTIAL_CHANGE_STEPUP_PURPOSE's
+    // own javadoc): confirmLiveConnect/confirmApiKeyRotation now call verifyStepUpOtp
+    // synchronously before doing anything else -- an unstubbed mock's void method already
+    // no-ops (Mockito's own real default), so every existing confirm test here continues to
+    // represent "this OTP check passed" exactly as it implicitly did before this fix existed.
+    // A test that specifically wants to exercise the "bad step-up OTP" refusal stubs this to
+    // throw instead.
+    @Mock AuthService authService;
     private final java.util.Map<String, com.tradevision.model.PendingLiveConnect> fakePendingLiveConnectStore = new java.util.HashMap<>();
 
     @InjectMocks BrokerCredentialService service;
@@ -270,7 +278,7 @@ class BrokerCredentialServiceTest {
             .thenReturn(new AccountPermissions(true, false, true));
 
         String token = service.requestLiveConnect("user1", liveReq());
-        BrokerCredentialResponse result = service.confirmLiveConnect("user1", token);
+        BrokerCredentialResponse result = service.confirmLiveConnect("user1", token, "123456");
 
         assertThat(result.mode()).isEqualTo(BrokerMode.LIVE);
         // The saved credential carries the LIVE key/secret that were actually validated against
@@ -299,7 +307,7 @@ class BrokerCredentialServiceTest {
         pending.setExpiresAt(java.time.Instant.now().plusSeconds(60));
         fakePendingLiveConnectStore.put(pending.getToken(), pending);
 
-        BrokerCredentialResponse result = service.confirmLiveConnect("user1", "token-from-another-replica");
+        BrokerCredentialResponse result = service.confirmLiveConnect("user1", "token-from-another-replica", "123456");
 
         assertThat(result.mode()).isEqualTo(BrokerMode.LIVE);
         verify(pendingLiveConnectRepo).deleteById("token-from-another-replica"); // one-time use, same as the old map's remove()
@@ -308,7 +316,7 @@ class BrokerCredentialServiceTest {
     @Test
     @DisplayName("confirmLiveConnect: rejects an unknown/invalid token")
     void confirmLiveConnect_rejectsInvalidToken() {
-        assertThatThrownBy(() -> service.confirmLiveConnect("user1", "not-a-real-token"))
+        assertThatThrownBy(() -> service.confirmLiveConnect("user1", "not-a-real-token", "123456"))
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessageContaining("invalid or expired");
         verify(credentialRepo, never()).save(any());
@@ -321,7 +329,7 @@ class BrokerCredentialServiceTest {
             .thenReturn(new AccountPermissions(true, false, true));
         String token = service.requestLiveConnect("user1", liveReq());
 
-        assertThatThrownBy(() -> service.confirmLiveConnect("some-other-user", token))
+        assertThatThrownBy(() -> service.confirmLiveConnect("some-other-user", token, "123456"))
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessageContaining("invalid or expired");
     }
@@ -342,9 +350,31 @@ class BrokerCredentialServiceTest {
         doThrow(new IllegalStateException("Cannot connect a LIVE broker credential: your account has no alert channel configured"))
             .when(alertChannelStartupGuard).requireAlertChannelCoverage("user1");
 
-        assertThatThrownBy(() -> service.confirmLiveConnect("user1", token))
+        assertThatThrownBy(() -> service.confirmLiveConnect("user1", token, "123456"))
             .isInstanceOf(IllegalStateException.class)
             .hasMessageContaining("alert channel");
+        verify(credentialRepo, never()).save(any());
+    }
+
+    /**
+     * Audit fix (P1-5 follow-up -- external review, second pass: "Require a step-up OTP for ...
+     * credential changes" -- full context in BrokerCredentialService.CREDENTIAL_CHANGE_STEPUP_PURPOSE's
+     * own javadoc). confirmLiveConnect must refuse outright on a bad/missing step-up OTP, before
+     * the token itself is ever even looked up -- a real token with no valid OTP must not be
+     * consumable.
+     */
+    @Test
+    @DisplayName("confirmLiveConnect: refuses a genuinely valid token when the step-up OTP itself is wrong/missing, and never persists the credential")
+    void confirmLiveConnect_refusesOnBadStepUpOtp() {
+        when(adapter.getAccountPermissions(any(), any(), eq(BrokerMode.LIVE)))
+            .thenReturn(new AccountPermissions(true, false, true));
+        String token = service.requestLiveConnect("user1", liveReq());
+        doThrow(new IllegalArgumentException("OTP expired. Request a new one."))
+            .when(authService).verifyStepUpOtp("user1", BrokerCredentialService.CREDENTIAL_CHANGE_STEPUP_PURPOSE, "wrong-code");
+
+        assertThatThrownBy(() -> service.confirmLiveConnect("user1", token, "wrong-code"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("OTP");
         verify(credentialRepo, never()).save(any());
     }
 
@@ -705,7 +735,7 @@ class BrokerCredentialServiceTest {
         when(adapter.getAccountUid("new-key", "new-secret", BrokerMode.LIVE)).thenReturn("uid-same-account");
 
         String token = service.requestApiKeyRotation("user1", "cred1", "new-key", "new-secret");
-        var result = service.confirmApiKeyRotation("user1", token);
+        var result = service.confirmApiKeyRotation("user1", token, "123456");
 
         assertThat(result.id()).isEqualTo("cred1");
         assertThat(credential.getEncryptedApiKey()).isEqualTo("enc(new-key)");
@@ -718,9 +748,34 @@ class BrokerCredentialServiceTest {
     @Test
     @DisplayName("confirmApiKeyRotation: rejects an unknown/invalid token")
     void confirmApiKeyRotation_rejectsInvalidToken() {
-        assertThatThrownBy(() -> service.confirmApiKeyRotation("user1", "not-a-real-token"))
+        assertThatThrownBy(() -> service.confirmApiKeyRotation("user1", "not-a-real-token", "123456"))
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessageContaining("invalid or expired");
+        verify(credentialRepo, never()).save(any());
+    }
+
+    /**
+     * Audit fix (P1-5 follow-up, full context in confirmLiveConnect_refusesOnBadStepUpOtp's own
+     * javadoc): the same step-up requirement, same reasoning, for the rotation flow.
+     */
+    @Test
+    @DisplayName("confirmApiKeyRotation: refuses a genuinely valid token when the step-up OTP itself is wrong/missing, and never persists the rotation")
+    void confirmApiKeyRotation_refusesOnBadStepUpOtp() {
+        var credential = new BrokerCredential();
+        credential.setId("cred1"); credential.setUserId("user1"); credential.setActive(true);
+        credential.setBroker(BrokerType.BINANCE); credential.setMode(BrokerMode.LIVE);
+        when(credentialRepo.findByIdAndUserId("cred1", "user1")).thenReturn(java.util.Optional.of(credential));
+        when(positionRepo.findByCredentialIdAndStatusIn(eq("cred1"), any())).thenReturn(List.of());
+        when(orderRepo.findByCredentialIdAndStatusIn(eq("cred1"), any())).thenReturn(List.of());
+        when(adapter.getAccountPermissions("new-key", "new-secret", BrokerMode.LIVE))
+            .thenReturn(new AccountPermissions(true, false, true));
+        String token = service.requestApiKeyRotation("user1", "cred1", "new-key", "new-secret");
+        doThrow(new IllegalArgumentException("OTP expired. Request a new one."))
+            .when(authService).verifyStepUpOtp("user1", BrokerCredentialService.CREDENTIAL_CHANGE_STEPUP_PURPOSE, "wrong-code");
+
+        assertThatThrownBy(() -> service.confirmApiKeyRotation("user1", token, "wrong-code"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("OTP");
         verify(credentialRepo, never()).save(any());
     }
 
@@ -737,7 +792,7 @@ class BrokerCredentialServiceTest {
             .thenReturn(new AccountPermissions(true, false, true));
         String token = service.requestApiKeyRotation("user1", "cred1", "new-key", "new-secret");
 
-        assertThatThrownBy(() -> service.confirmApiKeyRotation("some-other-user", token))
+        assertThatThrownBy(() -> service.confirmApiKeyRotation("some-other-user", token, "123456"))
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessageContaining("invalid or expired");
     }
@@ -759,7 +814,7 @@ class BrokerCredentialServiceTest {
         var openPosition = new com.tradevision.model.Position();
         when(positionRepo.findByCredentialIdAndStatusIn(eq("cred1"), any())).thenReturn(List.of(openPosition));
 
-        assertThatThrownBy(() -> service.confirmApiKeyRotation("user1", token))
+        assertThatThrownBy(() -> service.confirmApiKeyRotation("user1", token, "123456"))
             .isInstanceOf(IllegalStateException.class)
             .hasMessageContaining("position(s)");
         verify(credentialRepo, never()).save(any());

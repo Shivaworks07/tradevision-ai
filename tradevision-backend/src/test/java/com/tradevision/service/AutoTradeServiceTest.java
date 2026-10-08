@@ -26,12 +26,11 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Review finding: AutoTradeService had zero test coverage despite being the single file most
- * central to actual money-moving decisions in this codebase. Closes 3 of the review's named
- * gaps: "server confidence threshold", "base-asset commission", and "ENTRY_FILLED_UNVERIFIED"
- * (the fourth, "NEW market order later becoming FILLED", lives in PositionMonitorService, not
- * here — covered separately). A shared happy-path baseline gets every gate to pass; each test
- * then perturbs exactly the one thing it's testing, same pattern used throughout this session.
+ * Covers AutoTradeService, the file most central to actual money-moving decisions in this
+ * codebase, including server confidence threshold handling, base-asset commission, and the
+ * ENTRY_FILLED_UNVERIFIED state (a market order later becoming FILLED is covered separately in
+ * PositionMonitorService). A shared happy-path baseline gets every gate to pass; each test then
+ * perturbs exactly the one thing it's testing.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -41,10 +40,6 @@ class AutoTradeServiceTest {
     @Mock BrokerCredentialService credentialService;
     @Mock RiskEngineService riskEngine;
     @Mock NoTradeFilterService noTradeFilter;
-    // Review finding ("OMS/ExecutedOrder full unification" -- P1, full context in
-    // AutoTradeService's own removal of this same field): the field this mocked no longer
-    // exists on the service under test -- removed here too rather than left as dead,
-    // unmatched (by @InjectMocks) mock setup.
     @Mock PositionRepository positionRepo;
     @Mock com.tradevision.repository.StrategyPlanRepository strategyPlanRepo;
     @Mock StrategyPlanService strategyPlanService;
@@ -59,17 +54,15 @@ class AutoTradeServiceTest {
     @Mock com.tradevision.config.ShutdownState shutdownState;
     @Mock com.tradevision.config.StartupState startupState;
     @Mock OrderService orderService;
-    // Review finding ("Kill switch can race with LIVE order submission" -- P0, full context at
-    // RiskProfileService.claimExecutionAuthorization's own javadoc): needed now that every real
-    // order placement requires a successful atomic authorization claim first.
+    // Needed because every real order placement requires a successful atomic authorization
+    // claim first, via RiskProfileService.claimExecutionAuthorization.
     @Mock RiskProfileService riskProfileService;
     @Mock FillLedgerService fillLedgerService;
     @Mock PositionLedgerService positionLedgerService;
     @Mock IncidentService incidentService;
     @Mock ExecutionContextService executionContextService;
-    // P0-8 fix ("Entry/reconcile shared lock" -- full context in AutoTradeService's own
-    // distributedLockService field javadoc): needed now that the entry flow acquires this same
-    // distributed lock (under the credentialId key) before running its own critical section.
+    // Needed because the entry flow acquires this same distributed lock (under the
+    // credentialId key) before running its own critical section.
     @Mock DistributedLockService distributedLockService;
 
     @InjectMocks AutoTradeService service;
@@ -84,104 +77,68 @@ class AutoTradeServiceTest {
 
     @BeforeEach
     void setup() {
-        // P0-8 fix ("Entry/reconcile shared lock" -- full context in AutoTradeService's own
-        // distributedLockService field javadoc): a realistic "no reconciliation pass is
-        // currently running for this credential, lock acquired cleanly" default -- an unstubbed
-        // tryAcquireWithDiagnosis() would otherwise return null (Mockito's own real default for
-        // an unstubbed object-returning method), NPEing on .acquired() at the very first call in
-        // every existing test. A test that specifically wants to exercise the lock-contention
-        // refusal path overrides this.
+        // A realistic "no reconciliation pass is currently running for this credential, lock
+        // acquired cleanly" default -- an unstubbed tryAcquireWithDiagnosis() would otherwise
+        // return null, NPEing on .acquired() at the very first call in every existing test. A
+        // test that specifically wants to exercise the lock-contention refusal path overrides
+        // this.
         when(distributedLockService.tryAcquireWithDiagnosis(any(), any(), any()))
             .thenReturn(new DistributedLockService.LockLease(DistributedLockService.AcquireResult.ACQUIRED, 1L));
-        // P3-11 fix ("Renew the entry lock's lease through the order and OCO calls" -- external
-        // review, second pass, re-audit, full context in AutoTradeService's own two new renew()
-        // call sites immediately before adapter.placeOrder()/placeExitOco()): a realistic
-        // "renewal succeeded" default, same reasoning as every other default in this file -- an
-        // unstubbed renew() would otherwise return Mockito's own default false, which is
-        // harmless (both call sites treat a failed renewal as non-fatal, just a warning log) but
-        // would make every existing test's logs noisy with a warning about something this file
-        // never intended to exercise. Tests that specifically want to exercise the renewal
-        // failure path override this explicitly.
+        // A realistic "renewal succeeded" default for the lease renewals made immediately before
+        // adapter.placeOrder()/placeExitOco() -- an unstubbed renew() would otherwise return
+        // Mockito's default false, which is harmless (both call sites treat a failed renewal as
+        // non-fatal, just a warning log) but would make every existing test's logs noisy with a
+        // warning about something this file never intended to exercise. Tests that specifically
+        // want to exercise the renewal failure path override this explicitly.
         when(distributedLockService.renew(any(), any(), any())).thenReturn(true);
-        // Review finding ("Kill switch can race with LIVE order submission" -- P0, full context
-        // at RiskProfileService.claimExecutionAuthorization's own javadoc): a realistic "the
-        // claim succeeded" default, same reasoning as every other object-returning dependency
-        // default this session -- an unstubbed call would otherwise return null (Mockito's own
-        // real default for an unstubbed object-returning method), silently aborting every
-        // existing test right before order placement. A test that specifically wants to
-        // exercise the lost-the-claim path overrides this.
+        // A realistic "the claim succeeded" default for the execution authorization claim --
+        // an unstubbed call would otherwise return null, silently aborting every existing test
+        // right before order placement. A test that specifically wants to exercise the
+        // lost-the-claim path overrides this.
         when(riskProfileService.claimExecutionAuthorization(any(), anyBoolean()))
             .thenReturn(new RiskProfileService.ExecutionClaim("claim-default", 0L));
-        // Review finding ("claimExecutionAuthorization() is still an authorization claim, not a
-        // lease" -- external review, second pass, full context in this file's own updated
-        // default above): the final re-verification's own default -- an unstubbed boolean call
-        // would otherwise return false (Mockito's own real default), silently aborting every
-        // existing test right at the final check before order placement, exactly like the
-        // claimExecutionAuthorization default above.
-        // Review finding ("There is still a tiny gap between final authorization and
-        // markExecutionStarted()" -- external review, fourth pass, P0, full context in
-        // RiskProfileService.markExecutionStarted's own updated javadoc): markExecutionStarted
-        // now performs the same final-re-verification role isClaimStillValid used to (see this
-        // method's own updated signature), atomically combined with in-flight registration.
-        //
-        // Review finding ("Narrow but real race: Strategy Plan disable / version change vs
-        // final execution" -- external review, eighteenth pass, P0, full context in
-        // RiskProfileService.claimExecutionAtomicWithPlan's own javadoc): AutoTradeService now
-        // calls this combined method instead of markExecutionStarted directly -- a realistic
-        // "the combined claim succeeded" default, same reasoning as every other claim default
-        // in this file.
+        // markExecutionStarted performs a final re-verification atomically combined with
+        // in-flight registration. AutoTradeService calls claimExecutionAtomicWithPlan, which
+        // combines that same final re-check with the strategy plan's own authorization state --
+        // both default to "succeeded" here, same reasoning as every other claim default in this
+        // file.
         when(riskProfileService.markExecutionStarted(any(), any(), anyBoolean())).thenReturn(true);
         when(riskProfileService.claimExecutionAtomicWithPlan(any(), any(), anyBoolean(), any(), any(), any())).thenReturn(true);
-        // Review finding ("Dynamic Universe is disconnected from the execution gate" / "Plan
-        // OFF/session changes are not enforced at the final execution gate" -- external review,
-        // eighth pass, P0, full context in StrategyPlanService.authorizeExecution's own
-        // javadoc): AutoTradeService now calls this TWICE per successful execution -- an
-        // unstubbed mock would otherwise return null (Mockito's own real default for an
-        // object-returning method), and this class's own new code calls .authorized() on the
-        // result unconditionally, which would NPE every single existing test at the very first
-        // call. Defaults to "allowed" so every existing test's own assumptions (a signal with no
+        // AutoTradeService calls this TWICE per successful execution -- an unstubbed mock would
+        // otherwise return null, and this class's code calls .authorized() on the result
+        // unconditionally, which would NPE every single existing test at the very first call.
+        // Defaults to "allowed" so every existing test's own assumptions (a signal with no
         // plan, or a plan this session hasn't specifically configured to fail, proceeds normally)
         // stay true; a test that specifically wants to exercise a denial overrides this.
         when(strategyPlanService.authorizeExecution(any(), any(), any(), any(), any(), any(), any()))
             .thenReturn(StrategyPlanService.PlanAuthorizationResult.allow());
-        // Review finding ("Recovery can still race a slow evaluator around the exchange
-        // boundary" -- external review, fifteenth pass, P0, full context in AutoTradeService's
-        // own updated lease-check comment): the lease re-check before the exchange call is now
-        // an atomic findAndModify against TradeCallRecord (extending the lease), not a plain
-        // exists() read -- the existing generic
-        // `mongoTemplate.findAndModify(any(), any(), any(), eq(TradeCallRecord.class))` stub
-        // further below (added for the PENDING -> EVALUATING claim) already covers this new call
-        // too, since it matches on class alone -- no separate stub needed here.
-        // Review finding ("advanceSignalStatus() is not actually atomic/monotonic" -- P1, full
-        // context in AutoTradeService.advanceSignalStatus's own updated javadoc): a realistic
-        // "the conditional advance succeeded" default -- an unstubbed updateFirst() targeting
-        // TradeCallRecord would otherwise NPE on .getModifiedCount() (Mockito's own real default
-        // for an unstubbed object-returning call is null), breaking essentially every existing
-        // test in this file, since advanceSignalStatus runs throughout the evaluation flow.
+        // The lease re-check before the exchange call is an atomic findAndModify against
+        // TradeCallRecord (extending the lease), not a plain exists() read -- the existing
+        // generic `mongoTemplate.findAndModify(any(), any(), any(), eq(TradeCallRecord.class))`
+        // stub further below (added for the PENDING -> EVALUATING claim) already covers this
+        // call too, since it matches on class alone -- no separate stub needed here.
+        // A realistic "the conditional advance succeeded" default for advanceSignalStatus --
+        // an unstubbed updateFirst() targeting TradeCallRecord would otherwise NPE on
+        // .getModifiedCount(), breaking essentially every existing test in this file, since
+        // advanceSignalStatus runs throughout the evaluation flow.
         when(mongoTemplate.updateFirst(any(), any(org.springframework.data.mongodb.core.query.Update.class), eq(TradeCallRecord.class)))
             .thenReturn(com.mongodb.client.result.UpdateResult.acknowledged(1, 1L, null));
-        // Review finding ("atomicSetOcoPlaced() does not verify update success" -- external
-        // review, full context in AutoTradeService's own updated atomicSetOcoPlaced javadoc):
-        // needed now that this method's own new success check calls result.getModifiedCount()
-        // on the return value -- an unstubbed call here would return Mockito's own null default
-        // (there was previously no stub for Position.class in this file at all, only a verify()
-        // call, which doesn't stub anything), and .getModifiedCount() on that null would NPE for
-        // real, uncaught, in every existing test that reaches this OCO-placement code path.
+        // atomicSetOcoPlaced()'s own success check calls result.getModifiedCount() on the
+        // return value -- an unstubbed call here would return Mockito's null default, and
+        // .getModifiedCount() on that null would NPE for real, uncaught, in every existing test
+        // that reaches this OCO-placement code path.
         when(mongoTemplate.updateFirst(any(), any(org.springframework.data.mongodb.core.query.Update.class), eq(Position.class)))
             .thenReturn(com.mongodb.client.result.UpdateResult.acknowledged(1, 1L, null));
-        // Review finding ("OMS/ExecutedOrder full unification" -- P1, full context in
-        // AutoTradeService's own updated entry-order write path): a realistic "order creation
-        // succeeded" default, same reasoning as the updateFirst default immediately above --
-        // this method's own code now DEPENDS on orderService.create() succeeding (its own
-        // fallback-creation branch calls it again if the FIRST attempt returned null, and an
-        // unstubbed second attempt would also return null, NPE on the next line, get caught by
-        // this method's own try/catch, and return EARLY -- never reaching position creation at
-        // all). Before this fix, an unstubbed create() was harmless (the now-removed, always-
-        // constructed ExecutedOrder record didn't depend on omsOrder being non-null); after it,
-        // this default is what keeps every existing test in this file that doesn't explicitly
-        // stub create() still reaching the position-creation logic it actually means to test. A
-        // test that specifically wants to exercise OMS-creation failure overrides this
-        // explicitly (see OMS-setup-specific tests elsewhere in this file for that pattern).
+        // A realistic "order creation succeeded" default, same reasoning as the updateFirst
+        // default immediately above -- the entry-order write path DEPENDS on
+        // orderService.create() succeeding (its own fallback-creation branch calls it again if
+        // the FIRST attempt returned null, and an unstubbed second attempt would also return
+        // null, NPE on the next line, get caught by this method's own try/catch, and return
+        // EARLY -- never reaching position creation at all). This default is what keeps every
+        // existing test in this file that doesn't explicitly stub create() still reaching the
+        // position-creation logic it actually means to test. A test that specifically wants to
+        // exercise OMS-creation failure overrides this explicitly (see OMS-setup-specific tests
+        // elsewhere in this file for that pattern).
         when(orderService.create(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
             .thenAnswer(inv -> { var o = new com.tradevision.model.Order(); o.setId("default-oms-order"); return o; });
         when(orderService.recordEntryMetadata(any(), any(), any(), any(), any(), any(), any()))
@@ -211,9 +168,7 @@ class AutoTradeServiceTest {
         signal.setDirection("LONG");
         signal.setConfidence(90); // client confidence — deliberately high so any rejection in
                                    // tests is attributable to the SERVER confidence, not the client's
-        // Review finding ("Financial values still mix double and BigDecimal" -- external
-        // review, twenty-fourth pass, P2, full context in TradeCallRecord's own updated field
-        // comment): these 4 fields are BigDecimal now.
+        // These 4 fields are BigDecimal.
         signal.setEntryPrice(BigDecimal.valueOf(100.0));
         signal.setStopLoss(BigDecimal.valueOf(95.0));
         signal.setTarget1(BigDecimal.valueOf(110.0));
@@ -232,70 +187,58 @@ class AutoTradeServiceTest {
         when(adapter.getSymbolRules("BTCUSDT", BrokerMode.TESTNET)).thenReturn(RULES);
         when(adapter.getBalance("key", "secret", BrokerMode.TESTNET)).thenReturn(
             List.of(new AssetBalance("USDT", BigDecimal.valueOf(10000), BigDecimal.ZERO)));
-        // Review finding (P1 #11 -- "Market BUY sizing ignores balance, live price and
-        // slippage"): sizePosition/evaluateForProfile now also check real order-book depth
-        // before submitting -- a realistic, deep book default so every existing test in this
-        // file (none of which are about this specific new check) reaches order placement as
-        // before; the dedicated insufficientDepth_* tests below override this explicitly.
+        // sizePosition/evaluateForProfile check real order-book depth before submitting -- a
+        // realistic, deep book default so every existing test in this file (none of which are
+        // about this specific check) reaches order placement as before; the dedicated
+        // insufficientDepth_* tests below override this explicitly.
         when(adapter.getOrderBookDepth(eq("BTCUSDT"), eq(BrokerMode.TESTNET), anyInt())).thenReturn(
             new OrderBookDepth(
                 List.of(new OrderBookDepth.PriceLevel(BigDecimal.valueOf(99.99), BigDecimal.valueOf(1000))),
                 List.of(new OrderBookDepth.PriceLevel(BigDecimal.valueOf(100.0), BigDecimal.valueOf(1000)))));
         when(riskEngine.check(any(), any(), any())).thenReturn(RiskEngineService.RiskCheckResult.ok());
         when(slotReservationService.reserve(eq("cred1"), anyInt(), any(), anyBoolean())).thenReturn(PositionSlotReservationService.SlotReserveResult.reserved("acct-slot-id"));
-        // Review finding ("Position Ledger is still not authoritative" -- full context in
-        // PositionLedgerService's own javadoc): a realistic "genuine match" default, same
-        // reasoning as this file's other @BeforeEach defaults -- reconcileAgainstLedger's own
-        // return type changed from boolean to a ReconcileResult object, and Mockito's default
-        // for an unstubbed object-returning method is null, not false -- every existing test
-        // reaching this new escalation code would otherwise NPE on reconcileResult.matches().
+        // A realistic "genuine match" default, same reasoning as this file's other @BeforeEach
+        // defaults -- reconcileAgainstLedger returns a ReconcileResult object, and Mockito's
+        // default for an unstubbed object-returning method is null, not false -- every existing
+        // test reaching this escalation code would otherwise NPE on reconcileResult.matches().
         // A test that wants to exercise the mismatch path overrides this explicitly.
         when(positionLedgerService.reconcileAgainstLedger(any(), any()))
             .thenAnswer(invocation -> new PositionLedgerService.ReconcileResult(PositionLedgerService.ReconcileStatus.MATCH, invocation.getArgument(1), invocation.getArgument(1)));
-        // Review finding (P1 — "Startup reconciliation... startup trading should remain
-        // disabled until reconciliation completes"): evaluateSignal now refuses to run anything
-        // until startupState.isTradingEnabled() — without this, every existing test would
-        // short-circuit at that new gate on Mockito's default false, never reaching any of the
-        // actual logic under test.
+        // evaluateSignal refuses to run anything until startupState.isTradingEnabled() --
+        // without this, every existing test would short-circuit at that gate on Mockito's
+        // default false, never reaching any of the actual logic under test.
         when(startupState.isTradingEnabled()).thenReturn(true);
-        // Review finding (P1 #7 -- "One failing credential at startup disables autonomous
-        // trading for ALL users until restart"): evaluateForProfile now ALSO gates on this
-        // per-credential check (full context in StartupState.isCredentialTradingEnabled's own
-        // javadoc) -- same reasoning as the mock just above, defaulted to "enabled" so every
-        // existing test's own assumptions stay true; a test that specifically wants to exercise
-        // the per-credential block overrides this.
+        // evaluateForProfile ALSO gates on this per-credential check (full context in
+        // StartupState.isCredentialTradingEnabled's own javadoc) -- same reasoning as the mock
+        // just above, defaulted to "enabled" so every existing test's own assumptions stay
+        // true; a test that specifically wants to exercise the per-credential block overrides
+        // this.
         when(startupState.isCredentialTradingEnabled(any())).thenReturn(true);
-        // Needed because AutoTradeService now calls this immediately after slot reservation
-        // succeeds (P0 #3 fix) — without this, every test reaching order placement would NPE on
-        // an unstubbed mock's null return.
+        // Needed because AutoTradeService calls this immediately after slot reservation
+        // succeeds -- without this, every test reaching order placement would NPE on an
+        // unstubbed mock's null return.
         when(exposureReservationService.reserve(any(), any(), any(), any(), any(), any(), any(), any(), anyBoolean()))
             .thenReturn(ExposureReservationService.ExposureReserveResult.ok("test-reservation-id"));
-        // Review finding (P1 #5 — "Auto-trading is not durable"): needed because evaluateSignal
-        // now atomically claims the signal (PENDING -> EVALUATING) via mongoTemplate before doing
-        // anything else — without this, every test would return early on the unstubbed mock's
-        // default null, never reaching any evaluation logic at all. Scoped specifically to
-        // TradeCallRecord.class so it never interferes with the circuit-breaker's own, separate
-        // findAndModify calls against RiskProfile.class.
+        // Needed because evaluateSignal atomically claims the signal (PENDING -> EVALUATING) via
+        // mongoTemplate before doing anything else — without this, every test would return
+        // early on the unstubbed mock's default null, never reaching any evaluation logic at
+        // all. Scoped specifically to TradeCallRecord.class so it never interferes with the
+        // circuit-breaker's own, separate findAndModify calls against RiskProfile.class.
         when(mongoTemplate.findAndModify(any(), any(), any(), eq(TradeCallRecord.class)))
             .thenAnswer(inv -> { TradeCallRecord r = new TradeCallRecord(); r.setId(signal.getId()); return r; });
         when(positionRepo.save(any())).thenAnswer(i -> i.getArguments()[0]);
-        // Pre-existing gap fix (confirmed real by direct inspection while investigating a P3-11
-        // re-audit failure: this shared setup() had NO default for fillLedgerService.recordFills
-        // at all, and Mockito's own default answer for an unstubbed method returning List<T> is
-        // an EMPTY list, not null -- meaning every test that reaches the entry-fill-recording
-        // code in AutoTradeService WITHOUT its own explicit stub silently tripped the genuine
-        // "ledger write lost data" halt path (Position.ledgerRecordingIncomplete=true,
-        // atomicHaltProfile, a CRITICAL incident) before ever reaching whatever it actually meant
-        // to test -- not a hypothetical: this is exactly what was happening to
-        // protectedQuantity_actuallyPersistedInAtomicUpdate_notJustInMemory and several sibling
-        // tests below, each aborting at that same halt with "expected N fill record(s), got 0"
-        // long before their own assertions ran. A realistic "the ledger write returned one record
-        // per fill it was given" default, same reasoning as every other default in this file --
-        // built dynamically from the fills argument actually passed (index 8 of the 11-arg
-        // overload) rather than a fixed size, so it stays correct for both the per-fill list case
-        // and the aggregate-fallback (empty fills, aggregateQty>0 -> exactly one record) case.
-        // Tests that specifically want to exercise the ledger-write-failure path override this
-        // explicitly, same as every other default here.
+        // Without a default here, Mockito's default answer for an unstubbed method returning
+        // List<T> is an EMPTY list, not null -- meaning every test that reaches the
+        // entry-fill-recording code in AutoTradeService without its own explicit stub would
+        // silently trip the genuine "ledger write lost data" halt path
+        // (Position.ledgerRecordingIncomplete=true, atomicHaltProfile, a CRITICAL incident)
+        // before ever reaching whatever it actually means to test. This default makes the
+        // ledger write return one record per fill it was given, built dynamically from the
+        // fills argument actually passed (index 8 of the 11-arg overload) rather than a fixed
+        // size, so it stays correct for both the per-fill list case and the aggregate-fallback
+        // (empty fills, aggregateQty>0 -> exactly one record) case. Tests that specifically want
+        // to exercise the ledger-write-failure path override this explicitly, same as every
+        // other default here.
         when(fillLedgerService.recordFills(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
             .thenAnswer(inv -> {
                 @SuppressWarnings("unchecked")
@@ -308,12 +251,10 @@ class AutoTradeServiceTest {
                 return records;
             });
         when(positionSafetyService.sumCommissionInQuoteAsset(any(), any())).thenReturn(null);
-        // Review finding (P1/P0-depending — "Late-fill recovery still doesn't deduct base-asset
-        // commission"): AutoTradeService now calls the real, shared computeNetQuantity instead
-        // of its own inline duplicate — this mock replicates the REAL method's actual logic
-        // (based on whatever arguments the code under test actually passes) rather than a fixed
-        // canned response, so every existing commission test still exercises the intended
-        // behavior faithfully instead of breaking on an unstubbed null.
+        // AutoTradeService calls the shared computeNetQuantity — this mock replicates the real
+        // method's actual logic (based on whatever arguments the code under test actually
+        // passes) rather than a fixed canned response, so every existing commission test still
+        // exercises the intended behavior faithfully instead of breaking on an unstubbed null.
         when(positionSafetyService.computeNetQuantity(any(), any(), any())).thenAnswer(inv -> {
             java.math.BigDecimal gross = inv.getArgument(0);
             @SuppressWarnings("unchecked")
@@ -334,10 +275,9 @@ class AutoTradeServiceTest {
         // unstubbed method returning an object type would NPE on .success().
         when(adapter.placeExitOco(any(), any(), any(), any(), any(), any(), any(), any(), any()))
             .thenReturn(new OcoOrderResult(true, "oco-1", "{}", null));
-        // Audit fix (P0-3 follow-up, full context in AutoTradeService's own
-        // stopLossLimitGapPercent field javadoc): @Value fields aren't populated by @InjectMocks,
-        // so this must be set explicitly or every OCO-placement test NPEs on
-        // BigDecimal.ONE.subtract(null). Matches this project's own established default (0.5%).
+        // @Value fields aren't populated by @InjectMocks, so this must be set explicitly or
+        // every OCO-placement test NPEs on BigDecimal.ONE.subtract(null). Matches this
+        // project's own established default (0.5%).
         org.springframework.test.util.ReflectionTestUtils.setField(service, "stopLossLimitGapPercent", new java.math.BigDecimal("0.005"));
     }
 
@@ -356,7 +296,7 @@ class AutoTradeServiceTest {
         when(adapter.getSymbolRules("BTCUSDT", BrokerMode.LIVE)).thenReturn(RULES);
         when(adapter.getBalance("key", "secret", BrokerMode.LIVE)).thenReturn(
             List.of(new AssetBalance("USDT", BigDecimal.valueOf(10000), BigDecimal.ZERO)));
-        // P1-11: same reasoning as setup()'s own TESTNET default above -- a deep-book LIVE twin.
+        // Same reasoning as setup()'s own TESTNET default above -- a deep-book LIVE twin.
         when(adapter.getOrderBookDepth(eq("BTCUSDT"), eq(BrokerMode.LIVE), anyInt())).thenReturn(
             new OrderBookDepth(
                 List.of(new OrderBookDepth.PriceLevel(BigDecimal.valueOf(99.99), BigDecimal.valueOf(1000))),
@@ -364,9 +304,8 @@ class AutoTradeServiceTest {
     }
 
     /**
-     * P3-10 fix ("PAPER mode requires 'live authorization' and isn't selectable in UI" --
-     * external review, confirmed real by direct inspection): switches this file's shared TESTNET
-     * fixture over to a PAPER credential, deliberately WITHOUT setting
+     * Switches this file's shared TESTNET fixture over to a PAPER credential, deliberately
+     * WITHOUT setting
      * profile.setLiveAutoTradeAuthorized(true) -- unlike switchToLive() above, this is the whole
      * point of the test this helper supports: a PAPER credential must be able to trade with no
      * live authorization at all, since PaperBrokerAdapter never touches Binance with real
@@ -423,7 +362,7 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    @DisplayName("evaluateSignal: the OMS order is durably stamped with the execution claim id that actually authorized it -- the actual review fix (\"Auto-trade evaluator lease and execution claim should be tied together\"), so recovery/audit can answer \"which claim produced this exact order\" directly from the order record")
+    @DisplayName("evaluateSignal: the OMS order is durably stamped with the execution claim id that actually authorized it, so recovery/audit can answer \"which claim produced this exact order\" directly from the order record")
     void evaluateSignal_stampsOmsOrderWithExecutionClaimId() {
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(successfulFill(1.0, 100.0, List.of()));
 
@@ -470,7 +409,7 @@ class AutoTradeServiceTest {
             "BTCUSDT", "BTC", "USDT", BigDecimal.ONE, BigDecimal.ONE, BigDecimal.valueOf(0.0001), BigDecimal.ZERO, 2, 6, BigDecimal.ZERO, false, false, BigDecimal.ZERO, BigDecimal.ZERO));
         when(adapter.getBalance("key", "secret", BrokerMode.TESTNET)).thenReturn(
             List.of(new com.tradevision.service.broker.dto.AssetBalance("USDT", BigDecimal.valueOf(10000), BigDecimal.ZERO)));
-        // P1-11: reset(adapter) above wiped setup()'s own default depth stub -- re-stub it here.
+        // reset(adapter) above wiped setup()'s own default depth stub -- re-stub it here.
         when(adapter.getOrderBookDepth(eq("BTCUSDT"), eq(BrokerMode.TESTNET), anyInt())).thenReturn(
             new OrderBookDepth(
                 List.of(new OrderBookDepth.PriceLevel(BigDecimal.valueOf(99.99), BigDecimal.valueOf(1000))),
@@ -489,11 +428,11 @@ class AutoTradeServiceTest {
         assertThat(planQuantity).isLessThan(baselineQuantity);
     }
 
-    // ── P1-11: sizing must never demand more than the account can actually afford, and must
+    // ── Sizing must never demand more than the account can actually afford, and must
     // refuse to submit into an order book too thin to absorb the sized quantity ──────────────
 
     @Test
-    @DisplayName("P1-11: an extremely tight stop-loss would otherwise size a quantity whose notional vastly exceeds the account's free balance -- capped to what the account can actually afford instead of submitted oversized")
+    @DisplayName("an extremely tight stop-loss would otherwise size a quantity whose notional vastly exceeds the account's free balance -- capped to what the account can actually afford instead of submitted oversized")
     void tightStopLoss_capsQuantityToFreeBalance() {
         // entry 100, stopLoss 99.99 -- a stopDistance of 0.01 against this fixture's own 1%
         // riskPerTradePercent and $10,000 balance would otherwise demand a quantity worth roughly
@@ -514,7 +453,7 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    @DisplayName("P1-11: a thin order book (not enough ask-side liquidity within the allowed price-impact band to fill the sized quantity) refuses the trade rather than submitting a MARKET order that would walk deep into the book")
+    @DisplayName("a thin order book (not enough ask-side liquidity within the allowed price-impact band to fill the sized quantity) refuses the trade rather than submitting a MARKET order that would walk deep into the book")
     void thinOrderBook_refusesTrade() {
         // Only 0.001 BTC available at/near the best ask -- the sized quantity (well above that,
         // given this fixture's own $10,000 balance and 1% risk) cannot be filled within the
@@ -533,7 +472,7 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    @DisplayName("P1-11: an empty order book (no asks at all) refuses the trade -- fails closed, never treated as \"no liquidity constraint\"")
+    @DisplayName("an empty order book (no asks at all) refuses the trade -- fails closed, never treated as \"no liquidity constraint\"")
     void emptyOrderBook_refusesTrade() {
         when(adapter.getOrderBookDepth(eq("BTCUSDT"), eq(BrokerMode.TESTNET), anyInt())).thenReturn(
             new OrderBookDepth(List.of(), List.of()));
@@ -544,7 +483,7 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    @DisplayName("P1-11: an error fetching order book depth refuses the trade -- fails closed rather than trading blind")
+    @DisplayName("an error fetching order book depth refuses the trade -- fails closed rather than trading blind")
     void orderBookDepthFetchFails_refusesTrade() {
         when(adapter.getOrderBookDepth(eq("BTCUSDT"), eq(BrokerMode.TESTNET), anyInt()))
             .thenThrow(new RuntimeException("simulated connection failure"));
@@ -555,7 +494,7 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    @DisplayName("evaluateSignal: the server-computed confidence check now also respects a plan's own STRICTER minConfidence, not just the account-level value -- the actual review fix (\"Account RiskProfile remains too intertwined with StrategyPlan\"), confirmed real: a plan configured for 85% would have had its own threshold silently ignored if the account-level setting was looser (60%, this fixture's own default)")
+    @DisplayName("evaluateSignal: the server-computed confidence check also respects a plan's own STRICTER minConfidence, not just the account-level value: a plan configured for 85% must not have its own threshold silently ignored if the account-level setting is looser (60%, this fixture's own default)")
     void evaluateSignal_planMinConfidenceStricterThanAccount_rejectsBelowPlanThreshold() {
         signal.setPlanId("plan1");
         var plan = new com.tradevision.model.StrategyPlan();
@@ -577,14 +516,10 @@ class AutoTradeServiceTest {
     }
 
     /**
-     * Review finding ("CANCELLED / EXPIRED signals can still be recovered and traded" --
-     * external review, seventeenth pass, P0, full context in AutoTradeService's own updated
-     * atomic-claim comment): the review's own explicitly required test -- "save -> cancel ->
-     * evaluate. Expected: NO ORDER." A cancelled signal's own atomic claim (which now requires
-     * signalStatus IN GENERATED/VALIDATING) genuinely fails to match in MongoDB -- simulated
-     * here the same way every other failed-claim scenario in this file is: the claim returns
-     * null, exactly what a real signalStatus=CANCELLED document would produce against the
-     * updated query criteria.
+     * A cancelled signal's atomic claim (which requires signalStatus IN GENERATED/VALIDATING)
+     * genuinely fails to match in MongoDB -- simulated here the same way every other
+     * failed-claim scenario in this file is: the claim returns null, exactly what a real
+     * signalStatus=CANCELLED document would produce against the query criteria.
      */
     @Test
     @DisplayName("evaluateSignal: when signal.getPlanId() is set but the plan record itself can no longer be found, a LATER failure releases the account-level slot but never the plan-level one -- this execution never actually held it, and releasing it anyway could decrement a different, genuinely active execution's own reservation")
@@ -601,9 +536,9 @@ class AutoTradeServiceTest {
     }
 
     /**
-     * Review finding, same context as the test above: the OTHER side of the fix -- when the
-     * plan record genuinely IS found and its own reservation genuinely succeeds, a later
-     * failure correctly DOES release it, since this execution actually held it.
+     * The other side of the scenario above: when the plan record genuinely IS found and its
+     * own reservation genuinely succeeds, a later failure correctly DOES release it, since this
+     * execution actually held it.
      */
     @Test
     @DisplayName("evaluateSignal: when the plan record IS found and its own slot IS reserved, a later failure correctly releases both the account-level AND plan-level slots")
@@ -623,19 +558,9 @@ class AutoTradeServiceTest {
     }
 
     /**
-     * Fourth re-audit fix (test-integrity issue, found while adding coverage for "An aborted
-     * entry leaves an order stuck in SUBMITTING" -- external review, fourth pass, item #2): this
-     * test's own opening block comment above was NEVER actually closed -- the stray comment-open
-     * marker here had no matching close marker of its own, so it silently swallowed every single
-     * test between this one and entryFlow_renewsCredentialLockLease_beforeBothExchangeCalls's own
-     * javadoc further down this file (whose own close marker was the first the compiler actually
-     * saw), commenting all of them out of existence. None of those tests -- including
-     * evaluateSignal_claimPlanExecutionFails/Succeeds_*, executionAuthorizationClaimLost_*,
-     * executionClaimSuperseded_*, reconciliationLock*, and this one itself -- have been running at
-     * all. Closed properly here so they all run again; every one of them was re-verified passing
-     * once restored, and the new planAuthorizationLostBeforeFinalCheck_neverContactsExchange test
-     * (added by this same fix, for a genuinely previously-untested abort site) was accidentally
-     * written into this same dead zone and is now live too.
+     * A signal whose atomic claim fails because it is no longer in GENERATED/VALIDATING status
+     * (cancelled or expired) must never reach the exchange, regardless of what
+     * autoTradeEvalStatus still shows.
      */
     @Test
     @DisplayName("evaluateSignal: a signal whose atomic claim fails because it's no longer GENERATED/VALIDATING (cancelled or expired) never reaches the exchange, regardless of autoTradeEvalStatus still showing PENDING")
@@ -650,7 +575,7 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    @DisplayName("evaluateSignal: a plan whose atomic claimPlanExecution fails (the plan was disabled/edited since this signal was generated) aborts before the exchange call -- the actual review fix (\"Strategy Plan disable vs execution is still technically non-atomic\"), confirmed real by direct inspection before this fix was written")
+    @DisplayName("evaluateSignal: a plan whose atomic claimPlanExecution fails (the plan was disabled/edited since this signal was generated) aborts before the exchange call")
     void evaluateSignal_claimPlanExecutionFails_neverContactsExchange() {
         signal.setPlanId("plan1");
         signal.setPlanVersion(5L);
@@ -666,10 +591,8 @@ class AutoTradeServiceTest {
 
         verify(adapter, never()).placeOrder(any(), any(), any(), any());
         verify(slotReservationService).release("acct-slot-id");
-        // Third re-audit fix ("An aborted entry leaves an order stuck in SUBMITTING" -- external
-        // review, fourth pass, item #2, full context in abortEntrySubmission's own javadoc): this
-        // abort also runs after orderService.markSubmitting(omsOrder), so it must resolve omsOrder
-        // too, not just release the reservations.
+        // This abort also runs after orderService.markSubmitting(omsOrder), so it must resolve
+        // omsOrder too, not just release the reservations.
         verify(orderService).markSubmissionFailed(any(), any());
     }
 
@@ -707,7 +630,7 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    @DisplayName("evaluateSignal: losing the execution-authorization claim (auto-trade/halt/LIVE-authorization state changed during evaluation) means the exchange is NEVER contacted, and both reservations are released -- the actual review fix (\"Kill switch can race with LIVE order submission\"), verified end-to-end through the real public entry point rather than the internal claim method in isolation")
+    @DisplayName("evaluateSignal: losing the execution-authorization claim (auto-trade/halt/LIVE-authorization state changed during evaluation) means the exchange is NEVER contacted, and both reservations are released, verified end-to-end through the real public entry point rather than the internal claim method in isolation")
     void executionAuthorizationClaimLost_neverContactsExchange_releasesReservations() {
         when(riskProfileService.claimExecutionAuthorization(any(), anyBoolean())).thenReturn(null);
 
@@ -716,15 +639,13 @@ class AutoTradeServiceTest {
         verify(adapter, never()).placeOrder(any(), any(), any(), any());
         verify(slotReservationService).release("acct-slot-id");
         verify(exposureReservationService).release(anyString());
-        // Third re-audit fix ("An aborted entry leaves an order stuck in SUBMITTING" -- external
-        // review, fourth pass, item #2, full context in abortEntrySubmission's own javadoc): this
-        // abort also runs after orderService.markSubmitting(omsOrder), so it must resolve omsOrder
-        // too, not just release the reservations.
+        // This abort also runs after orderService.markSubmitting(omsOrder), so it must resolve
+        // omsOrder too, not just release the reservations.
         verify(orderService).markSubmissionFailed(any(), any());
     }
 
     @Test
-    @DisplayName("evaluateSignal: the final, immediate-pre-exchange strategy plan authorization re-check fails (plan OFF/session change landed during evaluation) -- NEVER contacts the exchange -- the actual review fix (\"Plan OFF/session changes are not enforced at the final execution gate\")")
+    @DisplayName("evaluateSignal: the final, immediate-pre-exchange strategy plan authorization re-check fails (plan OFF/session change landed during evaluation) -- NEVER contacts the exchange")
     void planAuthorizationLostBeforeFinalCheck_neverContactsExchange() {
         // authorizeExecution is genuinely called TWICE per evaluation -- once early (before slot
         // reservation even happens) and once as the final, immediate-pre-exchange re-check this
@@ -745,31 +666,17 @@ class AutoTradeServiceTest {
         verify(credentialService).audit(any(), any(), any(), eq("SIGNAL_BLOCKED_PLAN_AUTHORIZATION"), any());
         verify(slotReservationService).release(any());
         verify(exposureReservationService).release(anyString());
-        // Third re-audit fix ("An aborted entry leaves an order stuck in SUBMITTING" -- external
-        // review, fourth pass, item #2, full context in abortEntrySubmission's own javadoc): this
-        // abort also runs after orderService.markSubmitting(omsOrder), so it must resolve omsOrder
-        // too, not just release the reservations.
+        // This abort also runs after orderService.markSubmitting(omsOrder), so it must resolve
+        // omsOrder too, not just release the reservations.
         verify(orderService).markSubmissionFailed(any(), any());
     }
 
     /**
-     * Fourth re-audit fix (test-integrity issue, found and fixed alongside the giant accidental
-     * comment-out documented on evaluateSignal_signalNoLongerEligible_neverContactsExchange's own
-     * updated javadoc above): this test was ALSO stale on top of having been dead code -- it
-     * stubbed riskProfileService.markExecutionStarted(...) to simulate the claim being superseded
-     * before the final pre-exchange check, but AutoTradeService no longer calls that method at
-     * all (see this file's own comment trail on RiskProfileService.claimExecutionAtomicWithPlan,
-     * which replaced it -- confirmed by grepping AutoTradeService.java itself: markExecutionStarted
-     * appears only in comments, never as an actual call). Had this test's dead-comment bug been
-     * fixed without also fixing this, it would have started silently passing for the wrong
-     * reason (the unstubbed markExecutionStarted mock is simply never invoked, so the stub does
-     * nothing either way -- the exchange call would proceed and the test's own assertions below
-     * would have genuinely failed, which is exactly what surfaced this). Rewritten to stub the
-     * actual current mechanism instead: claimExecutionAtomicWithPlan returning false is this
-     * method's own real "final claim was superseded" case today.
+     * Simulates the execution claim being superseded by stubbing claimExecutionAtomicWithPlan
+     * to return false, which is the method's real "final claim was superseded" case.
      */
     @Test
-    @DisplayName("evaluateSignal: the execution claim was superseded before the final, immediate-pre-exchange re-check (a concurrent halt/resume issued a newer claim in the gap) -- NEVER contacts the exchange -- the actual review fix (\"claimExecutionAuthorization() is still an authorization claim, not a lease\"), updated to stub claimExecutionAtomicWithPlan, the mechanism that actually performs this final re-check today")
+    @DisplayName("evaluateSignal: the execution claim was superseded before the final, immediate-pre-exchange re-check (a concurrent halt/resume issued a newer claim in the gap) -- NEVER contacts the exchange")
     void executionClaimSuperseded_beforeFinalCheck_neverContactsExchange() {
         when(riskProfileService.claimExecutionAuthorization(any(), anyBoolean()))
             .thenReturn(new RiskProfileService.ExecutionClaim("claim-1", 5L));
@@ -781,15 +688,13 @@ class AutoTradeServiceTest {
         verify(adapter, never()).placeOrder(any(), any(), any(), any());
         verify(slotReservationService).release("acct-slot-id");
         verify(exposureReservationService).release(anyString());
-        // Third re-audit fix ("An aborted entry leaves an order stuck in SUBMITTING" -- external
-        // review, fourth pass, item #2, full context in abortEntrySubmission's own javadoc): this
-        // abort also runs after orderService.markSubmitting(omsOrder), so it must resolve omsOrder
-        // too, not just release the reservations.
+        // This abort also runs after orderService.markSubmitting(omsOrder), so it must resolve
+        // omsOrder too, not just release the reservations.
         verify(orderService).markSubmissionFailed(any(), any());
     }
 
     @Test
-    @DisplayName("evaluateSignal: a non-USDT-quoted symbol is rejected even if somehow present in enabledSymbols (an existing profile predating the config-time check) -- the actual review fix (\"Risk exposure assumes every quote asset is the same currency\"), a second, defense-in-depth enforcement at the actual money-moving gate")
+    @DisplayName("evaluateSignal: a non-USDT-quoted symbol is rejected even if somehow present in enabledSymbols (an existing profile predating the config-time check), as a second, defense-in-depth enforcement at the actual money-moving gate")
     void nonUsdtSymbol_rejectedAtExecutionGate_evenIfEnabled() {
         profile.getEnabledSymbols().add("ETHBTC");
         signal.setSymbol("ETHBTC");
@@ -799,7 +704,7 @@ class AutoTradeServiceTest {
         verify(adapter, never()).placeOrder(any(), any(), any(), any());
     }
 
-    // ── P0-8: entry/reconcile shared distributed lock ───────────────────────────
+    // ── Entry/reconcile shared distributed lock ───────────────────────────
 
     @Test
     @DisplayName("evaluateSignal: a reconciliation pass currently holds the distributed lock for this credential -- refuses to place a new entry order rather than race it")
@@ -835,19 +740,17 @@ class AutoTradeServiceTest {
         verify(distributedLockService).release(eq("cred1"), any());
     }
 
-    // ── P3-11: credential lock lease renewed through the order and OCO calls ──────
+    // ── Credential lock lease renewed through the order and OCO calls ──────
 
     /**
-     * P3-11 fix ("Renew the entry lock's lease through the order and OCO calls" -- external
-     * review, second pass, re-audit, confirmed real by direct inspection: the 30s lease acquired
-     * above was never renewed anywhere in the entry flow, and a slow Binance response -- up to
-     * ~39s across retries, documented elsewhere in this codebase -- can outlast it, reopening the
-     * entry/reconciliation race the lock exists to prevent). These are the actual regression
-     * tests: renew() is genuinely called, with the right credential and instance id, immediately
-     * before EACH of the two real network calls this flow makes.
+     * The 30s lease acquired above must be renewed in the entry flow, since a slow Binance
+     * response (up to ~39s across retries) can outlast it, reopening the entry/reconciliation
+     * race the lock exists to prevent. These tests verify renew() is genuinely called, with the
+     * right credential and instance id, immediately before EACH of the two real network calls
+     * this flow makes.
      */
     @Test
-    @DisplayName("evaluateSignal: renews the credential lock lease immediately before BOTH the entry order call and the protective OCO call -- the actual P3-11 fix")
+    @DisplayName("evaluateSignal: renews the credential lock lease immediately before BOTH the entry order call and the protective OCO call")
     void entryFlow_renewsCredentialLockLease_beforeBothExchangeCalls() {
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(successfulFill(1.0, 100.0, List.of()));
 
@@ -859,14 +762,10 @@ class AutoTradeServiceTest {
     }
 
     /**
-     * Second re-audit fix ("The entry order still goes ahead when the lock renewal fails" --
-     * external review, third pass, item #2 of its own "before real money" list, full context in
-     * AutoTradeService's own updated renew()-before-placeOrder comment): replaces the test above
-     * that used to prove the OPPOSITE of the now-correct behavior -- a failed lease renewal
-     * immediately before the entry order is a hard abort, not a non-fatal warning, since nothing
-     * exchange-facing has happened yet at that exact point (unlike the OCO renewal, covered
-     * separately just below, where an exchange call may already be in flight or an already-open
-     * position needs protecting).
+     * A failed lease renewal immediately before the entry order is a hard abort, not a
+     * non-fatal warning, since nothing exchange-facing has happened yet at that exact point
+     * (unlike the OCO renewal, covered separately just below, where an exchange call may
+     * already be in flight or an already-open position needs protecting).
      */
     @Test
     @DisplayName("evaluateSignal: a failed lease renewal immediately before the ENTRY order aborts BEFORE contacting the exchange -- nothing irreversible has happened yet at that point, unlike the OCO renewal")
@@ -880,8 +779,6 @@ class AutoTradeServiceTest {
         verify(credentialService).audit(any(), any(), any(), eq("SIGNAL_BLOCKED_LOCK_RENEWAL_FAILED"), any());
         verify(slotReservationService).release(any());
         verify(exposureReservationService).release(anyString());
-        // Third re-audit fix ("An aborted entry leaves an order stuck in SUBMITTING" -- external
-        // review, fourth pass, item #2, full context in abortEntrySubmission's own javadoc):
         // omsOrder was already stamped SUBMITTING (orderService.markSubmitting) well before this
         // abort point is ever reached -- this proves it is resolved right here, not left for the
         // 5-minute stuck-in-SUBMITTING sweep to find and raise a CRITICAL incident over.
@@ -927,16 +824,15 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    @DisplayName("evaluateSignal: when the OCO's own step-size rounding protects LESS than the position's real quantity, Position.protectedQuantity records the actual, honest amount covered -- the actual review fix (\"OCO quantity can be smaller than the actual position because of base-asset fees\")")
+    @DisplayName("evaluateSignal: when the OCO's own step-size rounding protects LESS than the position's real quantity, Position.protectedQuantity records the actual, honest amount covered")
     void ocoRoundedBelowRealQuantity_recordsHonestProtectedQuantity() {
         List<Fill> fills = List.of(new Fill(BigDecimal.valueOf(100.0), BigDecimal.valueOf(1.0), BigDecimal.ZERO, "USDT"));
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(successfulFill(1.0, 100.0, fills));
-        // Review finding ("OCO protection gap is detected but accepted" -- external review, full
-        // context in AutoTradeService's own updated comment on this exact check): the residual
-        // (0.1) must be treated as dust for this test's own purpose -- overriding the shared
-        // RULES fixture's own minQty=0 (unrealistic for a real exchange, but that shared fixture
-        // is also used by other tests that don't care about this distinction), so this test
-        // stays focused on protectedQuantity recording, not the newer escalation behavior.
+        // The residual (0.1) must be treated as dust for this test's own purpose -- overriding
+        // the shared RULES fixture's own minQty=0 (unrealistic for a real exchange, but that
+        // shared fixture is also used by other tests that don't care about this distinction),
+        // so this test stays focused on protectedQuantity recording, not the escalation
+        // behavior exercised below.
         when(adapter.getSymbolRules("BTCUSDT", BrokerMode.TESTNET)).thenReturn(
             new SymbolRules("BTCUSDT", "BTC", "USDT", BigDecimal.ONE, BigDecimal.ONE, BigDecimal.valueOf(0.5), BigDecimal.ZERO, 2, 6, BigDecimal.ZERO, false, false, BigDecimal.ZERO, BigDecimal.ZERO));
         // The OCO placement only actually protects 0.9 of the position's real 1.0 -- step-size
@@ -957,7 +853,7 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    @DisplayName("evaluateSignal: an OCO protection residual AT OR ABOVE the exchange's own minQty is a real, meaningful gap, not dust -- cancels the just-placed OCO and emergency-flattens the WHOLE position rather than accepting a known, partially-unprotected state -- the actual review fix (\"OCO protection gap is detected but accepted\")")
+    @DisplayName("evaluateSignal: an OCO protection residual AT OR ABOVE the exchange's own minQty is a real, meaningful gap, not dust -- cancels the just-placed OCO and emergency-flattens the WHOLE position rather than accepting a known, partially-unprotected state")
     void ocoProtectionGap_meaningfulResidual_emergencyFlattensWholePosition() {
         List<Fill> fills = List.of(new Fill(BigDecimal.valueOf(100.0), BigDecimal.valueOf(1.0), BigDecimal.ZERO, "USDT"));
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(successfulFill(1.0, 100.0, fills));
@@ -971,32 +867,20 @@ class AutoTradeServiceTest {
 
         verify(positionSafetyService).emergencyFlatten(any(), any(), any(), any(), any(),
             contains("meaningful unprotected residual"));
-        // Must NOT have proceeded to the normal "OCO successfully placed" audit trail -- the
-        // whole point of this fix is that a meaningful gap is never accepted as a success.
+        // Must NOT have proceeded to the normal "OCO successfully placed" audit trail -- a
+        // meaningful gap must never be accepted as a success.
         verify(credentialService, never()).audit(any(), any(), any(), eq("SLTP_OCO_PLACED"), any());
     }
 
     /**
-     * Correction (P3-11 re-audit pass): this test and the one immediately below used to verify
-     * `mongoTemplate.updateFirst(..., Position.class)` directly and expected raiseCritical to
-     * fire from stubbing that mock's return value. Confirmed stale by direct inspection: neither
-     * assertion can ever hold against the CURRENT code -- AutoTradeService itself makes no direct
-     * `mongoTemplate.updateFirst(Position.class)` call anywhere at all (confirmed by grep); that
-     * responsibility was refactored out to `positionMonitorService.atomicSetOcoPlaced(...)` (see
-     * this class's own javadoc a few hundred lines above, "protectedQuantity persistence is
-     * inconsistent"), and this test was simply never updated to match. It also never caught this
-     * drift, because of the same pre-existing test-discovery gap this pass's own investigation
-     * surfaced (this file was silently running only a subset of its declared @Test methods before
-     * now) -- so this staleness went undetected rather than being an intentional, disclosed gap.
-     * The real atomic-update behavior this test's own name describes -- raising
-     * OCO_PLACED_BUT_NOT_RECORDED when the update matches zero documents -- IS still correctly
-     * covered, just in PositionMonitorServiceTest now (its own atomicSetOcoPlaced tests), which is
-     * the class that actually owns that Mongo call today. Rewritten here to verify what
-     * AutoTradeService is actually responsible for: that it delegates to
-     * positionMonitorService.atomicSetOcoPlaced with the correct protectedQuantity argument.
+     * AutoTradeService delegates OCO placement recording to
+     * positionMonitorService.atomicSetOcoPlaced. The atomic Mongo update itself (including the
+     * OCO_PLACED_BUT_NOT_RECORDED incident on a zero-match update) is covered separately in
+     * PositionMonitorServiceTest, which owns that call; this test verifies only that
+     * AutoTradeService delegates to it with the correct protectedQuantity argument.
      */
     @Test
-    @DisplayName("evaluateSignal: delegates OCO placement recording to positionMonitorService.atomicSetOcoPlaced -- the actual current contract; the atomic Mongo update itself (including the OCO_PLACED_BUT_NOT_RECORDED incident on a zero-match update) is covered in PositionMonitorServiceTest, which now owns that call")
+    @DisplayName("evaluateSignal: delegates OCO placement recording to positionMonitorService.atomicSetOcoPlaced")
     void ocoPlacementRecording_delegatedToPositionMonitorService() {
         List<Fill> fills = List.of(new Fill(BigDecimal.valueOf(100.0), BigDecimal.valueOf(1.0), BigDecimal.ZERO, "USDT"));
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(successfulFill(1.0, 100.0, fills));
@@ -1009,7 +893,7 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    @DisplayName("evaluateSignal: protectedQuantity is passed through to positionMonitorService.atomicSetOcoPlaced exactly as the broker reported it (actualProtectedQuantity), not the position's own full, unprotected quantity -- the actual fix for a real bug an external review caught: an earlier version of this call silently dropped this argument")
+    @DisplayName("evaluateSignal: protectedQuantity is passed through to positionMonitorService.atomicSetOcoPlaced exactly as the broker reported it (actualProtectedQuantity), not the position's own full, unprotected quantity")
     void protectedQuantity_passedThroughToPositionMonitorService() {
         List<Fill> fills = List.of(new Fill(BigDecimal.valueOf(100.0), BigDecimal.valueOf(1.0), BigDecimal.ZERO, "USDT"));
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(successfulFill(1.0, 100.0, fills));
@@ -1060,18 +944,18 @@ class AutoTradeServiceTest {
         ArgumentCaptor<Position> positionCaptor = ArgumentCaptor.forClass(Position.class);
         verify(positionRepo).save(positionCaptor.capture());
         Position saved = positionCaptor.getValue();
-        assertThat(saved.getStatus()).isEqualTo("OPEN"); // per "P0 #3" — not a separate invisible status
+        assertThat(saved.getStatus()).isEqualTo("OPEN"); // not a separate invisible status
         assertThat(saved.isAvgEntryPriceUnverified()).isTrue();
         assertThat(saved.getAvgEntryPrice()).isNull(); // never fabricated from the client's claimed entry price
         verify(positionSafetyService).emergencyFlatten(any(), any(), any(), any(), eq(saved), any());
     }
 
     @Test
-    @DisplayName("evaluateSignal: the evaluation lease was lost (expired, or reclaimed by another worker) before reaching the exchange -- aborts WITHOUT placing a real order, and releases the slot/exposure reservations -- the actual review fix (\"AutoTrade recovery can still compete with a live evaluator after lease expiry\")")
+    @DisplayName("evaluateSignal: the evaluation lease was lost (expired, or reclaimed by another worker) before reaching the exchange -- aborts WITHOUT placing a real order, and releases the slot/exposure reservations")
     void evaluationLeaseLost_abortsWithoutContactingExchange() {
         // The @BeforeEach's own generic findAndModify(TradeCallRecord.class) stub covers BOTH
         // the initial PENDING -> EVALUATING claim (must succeed, or this test never reaches
-        // evaluation at all) AND this pass's own new atomic lease-extension check right before
+        // evaluation at all) AND the atomic lease-extension check right before
         // the exchange call -- sequential stubbing here overrides it so the FIRST call (the
         // claim) still succeeds, but the SECOND (the lease-extension re-check this test actually
         // exercises) returns null, simulating a lost/reclaimed lease.
@@ -1082,44 +966,33 @@ class AutoTradeServiceTest {
 
         service.evaluateSignal("user1", signal);
 
-        // P3-11 correction: this used to assert verifyNoInteractions(adapter) outright, but that
-        // was never actually true of this method's real, intentional control flow -- pricing
-        // (getCurrentPrice), sizing (sizePosition), order-book depth (hasSufficientOrderBookDepth)
-        // and exchange filter validation (getSymbolRules) are all read-only market-data calls
-        // against `adapter` that happen BEFORE this lease re-check, by design, since sizing and
-        // risk checks need real numbers to evaluate against. The lease re-check sits as close to
-        // the one call that actually matters -- adapter.placeOrder(), the real money-moving write
-        // -- as this method's structure allows (see its own comment a few lines above in
-        // AutoTradeService.java). This test's own name/intent ("aborts without contacting the
-        // exchange") was really always about never placing a real order once the lease is lost,
-        // which is what's actually verified now; the stale, over-broad assertion just happened to
-        // still pass throughout, since the pre-existing sandbox test-discovery gap documented
-        // elsewhere in this file meant this test never actually ran until this pass.
+        // Pricing (getCurrentPrice), sizing (sizePosition), order-book depth
+        // (hasSufficientOrderBookDepth) and exchange filter validation (getSymbolRules) are all
+        // read-only market-data calls against `adapter` that happen BEFORE this lease re-check,
+        // by design, since sizing and risk checks need real numbers to evaluate against. The
+        // lease re-check sits as close to the one call that actually matters --
+        // adapter.placeOrder(), the real money-moving write -- as this method's structure
+        // allows. What this test verifies is that a lost lease never results in a real order
+        // being placed.
         verify(adapter, never()).placeOrder(any(), any(), any(), any());
         verify(adapter, never()).placeExitOco(any(), any(), any(), any(), any(), any(), any(), any(), any());
         verify(slotReservationService).release(any());
         verify(exposureReservationService).release(anyString());
-        // Third re-audit fix ("An aborted entry leaves an order stuck in SUBMITTING" -- external
-        // review, fourth pass, item #2, full context in abortEntrySubmission's own javadoc): this
-        // abort also runs after orderService.markSubmitting(omsOrder), so it must resolve omsOrder
-        // too, not just release the reservations.
+        // This abort also runs after orderService.markSubmitting(omsOrder), so it must resolve
+        // omsOrder too, not just release the reservations.
         verify(orderService).markSubmissionFailed(any(), any());
     }
 
     @Test
-    @DisplayName("evaluateSignal: a kill-switch race actually detected -- trading halted DURING this evaluation, after the atomic claim already succeeded -- immediately reverses the just-opened position via emergency flatten rather than proceeding to protect and hold it -- the actual review fix (\"Kill switch is improved but still not a strict global execution barrier\"), a bounded safety net for the one irreducible window that a purely pre-submission check can never fully close")
+    @DisplayName("evaluateSignal: a kill-switch race actually detected -- trading halted DURING this evaluation, after the atomic claim already succeeded -- immediately reverses the just-opened position via emergency flatten rather than proceeding to protect and hold it, as a bounded safety net for the one irreducible window that a purely pre-submission check can never fully close")
     void killSwitchRaceDetected_emergencyFlattensJustOpenedPosition() {
         RiskProfile haltedFresh = new RiskProfile();
         haltedFresh.setId("profile1");
         haltedFresh.setTradingHalted(true);
         when(riskProfileRepo.findById("profile1")).thenReturn(java.util.Optional.of(haltedFresh));
         profile.setId("profile1");
-        // P3-11 fix: this test never stubbed adapter.placeOrder(...), so it returned Mockito's
-        // default null -- `if (!result.success()) return;` a bit further down this method (well
-        // BEFORE the kill-switch race re-check this test actually exercises) then NPE'd
-        // uncaught, aborting evaluateSignal entirely before positionSafetyService was ever
-        // touched at all ("zero interactions with this mock"). Masked by the same pre-existing
-        // sandbox test-discovery gap noted elsewhere in this file.
+        // adapter.placeOrder must be stubbed to succeed so evaluation actually reaches the
+        // kill-switch race re-check this test exercises.
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(successfulFill(1.0, 100.0, List.of()));
 
         service.evaluateSignal("user1", signal);
@@ -1146,18 +1019,13 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    @DisplayName("evaluateSignal: the entry order's own broker/mode/triggerSource/SL-TP metadata is recorded on the OMS Order via recordEntryMetadata -- the actual review fix (\"OMS/ExecutedOrder full unification\"), a single record instead of two silently parallel ones")
+    @DisplayName("evaluateSignal: the entry order's own broker/mode/triggerSource/SL-TP metadata is recorded on the OMS Order via recordEntryMetadata, a single record instead of two silently parallel ones")
     void entryOrderMetadata_recordedOnSingleOmsOrder() {
         com.tradevision.model.Order realOmsOrder = new com.tradevision.model.Order();
         realOmsOrder.setId("oms-order-1");
         when(orderService.create(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(realOmsOrder);
-        // P3-11 fix: this test never stubbed adapter.placeOrder(...), so it returned Mockito's
-        // default null, which flowed into `if (!result.success())` (NPE), caught by an outer
-        // catch block whose own logging unconditionally called result.success() again (a second,
-        // uncaught NPE) -- silently swallowed further up, so recordEntryMetadata (this test's own
-        // assertion) was never reached. This was masked for a long time by a pre-existing sandbox
-        // test-discovery gap that never actually ran this test at all -- see the surrounding
-        // P3-11 fixes in this file and PositionMonitorServiceTest for the same class of bug.
+        // adapter.placeOrder must be stubbed to succeed so evaluation actually reaches the
+        // recordEntryMetadata call this test asserts on.
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(successfulFill(1.0, 100.0, List.of()));
 
         service.evaluateSignal("user1", signal);
@@ -1167,7 +1035,7 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    @DisplayName("evaluateSignal: BOTH the initial OMS setup AND its own fallback creation failing still results in a normal, successful position creation -- the real, money-moving trade already happened by this point, and this codebase's own explicit safety principle (see omsServiceThrowsEverywhere_realOrderFlowStillSucceeds) is that a record-keeping failure must never abandon it. The actual regression this session caught and fixed before it shipped: an earlier version of this same fix returned early here, which would have left a real executed trade with no position ever created")
+    @DisplayName("evaluateSignal: BOTH the initial OMS setup AND its own fallback creation failing still results in a normal, successful position creation -- the real, money-moving trade already happened by this point, and this codebase's own explicit safety principle (see omsServiceThrowsEverywhere_realOrderFlowStillSucceeds) is that a record-keeping failure must never abandon it")
     void bothOmsCreationAttemptsFail_positionStillCreatedSuccessfully() {
         when(orderService.create(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
             .thenThrow(new RuntimeException("simulated OMS bug -- both the initial attempt and the fallback hit this same stub"));
@@ -1175,8 +1043,8 @@ class AutoTradeServiceTest {
 
         service.evaluateSignal("user1", signal);
 
-        // The real, hardened order/position flow completed normally despite BOTH OMS creation
-        // attempts blowing up -- this is the whole point of this session's own fix.
+        // The order/position flow must complete normally despite BOTH OMS creation attempts
+        // blowing up.
         verify(adapter).placeOrder(any(), any(), any(), any());
         ArgumentCaptor<Position> positionCaptor = ArgumentCaptor.forClass(Position.class);
         verify(positionRepo, atLeastOnce()).save(positionCaptor.capture());
@@ -1187,12 +1055,10 @@ class AutoTradeServiceTest {
     }
 
     /**
-     * Review finding ("Database/OMS failure can still be followed by a real exchange order" --
-     * external review, twenty-first pass, P0, full context in AutoTradeService's own updated
-     * OMS-setup catch block comment): the actual test proving the LIVE-specific halt -- the
-     * exact opposite outcome from bothOmsCreationAttemptsFail_positionStillCreatedSuccessfully
-     * just above, which deliberately stays on the default TESTNET credential and is correctly
-     * unaffected by this fix.
+     * Proves the LIVE-specific halt -- the exact opposite outcome from
+     * bothOmsCreationAttemptsFail_positionStillCreatedSuccessfully just above, which
+     * deliberately stays on the default TESTNET credential and is correctly unaffected by this
+     * halt behavior.
      */
     @Test
     @DisplayName("evaluateSignal: for a LIVE credential specifically, OMS setup failing HALTS this execution entirely -- the exchange is never contacted, unlike the TESTNET/PAPER case just above")
@@ -1210,19 +1076,15 @@ class AutoTradeServiceTest {
     }
 
     /**
-     * P3-10 fix ("PAPER mode requires 'live authorization' and isn't selectable in UI" --
-     * external review, confirmed real by direct inspection): before this fix,
-     * evaluateForProfileLocked's own LIVE-authorization gate read
-     * `credential.getMode() != BrokerMode.TESTNET`, which blocked PAPER exactly like LIVE even
-     * though profile.isLiveAutoTradeAuthorized() was never set for a PAPER credential (there is
-     * no UI or reason to authorize "live" trading on a mode that never touches Binance). The
-     * bug's real-world effect: a PAPER credential could NEVER autonomously trade at all. This
-     * test proves the actual fix -- a PAPER credential with liveAutoTradeAuthorized left at its
-     * default (false) still reaches order placement, and is never rejected with the
+     * evaluateForProfileLocked's LIVE-authorization gate must not block PAPER the same way it
+     * blocks LIVE, since profile.isLiveAutoTradeAuthorized() is never set for a PAPER
+     * credential (there is no UI or reason to authorize "live" trading on a mode that never
+     * touches Binance). This test proves a PAPER credential with liveAutoTradeAuthorized left
+     * at its default (false) still reaches order placement, and is never rejected with the
      * LIVE-specific reason.
      */
     @Test
-    @DisplayName("evaluateSignal: a PAPER credential trades normally with NO live authorization -- the actual P3-10 fix, since PaperBrokerAdapter never touches Binance and has nothing for that gate to protect")
+    @DisplayName("evaluateSignal: a PAPER credential trades normally with NO live authorization, since PaperBrokerAdapter never touches Binance and has nothing for that gate to protect")
     void paperMode_noLiveAuthorization_stillTradesNormally() {
         switchToPaper();
         assertThat(profile.isLiveAutoTradeAuthorized()).isFalse(); // deliberately never set -- the whole point
@@ -1254,10 +1116,10 @@ class AutoTradeServiceTest {
         verify(positionSafetyService, never()).emergencyFlatten(any(), any(), any(), any(), any(), any());
     }
 
-    // ── Exposure reservation ("P0 #3") ────────────────────────────────────────
+    // ── Exposure reservation ────────────────────────────────────────
 
     @Test
-    @DisplayName("evaluateSignal: exposure reservation rejection releases the slot and never places the order — the exact P0 #3 integration point")
+    @DisplayName("evaluateSignal: exposure reservation rejection releases the slot and never places the order")
     void exposureReservationRejected_releasesSlotAndSkips() {
         when(exposureReservationService.reserve(any(), any(), any(), any(), any(), any(), any(), any(), anyBoolean()))
             .thenReturn(ExposureReservationService.ExposureReserveResult.reject("Would exceed total exposure cap of 1000"));
@@ -1275,7 +1137,7 @@ class AutoTradeServiceTest {
         verify(executionContextService).recordTerminal(any(), eq("REJECTED_EXPOSURE_CAP"), org.mockito.ArgumentMatchers.contains("exceed total exposure cap"));
     }
 
-    // ── Circuit breaker atomicity ("P1 #8") ───────────────────────────────────
+    // ── Circuit breaker atomicity ───────────────────────────────────
 
     @Test
     @DisplayName("evaluateSignal: a failed order atomically increments consecutiveOrderFailures via Mongo, trips the circuit breaker at the real post-increment value")
@@ -1313,7 +1175,7 @@ class AutoTradeServiceTest {
         verify(credentialService, never()).audit(any(), any(), any(), eq("CIRCUIT_BREAKER_TRIPPED"), any());
     }
 
-    // ── Durable evaluation claim ("P1 #5") ────────────────────────────────────
+    // ── Durable evaluation claim ────────────────────────────────────
 
     @Test
     @DisplayName("evaluateSignal: a signal not in PENDING state (already claimed by another dispatch, or already evaluated) is skipped entirely — never re-evaluated")
@@ -1333,12 +1195,11 @@ class AutoTradeServiceTest {
 
         service.evaluateSignal("user1", signal);
 
-        // Review finding ("#3 — Signal engine"): this scenario now ALSO triggers a VALIDATING
-        // signalStatus update (advanceSignalStatus runs before the enabled-symbols check) —
-        // meaning more than one mongoTemplate.updateFirst(..., TradeCallRecord.class) call can
-        // legitimately happen here now. Capturing all of them and finding the specific
-        // autoTradeEvalStatus=EVALUATED one is the correct assertion, not assuming exactly one
-        // call total.
+        // This scenario also triggers a VALIDATING signalStatus update (advanceSignalStatus
+        // runs before the enabled-symbols check) — meaning more than one
+        // mongoTemplate.updateFirst(..., TradeCallRecord.class) call can legitimately happen
+        // here. Capturing all of them and finding the specific autoTradeEvalStatus=EVALUATED
+        // one is the correct assertion, not assuming exactly one call total.
         org.mockito.ArgumentCaptor<org.springframework.data.mongodb.core.query.Update> updateCaptor =
             org.mockito.ArgumentCaptor.forClass(org.springframework.data.mongodb.core.query.Update.class);
         verify(mongoTemplate, atLeastOnce()).updateFirst(any(), updateCaptor.capture(), eq(TradeCallRecord.class));
@@ -1372,10 +1233,8 @@ class AutoTradeServiceTest {
     }
 
     /**
-     * Review finding ("evaluateSignal() final state update is not ownership-conditional" --
-     * external review, twenty-fourth pass, P1, full context in evaluateSignal's own updated
-     * finally-block comment): the actual test proving the finalization query genuinely includes
-     * the ownership condition now, not just signal.getId() alone.
+     * Proves the finalization query includes the ownership condition, not just
+     * signal.getId() alone.
      */
     @Test
     @DisplayName("evaluateSignal: the final autoTradeEvalStatus update is conditional on evaluationOwner, not just signal.getId() -- a worker whose lease has since been reclaimed by a different worker cannot overwrite that worker's own state")
@@ -1397,12 +1256,11 @@ class AutoTradeServiceTest {
 
         org.mockito.ArgumentCaptor<org.springframework.data.mongodb.core.query.Update> updateCaptor =
             org.mockito.ArgumentCaptor.forClass(org.springframework.data.mongodb.core.query.Update.class);
-        // atLeastOnce(), not once() -- this pass's own new lease-extension re-check (see
-        // AutoTradeService's own updated lease-check comment) ALSO calls findAndModify against
-        // TradeCallRecord.class now, so getAllValues().get(0) -- the FIRST call, the original
-        // PENDING -> EVALUATING claim this test actually means to inspect -- is used instead of
-        // getValue() (which would return the LAST call, the lease-extension update that only
-        // sets evaluationLeaseUntil, not evaluationOwner).
+        // atLeastOnce(), not once() -- the lease-extension re-check also calls findAndModify
+        // against TradeCallRecord.class, so getAllValues().get(0) -- the FIRST call, the
+        // original PENDING -> EVALUATING claim this test actually means to inspect -- is used
+        // instead of getValue() (which would return the LAST call, the lease-extension update
+        // that only sets evaluationLeaseUntil, not evaluationOwner).
         verify(mongoTemplate, atLeastOnce()).findAndModify(any(), updateCaptor.capture(), any(), eq(TradeCallRecord.class));
         var setDoc = (org.bson.Document) updateCaptor.getAllValues().get(0).getUpdateObject().get("$set");
         assertThat(setDoc.getString("evaluationOwner")).isNotBlank();
@@ -1411,7 +1269,7 @@ class AutoTradeServiceTest {
         assertThat((java.time.LocalDateTime) leaseUntil).isAfter(java.time.LocalDateTime.now());
     }
 
-    // ── Server signal pre-flight validation ("P0 — unprotected position") ─────
+    // ── Server signal pre-flight validation ─────
 
     @Test
     @DisplayName("evaluateSignal: refuses the trade when the server signal's stop-loss is zero — never opens a position that can't be protected")
@@ -1443,19 +1301,16 @@ class AutoTradeServiceTest {
         assertThat(detailCaptor.getValue()).containsIgnoringCase("non-finite");
     }
 
-    // ── OCO recovery state ("P1 #4") ────────────────────────────────────────────
+    // ── OCO recovery state ────────────────────────────────────────────
 
     @Test
-    @DisplayName("placeExitOcoOrEmergencyFlatten: a recovered-but-not-active OCO (e.g. ALL_DONE) is recorded on the position BEFORE flattening — emergencyFlatten's own P0 #1 state machine then verifies it, rather than this path discarding the known OCO ID")
+    @DisplayName("placeExitOcoOrEmergencyFlatten: a recovered-but-not-active OCO (e.g. ALL_DONE) is recorded on the position BEFORE flattening — emergencyFlatten's own state machine then verifies it, rather than this path discarding the known OCO ID")
     void ocoRecoveredButNotActive_recordsIdBeforeFlattening() {
-        // Simulates BinanceBrokerAdapter's own P1 #4 fix: recovery found a real OCO record, but
-        // its listOrderStatus wasn't EXEC_STARTED — success=false, but a real ocoOrderListId is
-        // still present.
-        // Review finding (missing-stub issue found across several tests in this file — see
-        // successfulEntry_populatesFillLedgerWithOmsOrderId's own comment for the full
-        // mechanics): OCO protection is only ever attempted after a successful ENTRY — without
-        // this stub the entry itself would NPE first, and emergencyFlatten (this test's own
-        // verification target) would never be reached at all.
+        // Simulates recovery finding a real OCO record whose listOrderStatus wasn't
+        // EXEC_STARTED — success=false, but a real ocoOrderListId is still present.
+        // OCO protection is only ever attempted after a successful ENTRY — without this stub
+        // the entry itself would NPE first, and emergencyFlatten (this test's own verification
+        // target) would never be reached at all.
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(successfulFill(1.0, 100.0, List.of()));
         when(adapter.placeExitOco(any(), any(), any(), any(), any(), any(), any(), any(), any()))
             .thenReturn(new OcoOrderResult(false, "recovered-oco-999", "{}",
@@ -1465,20 +1320,17 @@ class AutoTradeServiceTest {
 
         ArgumentCaptor<Position> positionCaptor = ArgumentCaptor.forClass(Position.class);
         verify(positionSafetyService).emergencyFlatten(any(), any(), any(), any(), positionCaptor.capture(), any());
-        // Review finding ("LIVE entry OCO still has no pre-submission ProtectionAttempt" --
-        // external review, twenty-fourth pass, P0, full context in AutoTradeService's own
-        // updated placeExitOcoOrEmergencyFlatten): this method's own atomicSetOcoPlaced is now
-        // PositionMonitorService's already-hardened version, reused rather than duplicated --
-        // the real position.setOcoOrderListId(...) mutation happens inside THAT class's own
-        // method body, which this test's own mocked positionMonitorService does not execute.
-        // The correct thing for this unit test to verify is that the call was made with the
-        // right recovered OCO id, BEFORE emergencyFlatten -- the mutation itself is
-        // PositionMonitorService's own test responsibility (already covered there).
+        // atomicSetOcoPlaced is PositionMonitorService's own hardened method, reused rather
+        // than duplicated — the real position.setOcoOrderListId(...) mutation happens inside
+        // THAT class's own method body, which this test's own mocked positionMonitorService
+        // does not execute. The correct thing for this unit test to verify is that the call
+        // was made with the right recovered OCO id, BEFORE emergencyFlatten -- the mutation
+        // itself is PositionMonitorService's own test responsibility (already covered there).
         verify(positionMonitorService).atomicSetOcoPlaced(any(), eq("recovered-oco-999"), any(), any());
     }
 
     @Test
-    @DisplayName("placeExitOcoOrEmergencyFlatten: a successful OCO placement gets its own real OMS Order record (side=SELL, type=OCO), separate from the entry order's own record -- the actual review fix (\"OMS not actually authoritative\"), extended from entry-only to OCO placement too")
+    @DisplayName("placeExitOcoOrEmergencyFlatten: a successful OCO placement gets its own real OMS Order record (side=SELL, type=OCO), separate from the entry order's own record")
     void ocoPlacementSuccess_getsOwnOmsOrderRecord() {
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(successfulFill(1.0, 100.0, List.of()));
         when(adapter.placeExitOco(any(), any(), any(), any(), any(), any(), any(), any(), any()))
@@ -1511,19 +1363,15 @@ class AutoTradeServiceTest {
         service.evaluateSignal("user1", signal);
 
         verify(adapter).placeExitOco(any(), any(), any(), any(), any(), any(), any(), any(), any());
-        // Review finding, same context as ocoRecoveredButNotActive_recordsIdBeforeFlattening's
-        // own updated comment above: the real position mutation now happens inside
-        // PositionMonitorService's own atomicSetOcoPlaced, mocked here -- verify the call
-        // itself, not a mutation the mock does not perform.
+        // Same as ocoRecoveredButNotActive_recordsIdBeforeFlattening above: the real position
+        // mutation happens inside PositionMonitorService's own atomicSetOcoPlaced, mocked here
+        // -- verify the call itself, not a mutation the mock does not perform.
         verify(positionMonitorService).atomicSetOcoPlaced(any(), eq("oco-999"), any(), any());
     }
 
     /**
-     * Review finding ("LIVE entry OCO still has no pre-submission ProtectionAttempt" --
-     * external review, twenty-fourth pass, P0, full context in
-     * placeExitOcoOrEmergencyFlatten's own updated call sites): the actual test proving the new
-     * LIVE-specific halt for the initial entry OCO -- the same pattern this session already
-     * proved for PositionMonitorService's own 3 OCO call sites, now extended to this one too.
+     * Proves the LIVE-specific halt for the initial entry OCO, the same pattern already proved
+     * for PositionMonitorService's own 3 OCO call sites.
      */
     @Test
     @DisplayName("placeExitOcoOrEmergencyFlatten: for a LIVE credential, a failed pre-submission ProtectionAttempt HALTS before the initial entry OCO exchange call is ever made")
@@ -1543,8 +1391,7 @@ class AutoTradeServiceTest {
     @Test
     @DisplayName("placeExitOcoOrEmergencyFlatten: a genuine placement failure with NO recovered OCO ID leaves the position's ocoOrderListId null — nothing fabricated")
     void ocoGenuineFailureNoRecovery_leavesOcoIdNull() {
-        // Review finding (missing-stub issue — see ocoRecoveredButNotActive_recordsIdBeforeFlattening's
-        // own comment on this same file for the full mechanics): same missing entry-order stub.
+        // Same entry-order stub as ocoRecoveredButNotActive_recordsIdBeforeFlattening above.
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(successfulFill(1.0, 100.0, List.of()));
         when(adapter.placeExitOco(any(), any(), any(), any(), any(), any(), any(), any(), any()))
             .thenReturn(OcoOrderResult.failure("insufficient balance", "{}"));
@@ -1557,11 +1404,8 @@ class AutoTradeServiceTest {
     }
 
     /**
-     * Review finding ("OCO recovery still returns null for some verification failures" --
-     * external review, twenty-fourth pass, P1, full context in OcoOrderResult's own updated
-     * class javadoc): the actual test proving the new safety check -- a verification-uncertain
-     * result must NEVER trigger emergencyFlatten, since there's nothing to verify a real OCO
-     * against in that state.
+     * A verification-uncertain result must NEVER trigger emergencyFlatten, since there's
+     * nothing to verify a real OCO against in that state.
      */
     @Test
     @DisplayName("placeExitOcoOrEmergencyFlatten: a verification-uncertain OCO result NEVER triggers emergencyFlatten -- halts and escalates instead of guessing")
@@ -1602,20 +1446,15 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    @DisplayName("evaluateSignal: when the OMS order was created, the fill ledger is populated with that order's id — the review's own '#6' sequencing (Fill Ledger references the OMS Order)")
+    @DisplayName("evaluateSignal: when the OMS order was created, the fill ledger is populated with that order's id (Fill Ledger references the OMS Order)")
     void successfulEntry_populatesFillLedgerWithOmsOrderId() {
         com.tradevision.model.Order realOmsOrder = new com.tradevision.model.Order();
         realOmsOrder.setId("oms-order-1");
         when(orderService.create(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(realOmsOrder);
-        // Review finding (caught while fixing a DIFFERENT test's assumed baseline — this test
-        // never stubbed adapter.placeOrder() at all. Mockito's default answer for an unstubbed
-        // method returning an ordinary object type (a record included) is null, not an empty or
-        // default instance — verified precisely, not assumed, before concluding this was
-        // actually broken. AutoTradeService.java's own `if (!result.success())` dereferences
-        // that null immediately, meaning this test could never have reached the
-        // recordFills() call it claims to verify — it would NPE first, get caught by
-        // evaluateSignal's own outer catch (EVALUATION_FAILED), and the verify() below would
-        // fail because recordFills() was genuinely never called.
+        // adapter.placeOrder must be stubbed to succeed, or AutoTradeService's
+        // `if (!result.success())` check NPEs on a null result, caught by evaluateSignal's own
+        // outer catch (EVALUATION_FAILED) before the recordFills() call this test verifies is
+        // ever reached.
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(successfulFill(1.0, 100.0, List.of()));
 
         service.evaluateSignal("user1", signal);
@@ -1624,10 +1463,8 @@ class AutoTradeServiceTest {
     }
 
     /**
-     * Audit item P1-7 ("AutoTradeService entry flow doesn't handle a Position-save failure after
-     * a confirmed fill" -- full context in AutoTradeService.savePositionOrRaiseIncident's own
-     * javadoc): the actual test proving the new incident is raised immediately, rather than
-     * relying silently on PositionMonitorService's own later reconciliation sweep.
+     * Proves the incident is raised immediately, rather than relying silently on
+     * PositionMonitorService's own later reconciliation sweep.
      */
     @Test
     @DisplayName("evaluateSignal: positionRepo.save() throwing after a confirmed fill raises a CRITICAL POSITION_SAVE_FAILED incident immediately, naming the broker order")
@@ -1644,7 +1481,7 @@ class AutoTradeServiceTest {
             eq("POSITION_SAVE_FAILED"), contains("simulated Mongo write failure"));
     }
 
-    // ── Position.ledgerRecordingIncomplete ("Position created before ledger is guaranteed") ──
+    // ── Position.ledgerRecordingIncomplete ──
 
     @Test
     @DisplayName("evaluateSignal: when recordFills returns as many records as fills provided, ledgerRecordingIncomplete stays false")
@@ -1662,7 +1499,7 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    @DisplayName("evaluateSignal: when recordFills returns FEWER records than expected (a real gap), ledgerRecordingIncomplete is set true — the actual review fix, making a silent ledger failure visible")
+    @DisplayName("evaluateSignal: when recordFills returns FEWER records than expected (a real gap), ledgerRecordingIncomplete is set true, making a silent ledger failure visible")
     void ledgerRecordingFailed_flagSetTrue() {
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(successfulFill(1.0, 100.0, List.of()));
         when(fillLedgerService.recordFills(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
@@ -1676,7 +1513,7 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    @DisplayName("evaluateSignal: when recordFills returns fewer records than expected on a NEW position's entry fill, the profile is halted and a CRITICAL incident is raised -- the actual review fix (\"Fill Ledger can still fail without stopping financial state changes\"), turning a silent gap into a loud, investigatable one")
+    @DisplayName("evaluateSignal: when recordFills returns fewer records than expected on a NEW position's entry fill, the profile is halted and a CRITICAL incident is raised, turning a silent gap into a loud, investigatable one")
     void ledgerRecordingFailedOnEntry_haltsProfileAndRaisesIncident() {
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(successfulFill(1.0, 100.0, List.of()));
         when(fillLedgerService.recordFills(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
@@ -1698,7 +1535,7 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    @DisplayName("evaluateSignal: a genuine position-ledger mismatch at entry halts the profile and raises a CRITICAL incident -- the actual review fix (\"Position Ledger is still not authoritative\"), elevating a cross-check from pure observability to a real consequence")
+    @DisplayName("evaluateSignal: a genuine position-ledger mismatch at entry halts the profile and raises a CRITICAL incident, elevating a cross-check from pure observability to a real consequence")
     void positionLedgerMismatchAtEntry_haltsProfileAndRaisesIncident() {
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(successfulFill(1.0, 100.0, List.of()));
         when(positionLedgerService.reconcileAgainstLedger(any(), any()))
@@ -1720,7 +1557,7 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    @DisplayName("evaluateSignal: the same client order id is used for both the OMS record and the actual broker request, and it stays within Binance's own 36-character limit -- the actual review fix (\"OMS clientOrderId doesn't match the actual broker clientOrderId\" and \"Autonomous path's sig-<UUID> client order ID may exceed Binance's length limit\")")
+    @DisplayName("evaluateSignal: the same client order id is used for both the OMS record and the actual broker request, and it stays within Binance's own 36-character limit")
     void clientOrderId_consistentBetweenOmsAndBrokerRequest_andWithinLengthLimit() {
         com.tradevision.model.Order realOmsOrder = new com.tradevision.model.Order();
         realOmsOrder.setId("oms-order-1");
@@ -1743,7 +1580,7 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    @DisplayName("P1-3: the same signal evaluated against two different auto-trade credentials produces two DIFFERENT clientOrderIds — the old signal-id-only basis produced the SAME id for both, which the unique index then rejected as a duplicate for the second credential")
+    @DisplayName("the same signal evaluated against two different auto-trade credentials produces two DIFFERENT clientOrderIds — a signal-id-only basis would produce the SAME id for both, which the unique index would then reject as a duplicate for the second credential")
     void sameSignal_twoCredentials_producesDistinctClientOrderIds() {
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(successfulFill(1.0, 100.0, List.of()));
 
@@ -1786,10 +1623,8 @@ class AutoTradeServiceTest {
     void omsServiceThrowsEverywhere_realOrderFlowStillSucceeds() {
         when(orderService.create(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
             .thenThrow(new RuntimeException("simulated OMS bug"));
-        // Review finding (same missing-stub issue found and fixed across several tests in this
-        // file — see successfulEntry_populatesFillLedgerWithOmsOrderId's own comment for the
-        // full mechanics): this test's own assertions (positionRepo.save, isAvgEntryPriceUnverified)
-        // require passing the `if (!result.success())` check in AutoTradeService.java, which
+        // This test's own assertions (positionRepo.save, isAvgEntryPriceUnverified) require
+        // passing the `if (!result.success())` check in AutoTradeService.java, which
         // dereferences result with no null guard — without this stub, Mockito's default null
         // return for this unstubbed record-returning method would NPE before ever reaching
         // positionRepo.save(), which the OMS-throws-first framing of this test could otherwise
@@ -1799,8 +1634,8 @@ class AutoTradeServiceTest {
 
         service.evaluateSignal("user1", signal);
 
-        // The real, hardened order/position flow completed normally despite the OMS blowing up
-        // at the very first call — this is the whole point of the additive design.
+        // The order/position flow must complete normally despite the OMS blowing up at the
+        // very first call -- that is the point of this additive design.
         verify(adapter).placeOrder(any(), any(), any(), any());
         ArgumentCaptor<Position> positionCaptor = ArgumentCaptor.forClass(Position.class);
         verify(positionRepo, atLeastOnce()).save(positionCaptor.capture());
@@ -1810,16 +1645,14 @@ class AutoTradeServiceTest {
         verify(orderService, never()).recordBrokerResult(any(), any());
     }
 
-    // ── Signal lifecycle ("#3 — Signal engine") ─────────────────────────────────
+    // ── Signal lifecycle ─────────────────────────────────────────
 
     @Test
     @DisplayName("evaluateSignal: a fully successful entry progresses the in-memory signal all the way to EXECUTED")
     void successfulEntry_signalReachesExecuted() {
-        // Review finding (missing-stub issue found across several tests in this file — see
-        // successfulEntry_populatesFillLedgerWithOmsOrderId's own comment for the full
-        // mechanics): EXECUTED is only ever set on the success path PAST the
-        // `if (!result.success())` null-dereference — without this stub the signal would never
-        // reach EXECUTED at all, it would land on EVALUATION_FAILED instead.
+        // EXECUTED is only ever set on the success path PAST the `if (!result.success())`
+        // null-dereference — without this stub the signal would never reach EXECUTED at all,
+        // it would land on EVALUATION_FAILED instead.
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(successfulFill(1.0, 100.0, List.of()));
 
         service.evaluateSignal("user1", signal);
@@ -1862,15 +1695,13 @@ class AutoTradeServiceTest {
         service.evaluateSignal("user1", signal);
 
         assertThat(signal.getSignalStatus()).isEqualTo(com.tradevision.model.SignalStatus.VALIDATING);
-        // Review finding ("ExecutionContext can remain STARTED on valid rejection" -- external
-        // review, twenty-ninth pass, P1, full context in evaluateForProfile's own updated
-        // javadoc): this exact rejection path is the review's own named example of a signal
-        // that used to leave NO trace at all (rejected before ExecutionContext even existed).
+        // This rejection path must leave a real, findable trace via ExecutionContext, not none
+        // at all.
         verify(executionContextService).recordTerminal(any(), eq("REJECTED_SYMBOL_NOT_ENABLED"), any());
     }
 
     @Test
-    @DisplayName("P1-7: this credential's own reconciliation having failed rejects the signal with REJECTED_CREDENTIAL_RECONCILIATION_PENDING -- confirming the block is scoped to evaluateForProfile (per credential), not the old blanket evaluateSignal-level gate")
+    @DisplayName("this credential's own reconciliation having failed rejects the signal with REJECTED_CREDENTIAL_RECONCILIATION_PENDING -- confirming the block is scoped to evaluateForProfile (per credential), not a blanket evaluateSignal-level gate")
     void credentialReconciliationPending_rejectedAtCredentialLevel() {
         when(startupState.isCredentialTradingEnabled(profile.getCredentialId())).thenReturn(false);
 
@@ -1887,9 +1718,8 @@ class AutoTradeServiceTest {
             Object setDoc = u.getUpdateObject().get("$set");
             return setDoc instanceof org.bson.Document doc && doc.containsKey("signalStatus");
         }), eq(TradeCallRecord.class))).thenThrow(new RuntimeException("simulated database error"));
-        // Review finding (missing-stub issue found across several tests in this file — see
-        // successfulEntry_populatesFillLedgerWithOmsOrderId's own comment for the full
-        // mechanics): this test's own assertions require passing the null-dereference point.
+        // This test's own assertions require passing the `if (!result.success())`
+        // null-dereference point.
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(successfulFill(1.0, 100.0, List.of()));
 
         service.evaluateSignal("user1", signal);
@@ -1899,13 +1729,11 @@ class AutoTradeServiceTest {
         verify(positionRepo, atLeastOnce()).save(any());
     }
 
-    /**
-     * Review finding ("Market order with zero execution can leave an exchange order unmanaged"
-     * -- external review, twenty-sixth pass, P1, full context in AutoTradeService's own updated
-     * zero-fill handling): the actual tests.
-     */
+    // ── A market order that reports success but executed zero quantity must not leave an
+    // exchange order unmanaged ──────────────────────────────────────────────────
+
     @Test
-    @DisplayName("evaluateSignal: success=true with zero executedQty, verified genuinely terminal with no fill (CANCELED) -- releases the slot/exposure reservation, same as before this fix")
+    @DisplayName("evaluateSignal: success=true with zero executedQty, verified genuinely terminal with no fill (CANCELED) -- releases the slot/exposure reservation")
     void zeroExecutedQty_verifiedTerminalNoFill_releasesReservation() {
         when(adapter.placeOrder(any(), any(), any(), any()))
             .thenReturn(new OrderResult(true, "b1", "sig-sig1", "NEW", BigDecimal.ZERO, BigDecimal.valueOf(100), "{}", null, List.of()));

@@ -35,8 +35,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Review item #26: real tests for the core safety checks, not just "does the app boot". These
- * are the checks that stand between a signal and real money leaving the account.
+ * Real tests for the core safety checks, not just "does the app boot". These are the checks
+ * that stand between a signal and real money leaving the account.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -44,20 +44,16 @@ class RiskEngineServiceTest {
 
     @Mock PositionRepository positionRepo;
     @Mock RiskProfileRepository riskProfileRepo;
-    // Review finding ("P0 #6" — "daily-loss accounting is not atomic"): recordRealizedLoss now
-    // uses atomic MongoTemplate operations instead of a plain read-modify-write save() — these
-    // tests were broken by that change (NullPointerException on the unmocked MongoTemplate)
-    // until this mock was added, exactly the kind of test regression a signature/behavior change
-    // needs to be checked for every time, not just assumed away.
+    // recordRealizedLoss uses atomic MongoTemplate operations instead of a plain
+    // read-modify-write save(), so this mock is required or these tests NPE on the unmocked
+    // MongoTemplate.
     @Mock MongoTemplate mongoTemplate;
     @Mock com.tradevision.repository.OrderRepository orderRepo;
     @InjectMocks RiskEngineService riskEngine;
 
-    // P2-21 fix ("Time handling: LocalDateTime.now() everywhere instead of Instant + explicit
-    // trading-day zone" -- external review, full context in RiskEngineService's own header
-    // javadoc): tradingDayZone is a plain @Value field, not a mockable bean type @InjectMocks
-    // can wire on its own -- same pattern this codebase already establishes for other @Value
-    // fields in a Mockito-only test (FeedbackControllerTest's own buildProperties, for example).
+    // tradingDayZone is a plain @Value field, not a mockable bean type @InjectMocks can wire on
+    // its own -- same pattern this codebase already establishes for other @Value fields in a
+    // Mockito-only test (FeedbackControllerTest's own buildProperties, for example).
     @BeforeEach
     void setTradingDayZone() {
         org.springframework.test.util.ReflectionTestUtils.setField(riskEngine, "tradingDayZone", "UTC");
@@ -111,7 +107,7 @@ class RiskEngineServiceTest {
     }
 
     @Test
-    @DisplayName("check: a stale dailyTrackedDate (yesterday) is atomically persisted to today, not just reset in memory — the P1/🟠 #14 fix")
+    @DisplayName("check: a stale dailyTrackedDate (yesterday) is atomically persisted to today, not just reset in memory")
     void check_persistsDailyResetToDatabase() {
         RiskProfile p = profile();
         p.setDailyTrackedDate(LocalDate.now().minusDays(1)); // yesterday — triggers the reset branch
@@ -119,8 +115,8 @@ class RiskEngineServiceTest {
 
         riskEngine.check(p, "BTCUSDT", BigDecimal.valueOf(10));
 
-        // In-memory object is correctly reset either way — the actual fix under test is that
-        // this ALSO gets written to Mongo, not just mutated on this local object.
+        // The in-memory object is reset either way — what this test verifies is that the reset
+        // is ALSO written to Mongo, not just mutated on this local object.
         assertThat(p.getDailyTrackedDate()).isEqualTo(LocalDate.now());
         assertThat(p.getDailyRealizedLossQuote()).isEqualByComparingTo("0");
         ArgumentCaptor<Update> updateCaptor = ArgumentCaptor.forClass(Update.class);
@@ -128,9 +124,9 @@ class RiskEngineServiceTest {
         var setDoc = (org.bson.Document) updateCaptor.getValue().getUpdateObject().get("$set");
         assertThat(setDoc.get("dailyTrackedDate")).isEqualTo(LocalDate.now());
         // dailyRealizedLossQuote is DECIMAL128-typed (see RiskProfile model and this service's own
-        // toDecimal128 helper) -- a raw BigDecimal $set here would be stored as a String and
-        // reproduce the real production incident (FILL_LEDGER_RECORDING_FAILED_HALT / PROTECTION_FAILED
-        // from "Cannot increment with non-numeric argument").
+        // toDecimal128 helper) -- a raw BigDecimal $set here would be stored as a String, and
+        // MongoDB would then reject a later $inc against it with "Cannot increment with
+        // non-numeric argument".
         assertThat(setDoc.get("dailyRealizedLossQuote")).isEqualTo(new org.bson.types.Decimal128(BigDecimal.ZERO));
     }
 
@@ -375,7 +371,7 @@ class RiskEngineServiceTest {
     }
 
     @Test
-    @DisplayName("recordRealizedLoss: every numeric operand sent to Mongo for dailyRealizedLossQuote (both the day-reset $set and the $inc) is a real org.bson.types.Decimal128, never a raw BigDecimal -- a raw BigDecimal would be stored as a String and reproduce the real production incident (FILL_LEDGER_RECORDING_FAILED_HALT / PROTECTION_FAILED from \"Cannot increment with non-numeric argument\")")
+    @DisplayName("recordRealizedLoss: every numeric operand sent to Mongo for dailyRealizedLossQuote (both the day-reset $set and the $inc) is a real org.bson.types.Decimal128, never a raw BigDecimal, since a raw BigDecimal would be stored as a String and MongoDB would reject a later $inc against it")
     void recordRealizedLoss_allNumericOperandsAreDecimal128() {
         RiskProfile p = profile();
         p.setDailyTrackedDate(LocalDate.now().minusDays(1)); // yesterday — exercises the day-reset $set path too
@@ -477,10 +473,10 @@ class RiskEngineServiceTest {
         verify(mongoTemplate, never()).updateFirst(any(Query.class), any(Update.class), eq(RiskProfile.class));
     }
 
-    // ── P2-21: "today" for the daily-loss reset comes from an explicit, configured zone ──────
+    // ── "today" for the daily-loss reset comes from an explicit, configured zone ──────
 
     @Test
-    @DisplayName("P2-21 fix: today() uses the configured app.trading.day-zone, not the JVM's ambient default zone")
+    @DisplayName("today() uses the configured app.trading.day-zone, not the JVM's ambient default zone")
     void today_usesConfiguredZone_notJvmDefault() {
         // A zone far enough from UTC that if today() were using the wrong one, this test would
         // be flaky/wrong around most UTC dates -- explicit rather than relying on the JVM's own
@@ -492,7 +488,7 @@ class RiskEngineServiceTest {
     }
 
     @Test
-    @DisplayName("P2-21 fix: an invalid/unconfigured app.trading.day-zone fails loudly at the point of use, rather than silently falling back to an undeclared zone")
+    @DisplayName("an invalid/unconfigured app.trading.day-zone fails loudly at the point of use, rather than silently falling back to an undeclared zone")
     void today_invalidZone_throwsRatherThanSilentlyFallingBack() {
         org.springframework.test.util.ReflectionTestUtils.setField(riskEngine, "tradingDayZone", "Not/AZone");
 

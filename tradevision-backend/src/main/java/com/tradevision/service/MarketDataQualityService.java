@@ -11,22 +11,19 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Review finding ("#8 — Market-data quality engine" — "freshness, missing candles, duplicate
- * candles, timestamp order, spread, price jump, volume anomaly, REST/WS disagreement... Then
- * every strategy asks: isMarketSafeToTrade(symbol)? If NO -> no trade"): this is that gate.
+ * Gatekeeper that decides whether market data for a symbol is trustworthy enough to trade on,
+ * checking candle freshness, missing/duplicate candles, timestamp ordering, spread, price
+ * jumps, volume anomalies, exchange clock drift, and order-book depth imbalance. Strategies
+ * call isMarketSafeToTrade(symbol) before acting on a signal; a NO means skip the trade.
  *
- * HONEST SCOPE:
- * - REST/WS disagreement is NOT implemented — checked before building this, and confirmed this
- *   codebase has no market-data WebSocket feed at all (BinanceUserDataStreamService is a
- *   USER-data stream — order fills and account events — not a klines/ticker market-data
- *   stream). There is nothing to disagree WITH; this check has no second data source to compare
- *   against, and building one is real further scope, not something to fake here.
- * - Spread checking IS implemented — checked before assuming otherwise, and found
- *   BrokerAdapter.getSpread already exists and works. Not every check in the review's list
- *   turned out to be unbuildable.
- * - "Price jump" and "volume anomaly" thresholds below are simple, disclosed heuristics (a
- *   fixed percentage/multiple), not a statistical or learned model — stated plainly so a wide
- *   but genuine market move isn't mistaken for a validated "this is definitely bad data" signal.
+ * SCOPE:
+ * - REST/WS disagreement is not checked — this codebase has no market-data WebSocket feed to
+ *   compare against (only a user-data stream for fills and account events), so there is no
+ *   second source available for this check.
+ * - Spread checking is implemented via BrokerAdapter.getSpread.
+ * - The "price jump" and "volume anomaly" checks use simple fixed percentage/multiple
+ *   thresholds rather than a statistical or learned model, so a wide but genuine market move
+ *   can still trip them — these are heuristics, not a validated bad-data classifier.
  */
 @Service
 public class MarketDataQualityService {
@@ -34,17 +31,14 @@ public class MarketDataQualityService {
     private static final double MAX_SINGLE_CANDLE_JUMP_PERCENT = 20.0;
     private static final double VOLUME_ANOMALY_MULTIPLE = 10.0;
     private static final double MAX_ACCEPTABLE_SPREAD_PERCENT = 1.0;
-    // Review finding ("Market data" — "exchange clock drift"): 5 seconds is a deliberately
-    // generous threshold — Binance's own recvWindow default is 5000ms, and this adapter already
-    // corrects signed-request timestamps using this same offset (review item #25), so a drift
-    // under this threshold is already being handled correctly. This check exists to catch a
-    // GENUINELY abnormal drift (a real system clock problem), not to second-guess normal,
-    // already-compensated-for network/clock variance.
+    // 5 seconds is a deliberately generous threshold: Binance's own recvWindow default is
+    // 5000ms, and signed requests already correct for this same clock offset, so drift under
+    // this threshold is already handled correctly elsewhere. This check exists to catch a
+    // genuinely abnormal drift (a real system clock problem), not normal, already-compensated
+    // network/clock variance.
     private static final long MAX_ACCEPTABLE_CLOCK_DRIFT_MS = 5000;
-    // Review finding ("Market data" — "order-book depth, bid/ask depth imbalance"): a simple,
-    // disclosed heuristic (a fixed multiple), not a statistical model — a genuinely thin or
-    // one-sided book at the moment of the check, same "don't overclaim precision" rule as the
-    // price-jump/volume-anomaly heuristics elsewhere in this class.
+    // A simple fixed-multiple heuristic for a thin or one-sided order book at the moment of
+    // the check, not a statistical model.
     private static final double MAX_ACCEPTABLE_DEPTH_IMBALANCE_MULTIPLE = 20.0;
     private static final int DEPTH_LEVELS_TO_CHECK = 20;
     private static final int MIN_CANDLES_REQUIRED = 20;
@@ -56,9 +50,8 @@ public class MarketDataQualityService {
     }
 
     /**
-     * The review's own named entry point. Runs every check this class actually supports (see
-     * this class's own javadoc for what's deliberately not included) and returns a single
-     * safe/unsafe verdict with the specific reasons — never just a bare boolean, so a caller (or
+     * Runs every data-quality check this class supports and returns a single safe/unsafe
+     * verdict together with the specific reasons, rather than a bare boolean, so a caller (or
      * a human reviewing why a signal was skipped) can see exactly what failed.
      */
     public QualityResult isMarketSafeToTrade(String symbol, List<Candle> candles, long expectedIntervalSeconds,
@@ -97,13 +90,9 @@ public class MarketDataQualityService {
     private void checkMissingCandles(List<Candle> candles, long expectedIntervalSeconds, List<String> issues) {
         if (expectedIntervalSeconds <= 0) return; // caller didn't specify a known interval — can't judge gaps
         int gapCount = 0;
-        // Review finding (same unit-mismatch bug caught and fixed in checkFreshness — Candle.time()
-        // is milliseconds, not seconds): comparing the raw millisecond gap against
-        // expectedIntervalSeconds directly would have made this check essentially useless — a
-        // real interval gap in milliseconds is ~1000x the seconds-based threshold, so it would
-        // have (almost) always tripped, or (with a big enough expectedIntervalSeconds) sometimes
-        // never tripped, either way not measuring what it claims to. Gap converted to seconds
-        // before comparing, matching the unit checkFreshness now uses.
+        // Candle.time() is in milliseconds, so the expected interval is converted to
+        // milliseconds here to compare like units — mixing seconds and milliseconds would make
+        // the gap threshold off by a factor of ~1000.
         long expectedIntervalMs = expectedIntervalSeconds * 1000;
         for (int i = 1; i < candles.size(); i++) {
             long gapMs = candles.get(i).time() - candles.get(i - 1).time();
@@ -117,14 +106,9 @@ public class MarketDataQualityService {
     private void checkFreshness(List<Candle> candles, long expectedIntervalSeconds, List<String> issues) {
         Candle last = candles.get(candles.size() - 1);
         long lastCandleTimeMs = last.time();
-        // Review finding (caught while writing this method, not after — verified against the
-        // actual construction site rather than assumed): Candle.time() is MILLISECONDS, not
-        // seconds. BinanceBrokerAdapter.getRecentCandles constructs it directly from Binance's
-        // kline openTime field (k.get(0).asLong()) with zero conversion, and Binance's own kline
-        // API always returns millisecond epoch timestamps. Comparing this against
-        // Instant.now().getEpochSecond() (seconds) would have produced a result roughly 1000x
-        // wrong on every single call — using toEpochMilli() throughout instead avoids the unit
-        // mismatch entirely rather than requiring a conversion to get right.
+        // Candle.time() is milliseconds (Binance's kline openTime field, used as-is), so we
+        // work in epoch milliseconds throughout and divide down to seconds only at the end,
+        // rather than risk a unit mismatch between seconds and milliseconds.
         long ageSeconds = (Instant.now().toEpochMilli() - lastCandleTimeMs) / 1000;
         long staleThreshold = expectedIntervalSeconds > 0 ? expectedIntervalSeconds * 3 : Duration.ofHours(2).toSeconds();
         if (ageSeconds > staleThreshold) {

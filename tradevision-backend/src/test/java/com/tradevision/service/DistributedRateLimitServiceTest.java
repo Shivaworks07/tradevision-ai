@@ -23,11 +23,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * P2-10 fix ("DistributedRateLimitService.allow: window reset is read-then-upsert (racy); OTP
- * collections have no TTL" -- external review, full context in DistributedRateLimitService's own
- * updated javadoc): direct tests for the new two-path atomic design, including the actual
- * review-required proof that concurrent requests still respect the limit under the one genuine
- * race this design cannot avoid at the storage layer (simultaneous inserts of a brand-new key).
+ * Direct tests for the two-path atomic rate-limit design, including proof that concurrent
+ * requests still respect the limit under the one genuine race this design cannot avoid at the
+ * storage layer (simultaneous inserts of a brand-new key).
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -79,12 +77,12 @@ class DistributedRateLimitServiceTest {
     }
 
     /**
-     * The actual review-required proof: the ONE race this design cannot avoid at the storage
-     * layer -- two concurrent callers both hitting path 2 (the reset/upsert) for a brand-new key
-     * at the same time. Exactly one of them wins the real MongoDB insert; the other gets a
-     * DuplicateKeyException back from the (mocked) driver and must retry, landing on path 1 next
-     * time and finding the WINNER's own fresh document -- proving the loser's request is still
-     * correctly counted against the winner's window, never silently dropped or double-counted.
+     * The ONE race this design cannot avoid at the storage layer -- two concurrent callers both
+     * hitting path 2 (the reset/upsert) for a brand-new key at the same time. Exactly one of
+     * them wins the real MongoDB insert; the other gets a DuplicateKeyException back from the
+     * (mocked) driver and must retry, landing on path 1 next time and finding the WINNER's own
+     * fresh document -- proving the loser's request is still correctly counted against the
+     * winner's window, never silently dropped or double-counted.
      */
     @Test
     @DisplayName("allow: a concurrent reset race (DuplicateKeyException on the losing caller's own upsert) retries and correctly counts against the winner's fresh window, rather than crashing or silently allowing an uncounted request")

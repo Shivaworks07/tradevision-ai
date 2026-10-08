@@ -12,37 +12,27 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * Review finding ("Strategy engine is not the complete strategy actually represented by the
- * frontend" -- P1): ServerSignalEngine's own header comment honestly disclosed this exact gap
- * from the start -- "ML weight adjustment (the frontend's per-symbol adaptive weight learning
- * from win/loss history, stored in browser localStorage) is NOT ported... Porting the adaptive
- * learning loop is separate, real work, not attempted here." This class is that work.
+ * Server-side adaptive weight learning for per-indicator scoring, mirroring the frontend's
+ * localStorage-based ML weight learning (TaEngineService.updateMLFromOutcome in
+ * trading-analyst/src/app/services/ta-engine.service.ts) so both sides apply the same logic:
+ * same learning rate (0.05), same reward/penalty asymmetry (a win nudges a weight up by the
+ * full learning rate, a loss nudges it down by only half), same [0.3, 2.0] clamp, and the same
+ * totalCalls>=5 warm-up before any adjustment happens. Only 4 of the weights declared on
+ * MLWeights are adjusted here (rsi, macd, patterns, volume) — see MLWeights's own class
+ * javadoc for why.
  *
- * A faithful, line-by-line port of TaEngineService.updateMLFromOutcome (trading-analyst/src/app/
- * services/ta-engine.service.ts) -- same learning rate (0.05), same reward/penalty asymmetry
- * (a win nudges a weight up by the full learning rate, a loss nudges it down by only half),
- * same [0.3, 2.0] clamp, same totalCalls>=5 warm-up before any adjustment happens at all, same
- * per-indicator "did this indicator actually agree with the trade's own direction" condition
- * for each of the 4 weights the frontend's own function actually adjusts (rsi, macd, patterns,
- * volume -- see MLWeights's own class javadoc for why only these 4, not all 12 declared
- * weights). Deliberately preserves a real quirk in the frontend's own pattern-matching logic
- * rather than "fixing" it during the port: hasBullPattern matches any pattern name CONTAINING
- * one of a fixed set of substrings (Engulfing, Star, Soldiers, Hammer, Marubozu) regardless of
- * whether the pattern is actually bullish or bearish (a "Bearish Engulfing" would still match,
- * since it contains "Engulfing") -- faithfully porting means matching what the frontend's code
- * actually does, not what it was probably intended to do.
+ * The bullish-pattern match intentionally matches any pattern name CONTAINING one of a fixed
+ * set of substrings (Engulfing, Star, Soldiers, Hammer, Marubozu) regardless of whether the
+ * pattern is actually bullish or bearish (a "Bearish Engulfing" still matches, since it
+ * contains "Engulfing") — this mirrors the frontend's matching behavior exactly so weight
+ * learning stays consistent between client and server.
  *
- * HONEST SCOPE, stated plainly: this class can compute and persist learned weights correctly,
- * and is independently unit-tested against the frontend's own real behavior. It is NOT yet
- * wired into ServerSignalEngine.analyze()'s own live scoring, and no caller in this codebase yet
- * calls recordOutcome() from wherever a trade's real result becomes known. Wiring the WRITE side
- * (calling recordOutcome when a result resolves) and the READ side (analyze() consulting stored
- * weights instead of always using fixed 1.0 defaults) into this application's live, real-money
- * signal-generation path is additional, separate integration work -- deliberately not attempted
- * in the same pass as building and verifying the algorithm itself, since that would mean
- * changing the actual scoring behavior for every live trade this application evaluates, without
- * a compiler or a real backtest to verify the change against. This class is complete, correct,
- * and ready to be wired in as a lower-risk, easily-reviewable follow-up step.
+ * This class computes and persists learned weights, and is independently unit-tested. It is
+ * not wired into ServerSignalEngine.analyze()'s live scoring, and no caller in this codebase
+ * yet invokes recordOutcome() when a trade's real result becomes known — that integration
+ * (calling recordOutcome on resolution, and having analyze() consult stored weights instead of
+ * fixed 1.0 defaults) is handled as a separate step so it can be reviewed and verified on its
+ * own before it changes live scoring behavior.
  */
 @Service
 @RequiredArgsConstructor
@@ -60,9 +50,8 @@ public class MLWeightService {
         return market + ":" + symbol;
     }
 
-    /** Returns the current learned weights for this symbol, or the faithful defaults (1.0 for
-     *  all four) if none have been recorded yet -- matching the frontend's own
-     *  `this.mlStore.get(key) || this.defaultMLMemory(symbol)` fallback exactly. */
+    /** Returns the current learned weights for this symbol, or defaults (1.0 for all four)
+     *  if none have been recorded yet, matching the frontend's own fallback behavior. */
     public MLWeights getWeights(String market, String symbol) {
         MLWeights existing = mongoTemplate.findById(keyFor(market, symbol), MLWeights.class);
         if (existing != null) return existing;
@@ -73,13 +62,12 @@ public class MLWeightService {
     }
 
     /**
-     * The actual learning update -- called once a signal's real trade outcome is known. Mirrors
-     * TaEngineService.updateMLFromOutcome exactly; see this class's own header javadoc for the
-     * full reasoning behind each design choice below.
+     * Applies the learning update once a signal's real trade outcome is known, adjusting the
+     * per-indicator weights for this symbol based on whether each indicator agreed with the
+     * trade's direction. See this class's own header javadoc for the design rationale.
      *
      * @param result the resolved outcome string (e.g. "HIT_T1", "HIT_SL", ...) -- a win is any
-     *               result starting with "HIT_T", matching the frontend's own
-     *               `result.startsWith('HIT_T')` check exactly.
+     *               result starting with "HIT_T".
      * @param wasLong whether the original signal's own direction was LONG (vs SHORT).
      * @param rsi14 the RSI(14) value recorded on the original Signal at generation time.
      * @param macdBull the MACD-bullish flag recorded on the original Signal at generation time.
@@ -93,9 +81,8 @@ public class MLWeightService {
         boolean isWin = result != null && result.startsWith("HIT_T");
         int totalCalls = mem.getTotalCalls() + 1;
         int wins = mem.getWins() + (isWin ? 1 : 0);
-        // Matches the frontend's own "else if" exactly -- a HIT_SL increments losses, but a
-        // result that's neither a HIT_T win nor HIT_SL (e.g. EXPIRED) increments neither,
-        // exactly as the frontend's own code does.
+        // A HIT_SL result increments losses; a result that's neither a HIT_T win nor HIT_SL
+        // (e.g. EXPIRED) increments neither wins nor losses.
         int losses = mem.getLosses() + ("HIT_SL".equals(result) ? 1 : 0);
         double winRate = totalCalls > 0 ? ((double) wins / totalCalls) * 100 : 50;
 

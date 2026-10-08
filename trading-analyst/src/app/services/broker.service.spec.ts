@@ -5,12 +5,11 @@ import { BrokerService } from './broker.service';
 import { provideHttpClient, withInterceptorsFromDi } from '@angular/common/http';
 
 /**
- * Review finding (P1/🟠 #12 — "Frontend has only 3 spec files"): the review's own named gaps —
- * "Broker: TESTNET connection, LIVE connection, confirmation" and "Risk: daily loss, max
- * position, max concurrent, kill switch, LIVE authorization". Verifies the service layer sends
- * the correct request shape for each — the backend's own test suite (BrokerCredentialServiceTest,
- * RiskEngineServiceTest, etc.) covers whether the backend correctly VALIDATES/rejects these; this
- * covers that the frontend correctly ASKS.
+ * Covers BrokerService's request shapes for broker connection (TESTNET, LIVE, confirmation)
+ * and risk-profile management (daily loss, max position, max concurrent, kill switch, LIVE
+ * authorization). The backend's own test suite (BrokerCredentialServiceTest,
+ * RiskEngineServiceTest, etc.) covers validation; this covers that the frontend sends the
+ * right request.
  */
 describe('BrokerService', () => {
   let service: BrokerService;
@@ -31,7 +30,7 @@ describe('BrokerService', () => {
   it('should create', () => expect(service).toBeTruthy());
 
   // ── TESTNET connection ────────────────────────────────────
-  it('connect: posts mode=TESTNET explicitly, matching the backend P0 #1 fix (mode is never implicit)', () => {
+  it('connect: posts mode=TESTNET explicitly, never implicitly', () => {
     service.connect('BINANCE', 'test-key', 'test-secret').subscribe();
     const req = http.expectOne(`${environment.apiUrl}/broker/connect`);
     expect(req.request.method).toBe('POST');
@@ -39,11 +38,7 @@ describe('BrokerService', () => {
     req.flush({ success: true });
   });
 
-  // P3-10 fix ("PAPER mode requires 'live authorization' and isn't selectable in UI" -- external
-  // review, confirmed real by direct inspection: this method used to hardcode mode: 'TESTNET'
-  // with no parameter for it at all, even though the backend's own /connect endpoint already
-  // accepted PAPER). The actual regression test: mode is now a real, passable parameter.
-  it('connect: posts mode=PAPER when explicitly requested -- the actual P3-10 fix', () => {
+  it('connect: posts mode=PAPER when explicitly requested', () => {
     service.connect('BINANCE', 'test-key', 'test-secret', 'PAPER').subscribe();
     const req = http.expectOne(`${environment.apiUrl}/broker/connect`);
     expect(req.request.method).toBe('POST');
@@ -82,15 +77,10 @@ describe('BrokerService', () => {
     req.flush({ success: true });
   });
 
-  /**
-   * P1-20 fix ("Frontend risk-profile save silently wipes fields" -- full context in this
-   * service's own updated saveRiskProfile javadoc): confirms the request shape genuinely accepts
-   * and forwards maxSymbolExposureQuote/maxPriceDeviationPercent/circuitBreakerThreshold/
-   * correlationGroups/correlationGroupCaps -- before this fix, TypeScript's own structural typing
-   * would have silently DROPPED these on the wire even if a caller tried to pass them, since they
-   * didn't exist on saveRiskProfile's own request type at all.
-   */
-  it('saveRiskProfile: forwards maxSymbolExposureQuote/maxPriceDeviationPercent/circuitBreakerThreshold/correlationGroups/correlationGroupCaps when provided, so a caller that has them can no longer have them silently dropped', () => {
+  // Confirms the request shape accepts and forwards maxSymbolExposureQuote/
+  // maxPriceDeviationPercent/circuitBreakerThreshold/correlationGroups/correlationGroupCaps
+  // rather than silently dropping them on the wire.
+  it('saveRiskProfile: forwards maxSymbolExposureQuote/maxPriceDeviationPercent/circuitBreakerThreshold/correlationGroups/correlationGroupCaps when provided', () => {
     const riskReq = {
       credentialId: 'cred1', autoTradeEnabled: true, enabledSymbols: ['BTCUSDT'],
       minConfidence: 75, maxPositionQuoteAmount: 500, maxConcurrentTrades: 2,

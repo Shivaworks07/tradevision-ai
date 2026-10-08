@@ -1,17 +1,10 @@
 import { test, expect } from '@playwright/test';
 
 /**
- * Review finding ("No E2E test suite" -- P2, full context in playwright.config.ts's own
- * header comment): a deliberately minimal starting point, not a full login flow. Stops short of
- * actually submitting the mobile number and verifying an OTP -- that would need a real,
- * reachable OTP delivery path to verify end-to-end, which is a separate, larger piece of test
- * infrastructure (a way to intercept/read the OTP that was actually sent) not attempted here.
- * This test only confirms the login page's initial state renders with the expected, real
- * elements -- selectors grounded in the actual login.component.html source, not guessed.
- *
- * UNVALIDATED: has not been run against a real, deployed instance of this application -- see
- * playwright.config.ts's own header comment for why (no live backend/MongoDB in the sandbox
- * this was written in).
+ * Smoke tests for the login page's initial render. Stops short of actually submitting the
+ * mobile number and verifying an OTP, since that needs a real, reachable OTP delivery path
+ * (a way to intercept/read the OTP that was actually sent) to verify end-to-end. Selectors
+ * are grounded in the actual login.component.html source.
  */
 test.describe('Login page', () => {
   test('renders the mobile number field and Send OTP button', async ({ page }) => {

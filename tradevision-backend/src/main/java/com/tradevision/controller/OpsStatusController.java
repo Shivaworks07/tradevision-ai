@@ -11,9 +11,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Review finding ("Ops / monitoring surface"): the actual endpoint — kept deliberately thin,
- * every real decision lives in OpsStatusService, same pattern as every other controller in this
- * codebase (see PositionController's own javadoc for the same convention stated there).
+ * Exposes an operational status summary for monitoring. Kept thin: the actual status
+ * computation lives in OpsStatusService.
  */
 @RestController
 @RequestMapping("/api/ops")

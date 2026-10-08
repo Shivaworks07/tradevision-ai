@@ -11,21 +11,15 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * Review finding ("Ops / monitoring surface" — "/actuator/health + kill endpoints exist. No
- * dedicated authenticated ops status (heartbeats, halt flags, LIVE auth per credential).
- * Operators need one clear place to see 'is the bot alive and allowed to trade?'"): this is
- * that single place — aggregates what already exists (TradingHeartbeatService, StartupState,
- * each credential's RiskProfile halt/authorization state) into one authenticated view, rather
- * than an operator having to separately check /actuator/health for liveness and then dig through
- * each risk profile individually to answer "is it actually allowed to trade right now".
+ * Aggregates the system's live operational state — heartbeats, startup/shutdown phase, and each
+ * credential's halt/authorization state — into a single authenticated view, so answering "is the
+ * bot alive and allowed to trade" doesn't require separately checking liveness and digging
+ * through each risk profile.
  *
- * HONEST SCOPE: this is a read-only status view, not a control surface — AdminController's own
- * existing halt/resume/halt-all endpoints remain the place actions happen; this only reports
- * state. Scoped to one authenticated user's own credentials (via BrokerCredentialRepository.
- * findByUserIdAndActiveTrue), not a global cross-user operations view — this codebase has no
- * concept of an "operator" role distinct from a regular authenticated user in this pass, so this
- * follows the same per-user authorization every other controller in this codebase already uses,
- * not a new privilege tier.
+ * This is a read-only status view, not a control surface — AdminController's halt/resume/
+ * halt-all endpoints remain the place actions happen; this only reports state. It's scoped to
+ * one authenticated user's own credentials, following the same per-user authorization every
+ * other controller in this codebase uses, rather than a separate operator privilege tier.
  */
 @Service
 @RequiredArgsConstructor
@@ -36,10 +30,9 @@ public class OpsStatusService {
     private final TradingHeartbeatService heartbeatService;
     private final com.tradevision.config.StartupState startupState;
     private final com.tradevision.config.ShutdownState shutdownState;
-    // Review finding ("Broker health improved but not unified" — "A single composite 'broker +
-    // market-data + execution + rate-limit' status is still incomplete"): wired in here, since
-    // this is the natural single place an operator checks "is the bot alive and allowed to
-    // trade" — no reason broker connectivity health should be a second place to look.
+    // Broker connectivity health is folded into this same status view rather than left as a
+    // separate place to look, since this is the natural single place to check "is the bot alive
+    // and allowed to trade".
     private final ExchangeHealthService exchangeHealthService;
     private final BrokerCredentialService credentialService;
 
@@ -70,16 +63,15 @@ public class OpsStatusService {
         List<BrokerCredential> creds = credentialRepo.findByUserIdAndActiveTrue(userId);
         List<CredentialOpsStatus> credentialStatuses = creds.stream()
             .map(c -> {
-                // Review finding ("Broker health improved but not unified"): computed
-                // regardless of whether a risk profile exists — broker connectivity is a fact
-                // about the CREDENTIAL, not about whether auto-trade happens to be configured
-                // for it.
+                // Computed regardless of whether a risk profile exists — broker connectivity is
+                // a fact about the credential itself, not about whether auto-trade happens to be
+                // configured for it.
                 var brokerHealth = brokerHealthFor(userId, c);
                 var profileOpt = riskProfileRepo.findByUserIdAndCredentialId(userId, c.getId());
                 if (profileOpt.isEmpty()) {
-                    // A real, honest state — a credential can exist with no risk profile set up
-                    // yet, meaning auto-trade has never been configured for it at all. Reported
-                    // as-is, not silently defaulted to "everything disabled" or skipped.
+                    // A credential can exist with no risk profile set up yet, meaning auto-trade
+                    // has never been configured for it. Reported as-is, rather than defaulted to
+                    // "everything disabled" or skipped.
                     return new CredentialOpsStatus(c.getId(), c.getBroker().name(), c.getMode().name(),
                         false, null, false, null, false, 0, false, brokerHealth);
                 }
@@ -102,10 +94,9 @@ public class OpsStatusService {
     }
 
     /**
-     * Non-fatal, additive — same design principle as everywhere else in this codebase where a
-     * side-channel observation must never block or corrupt the primary status report. A
-     * decryption or lookup failure here is reported as an honest "couldn't determine" rather
-     * than silently omitted or defaulted to healthy.
+     * Looks up broker connectivity health for one credential. Failures here must never block or
+     * corrupt the primary status report, so a decryption or lookup failure is reported as a
+     * "couldn't determine" status rather than omitted or defaulted to healthy.
      */
     private ExchangeHealthService.CompositeHealthStatus brokerHealthFor(String userId, BrokerCredential c) {
         try {

@@ -20,9 +20,7 @@ import java.util.stream.Collectors;
 @Service
 public class NewsService {
 
-    // P2-17 fix ("20x System.out.println, PII in logs, no correlation IDs" -- external review,
-    // full context in this codebase's own new CorrelationIdFilter javadoc): no PII here (public
-    // feed names and article counts only).
+    // Only public feed names and article counts are logged here — no PII.
     private static final Logger log = LoggerFactory.getLogger(NewsService.class);
 
     private final RestTemplate http = buildRestTemplate();

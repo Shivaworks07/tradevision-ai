@@ -5,10 +5,10 @@ import com.tradevision.service.broker.dto.Candle;
 import java.util.List;
 
 /**
- * Review item #2 (partial hardening): faithfully ported from the frontend's actual live
- * indicator math (ta-engine.service.ts's wilderRsi/atr — Wilder's smoothed RSI, not a naive
- * one), so a server-side recomputation from real fetched candles is a meaningful cross-check
- * against what a signal claims, not a comparison against a different formula.
+ * Technical indicator math used to independently recompute signal inputs server-side from real
+ * fetched candles, ported to match the frontend's ta-engine.service.ts formulas (e.g. Wilder's
+ * smoothed RSI/ATR, not naive variants) so this serves as a meaningful cross-check against what
+ * a signal claims rather than a comparison against a different formula.
  */
 public final class IndicatorMath {
 
@@ -59,9 +59,8 @@ public final class IndicatorMath {
 
     /**
      * Standard EMA, seeded with an SMA of the first `period` closes. Used for an independent
-     * server-side trend read (review finding: "the backend doesn't independently compute
-     * anything") — not a full strategy, just one real, defensible technical fact computed from
-     * real candles this backend fetched itself.
+     * server-side trend read computed from candles this backend fetched itself, not a full
+     * strategy.
      */
     public static double ema(List<Candle> candles, int period) {
         int n = candles.size();
@@ -80,13 +79,11 @@ public final class IndicatorMath {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Everything below this line was verified by cross-execution against the
-    // real ta-engine.service.ts source: both were run against multiple identical
-    // synthetic candle datasets (a Node.js extraction of the actual TS functions
-    // vs. this Java port, compiled and run standalone) and produced bit-for-bit
-    // identical output across WAIT, LONG, and SHORT decision cases — not just
-    // read carefully and assumed correct. See ServerSignalEngine for the ported
-    // decision logic that uses these.
+    // Indicator ports below (Bollinger Bands, MACD, Stochastic, ADX, Williams %R,
+    // OBV, VWAP, support/resistance, candlestick patterns, RSI divergence) mirror
+    // ta-engine.service.ts exactly, so results match the frontend's live values
+    // bit-for-bit given the same candle data. See ServerSignalEngine for the
+    // decision logic that consumes these.
     // ─────────────────────────────────────────────────────────────────────────
 
     private static double[] closes(List<Candle> c) { double[] a = new double[c.size()]; for (int i=0;i<a.length;i++) a[i]=c.get(i).close(); return a; }

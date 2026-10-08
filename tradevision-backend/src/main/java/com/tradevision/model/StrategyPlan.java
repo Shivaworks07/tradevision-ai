@@ -18,21 +18,18 @@ import java.util.Set;
  * account-wide riskPerTradePercent/maxConcurrentTrades/minConfidence as a hard ceiling); this
  * model is the plan-level layer underneath it.
  *
- * "The account-level limits always win" (user's own words) means every check this model's own
- * fields drive is a NARROWING of the account-level ceiling, never an override of it -- enforced
- * at the point plans are actually evaluated for execution, not by this model itself (a plan
- * document has no way to enforce anything on its own; it's data, not a gate).
+ * "The account-level limits always win" means every check this model's own fields drive is a
+ * NARROWING of the account-level ceiling, never an override of it -- enforced at the point
+ * plans are actually evaluated for execution, not by this model itself (a plan document has no
+ * way to enforce anything on its own; it's data, not a gate).
  *
- * Review finding ("StrategyPlan model has stale documentation" -- external review, tenth pass,
- * P2, confirmed real: this class's own javadoc used to say the scanner/execution/exit-policy
- * wiring "is real further work, not yet built" -- plainly false by the time of that review):
- * corrected. As of this pass, per-plan scanning, direction/session/ownership/universe
- * authorization at execution time (StrategyPlanService.authorizeExecution), two-tier risk
- * (slots and sizing), and the full exit policy (TP/SL, max-hold-time, signal-reversal,
- * risk-emergency-exit, end-of-session) are all implemented and wired -- see
- * StrategyPlanService's own class javadoc and AutonomousScannerService/AutoTradeService/
- * PositionMonitorService for where each piece actually runs. The Strategy Plan management UI
- * (create/edit/enable-disable/delete) also exists, at /app/strategy-plans in the frontend.
+ * Per-plan scanning, direction/session/ownership/universe authorization at execution time
+ * (StrategyPlanService.authorizeExecution), two-tier risk (slots and sizing), and the full exit
+ * policy (TP/SL, max-hold-time, signal-reversal, risk-emergency-exit, end-of-session) are all
+ * implemented and wired -- see StrategyPlanService's own class javadoc and
+ * AutonomousScannerService/AutoTradeService/PositionMonitorService for where each piece runs.
+ * The Strategy Plan management UI (create/edit/enable-disable/delete) lives at
+ * /app/strategy-plans in the frontend.
  */
 @Data @NoArgsConstructor
 @Document(collection = "strategy_plans")
@@ -47,54 +44,38 @@ public class StrategyPlan {
     private String name = "Default";
     private boolean enabled = true;
     /**
-     * Review finding ("Strategy Plan disable vs execution is still technically non-atomic" /
-     * "Recovery needs the same plan-version semantics" -- external review, fourteenth pass, P1,
-     * confirmed real by direct inspection: the plan-level check before execution was a plain
-     * read (StrategyPlanService.authorizeExecution), fully separate from the atomic RiskProfile
-     * claim -- a user disabling or editing a plan in the narrow window between that read and the
-     * actual claim could theoretically still let an already-in-flight signal execute): the
-     * actual fix's own version counter. A signal stamped with the version at the moment it was
-     * generated can then be atomically verified against the plan's OWN current version, in the
-     * SAME findAndModify that registers the plan-level execution claim
-     * (StrategyPlanService.claimPlanExecution), not a separate read followed by a hopeful claim.
-     * If the plan was edited or disabled after the signal was generated, the version no longer
-     * matches and the claim atomically fails -- "is this signal still authorized under the
-     * configuration that generated it," answered honestly rather than assumed.
+     * A monotonic configuration-generation number for this plan. A signal is stamped with this
+     * value at the moment it was generated, and that stamp is atomically verified against the
+     * plan's current version in the same findAndModify that registers the plan-level execution
+     * claim (StrategyPlanService.claimPlanExecution) — not a separate read followed by a
+     * hopeful claim. If the plan was edited or disabled after the signal was generated, the
+     * version no longer matches and the claim atomically fails, so "is this signal still
+     * authorized under the configuration that generated it" is answered honestly rather than
+     * assumed from a stale read.
      *
-     * Review finding ("StrategyPlan update() / setEnabled() can lose concurrent changes" --
-     * external review, fifteenth pass, P0, confirmed real by direct inspection before any fix
-     * was attempted: this field used to be incremented manually in application code
-     * (plan.setVersion(plan.getVersion() + 1)) before a plain repository save -- a classic
-     * read-modify-write race where two concurrent requests could both read the same starting
-     * version, both compute the same "next" value, and whichever save() landed second would
-     * silently overwrite the first's own field changes while still incrementing the version only
-     * once total -- undermining the entire point of this field as a reliable, monotonic
-     * configuration-generation number for the execution-authorization boundary above): @Version
-     * is Spring Data MongoDB's own built-in optimistic-locking mechanism -- it, not application
-     * code, now owns the increment, atomically as part of every save() call, and throws
-     * OptimisticLockingFailureException the instant a save's own expected version no longer
-     * matches what's actually in the database (a real concurrent write happened in between).
-     * Must stay a primitive `long` (not `Long`) -- Spring Data MongoDB's own @Version support
-     * requires the primitive type for repository-based saves; this field already was one.
+     * @Version is Spring Data MongoDB's built-in optimistic-locking mechanism — it, not
+     * application code, owns the increment, atomically as part of every save() call, and
+     * throws OptimisticLockingFailureException the instant a save's expected version no longer
+     * matches what's actually in the database. Must stay a primitive `long` (not `Long`) --
+     * Spring Data MongoDB's @Version support requires the primitive type for repository-based
+     * saves.
      */
     @org.springframework.data.annotation.Version
     private long version;
     /**
-     * Review finding, same context as version's own field javadoc: the plan-level counterpart
-     * to RiskProfile.executionInFlightCount -- an honest, auditable record of whether a claimed
-     * execution is currently in flight FOR THIS SPECIFIC PLAN, incremented atomically as part of
-     * the same findAndModify that verifies enabled+version+ownership+credential. Same limitation
-     * disclosed for RiskProfile's own field: this is a diagnostic count, not a set of per-
-     * execution identity records.
+     * The plan-level counterpart to RiskProfile.executionInFlightCount -- an auditable record
+     * of whether a claimed execution is currently in flight for this specific plan,
+     * incremented atomically as part of the same findAndModify that verifies
+     * enabled+version+ownership+credential. This is a diagnostic count, not a set of
+     * per-execution identity records.
      */
     private long executionInFlightCount = 0L;
     /**
-     * User's own explicit design: exactly one plan per credential is the migration-created
-     * default that mirrors this codebase's own pre-multi-plan behavior (TIER1 symbols, 1h
-     * timeframe, LONG only, no max-hold). Never a user-facing toggle -- set only by
-     * StrategyPlanService.getOrCreateDefaultPlan, and used to identify which plan absorbs a
-     * credential's pre-existing RiskProfile-level settings during migration so nothing is lost
-     * or duplicated.
+     * Marks the single migration-created plan per credential that mirrors this codebase's
+     * pre-multi-plan behavior (TIER1 symbols, 1h timeframe, LONG only, no max-hold). Never a
+     * user-facing toggle -- set only by StrategyPlanService.getOrCreateDefaultPlan, and used to
+     * identify which plan absorbs a credential's pre-existing RiskProfile-level settings during
+     * migration so nothing is lost or duplicated.
      */
     private boolean defaultPlan = false;
 

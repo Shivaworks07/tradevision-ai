@@ -8,9 +8,9 @@ import java.math.BigDecimal;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding ("Fee accounting has no feeStatus (COMPLETE/PARTIAL/UNKNOWN); net P&L can look
- * exact when fees are actually partially unknown" -- P1, full context in Position.getFeeStatus's
- * own javadoc): verifies the actual fix. No test file existed for this model at all before this.
+ * Verifies Position.getFeeStatus(), which reports whether a position's fee data is
+ * COMPLETE, PARTIAL or UNKNOWN so that a net P&L figure is never shown as exact when
+ * fees are actually only partially known.
  */
 class PositionTest {
 
@@ -41,7 +41,7 @@ class PositionTest {
     }
 
     @Test
-    @DisplayName("getFeeStatus: a CLOSED position with only the entry fee known is PARTIAL -- the actual review scenario, a net P&L that would otherwise look exact")
+    @DisplayName("getFeeStatus: a CLOSED position with only the entry fee known is PARTIAL -- a net P&L that would otherwise look exact")
     void closedPosition_onlyEntryFeeKnown_isPartial() {
         assertThat(position("CLOSED", BigDecimal.valueOf(1.5), null).getFeeStatus()).isEqualTo(Position.FeeStatus.PARTIAL);
     }
@@ -59,7 +59,7 @@ class PositionTest {
     }
 
     @Test
-    @DisplayName("getFeeStatus: NAKED_FLATTENED and CLOSED_UNVERIFIED_PNL are both treated as exited, same as CLOSED -- every real terminal status this codebase uses, confirmed directly against every position.setStatus(...) call site")
+    @DisplayName("getFeeStatus: NAKED_FLATTENED and CLOSED_UNVERIFIED_PNL are both treated as exited, same as CLOSED -- every terminal status this codebase uses for position.setStatus(...)")
     void otherTerminalStatuses_treatedAsExited() {
         assertThat(position("NAKED_FLATTENED", BigDecimal.valueOf(1.5), null).getFeeStatus()).isEqualTo(Position.FeeStatus.PARTIAL);
         assertThat(position("CLOSED_UNVERIFIED_PNL", BigDecimal.valueOf(1.5), null).getFeeStatus()).isEqualTo(Position.FeeStatus.PARTIAL);

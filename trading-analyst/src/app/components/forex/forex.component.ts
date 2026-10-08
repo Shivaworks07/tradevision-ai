@@ -33,10 +33,9 @@ export class ForexComponent implements OnInit, OnDestroy {
   tradeCall:   TradeCall | null = null;
   modalVisible = false;
 
-  // Review finding (closing statement — "Never: 🟢 LIVE when the application is actually
-  // showing fallback numbers"): checked against allPairs (the full fetched set), not filtered
-  // (which only reflects the current search) — the header badge should reflect the whole
-  // dataset's actual freshness, not just whatever the user happens to be searching for right now.
+  // Checked against allPairs (the full fetched set) rather than filtered (the current
+  // search results), so the header's live/stale badge reflects the whole dataset's
+  // freshness rather than just whatever subset the user happens to be searching for.
   anyStale(): boolean {
     return this.allPairs.some(p => p.stale);
   }
@@ -120,10 +119,8 @@ export class ForexComponent implements OnInit, OnDestroy {
     this.selectedPair = pair;
     const [base, quote] = pair.symbol.split('/');
     this.liveData.getForexKlines(base, quote).subscribe(candles => {
-      // Review finding (P1 #9 — "Synthetic candles are still used to generate trading
-      // analysis" — "I'd actually make it P0 for anything connected to live trading"):
-      // confirmed real — this fell back to Math.random()-generated candles and fed them
-      // straight into the real signal pipeline with no indication to the user.
+      // Require enough real candles before running the signal pipeline — refuse to
+      // analyze rather than produce a call on insufficient data.
       if (candles.length < 20) {
         this.analyzing = '';
         this.tradeCall = null as any;
@@ -137,10 +134,6 @@ export class ForexComponent implements OnInit, OnDestroy {
     });
   }
   analysisUnavailable = '';
-
-  // Review finding (P1 #9 — full context above at analyze()): genCandles() was removed
-  // entirely, not just unused — Math.random()-generated fake market history has no
-  // legitimate caller left in this file.
 
   fmtPrice = (v: number) => {
     if (this.currency.currency() === 'INR') return '₹' + v.toFixed(4);

@@ -10,41 +10,20 @@ import java.util.Comparator;
 import java.util.List;
 
 /**
- * Review finding ("Client-Side Signal Generation = Trusting the Browser with Money" — "Port the
- * entire TA engine... to Java on the server"): a genuinely verified port of
- * SmcEngineService.analyze() from trading-analyst/src/app/services/smc-engine.service.ts — the
- * largest and most pattern-detection-heavy piece of this port (swing points, order blocks, fair
- * value gaps, liquidity levels, structure breaks, premium/discount zones, bias scoring, entry
- * setup detection).
+ * Smart Money Concepts (SMC) pattern detection engine: identifies swing points, order blocks,
+ * fair value gaps, liquidity levels, and structure breaks (BOS/CHoCH) from raw candle data, then
+ * combines them into a premium/discount zoning, a directional bias score, and a textual entry
+ * setup description. This is the heaviest pattern-detection piece of the strategy stack.
  *
- * HOW "VERIFIED" IS DEFINED HERE: the real TypeScript's logic copied into a standalone harness,
- * compiled with this project's own tsc, run against 3 large (150-candle) seeded scenarios — a
- * mixed/random market, a strong uptrend, a strong downtrend — deliberately chosen to exercise
- * order block detection (both directions), fair value gaps (both directions), liquidity level
- * detection, structure breaks (BOS), premium/discount zone classification, both branches of
- * entry-setup detection, and key-level sorting. This Java class was run against the identical
- * seeded candle sequences and compared field-by-field. Every substantive value matched exactly —
- * swing point indices/prices, order block boundaries, FVG boundaries and directions, structure
- * break sequencing, bias/trend/biasStrength scoring, and entry setup text.
+ * Needs at least 50 candles to produce a meaningful analysis; below that it falls back to
+ * {@link #emptyAnalysis()}, a plain neutral result rather than attempting detection on
+ * insufficient data.
  *
- * A REAL, DOCUMENTED CROSS-LANGUAGE DIFFERENCE WAS FOUND AND IS DELIBERATELY LEFT AS-IS (not a
- * bug to fix, a genuine language difference to disclose): a FairValueGap with size exactly
- * 0.175% displayed as "0.17%" in the original TypeScript's key-level label but "0.18%" here.
- * Confirmed the cause precisely, not guessed: 0.175 cannot be exactly represented in IEEE 754
- * double precision (it's actually stored as 0.174999999999999988...), and JavaScript's
- * .toFixed(2) rounds that TRUE stored binary value (producing "0.17"), while Java's
- * String.format("%.2f", ...) rounds the shortest round-trip DECIMAL representation of that same
- * binary value ("0.175") using half-up rounding (producing "0.18"). Verified this directly by
- * printing both languages' raw output for the literal value 0.175, not by inspection. This
- * affects ONLY the human-readable percentage text in a display label at this exact halfway
- * boundary — the underlying `size` field itself (stored at 3-decimal precision) is numerically
- * identical between the two languages, so no decision logic is affected.
- *
- * HONEST SCOPE: verified against 3 seeded 150-candle datasets covering diverse, well-populated
- * conditions. Not separately verified against sparse-data edge cases (fewer than 50 candles,
- * which correctly falls back to emptyAnalysis() below, matching the original's own guard — this
- * one doesn't have the recursive-crash bug MarketRegimeService's did, confirmed by inspection of
- * its structure: emptyAnalysis() here is already a static object literal, not a recursive call).
+ * Note on floating-point display: percentage values formatted with String.format("%.2f", ...)
+ * round the shortest round-trip decimal representation of the underlying double using half-up
+ * rounding. This only affects the last displayed digit of a label text at exact rounding
+ * boundaries (e.g. a gap size of 0.175%) — the underlying numeric fields themselves are
+ * unaffected, so no decision logic is impacted by this formatting behavior.
  */
 @Service
 public class SmcEngineService {

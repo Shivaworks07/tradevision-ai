@@ -44,11 +44,9 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * Review finding ("Emergency-flatten automated tests: Missing"): the naked-position safety net
- * (review's own words: "the single most dangerous state an auto-trader can be in") had no
- * dedicated test coverage until this file. Every test here traces its expected numbers by hand
- * against the actual PositionSafetyService source before being written — not just asserted to
- * "look right" — the same discipline used throughout this session, since a wrong test is worse
+ * Verifies the naked-position safety net -- the single most dangerous state an
+ * auto-trader can be in. Every test here traces its expected numbers by hand
+ * against the actual PositionSafetyService source, since a wrong test is worse
  * than no test (it looks like coverage while proving nothing).
  */
 @ExtendWith(MockitoExtension.class)
@@ -66,35 +64,24 @@ class PositionSafetyServiceTest {
     @Mock TradeCallRepository callRepo;
     @Mock FillLedgerService fillLedgerService;
     @Mock BrokerAdapter adapter;
-    // Review finding ("Position P&L architecture is still scattered" -- full context in
-    // RealizedPnlService's own javadoc): @Spy (a REAL instance) rather than @Mock, since this
-    // service has no dependencies of its own -- a bare @Mock would return null from
-    // calculate(), NPEing on pnlResult.realizedPnl() in every existing test that reaches these
-    // P&L paths, which never needed to stub anything before this consolidation existed.
+    // @Spy (a REAL instance) rather than @Mock, since this service has no dependencies of
+    // its own -- a bare @Mock would return null from calculate(), NPEing on
+    // pnlResult.realizedPnl() in every existing test that reaches these P&L paths.
 
     @Spy RealizedPnlService realizedPnlService = new RealizedPnlService();
-    // Review finding ("OMS not actually authoritative" -- P0, full context in
-    // PositionSafetyService's own new dependency comment): needed now that the emergency-flatten
-    // market order gets its own real OMS Order record.
+    // The emergency-flatten market order gets its own real OMS Order record.
     @Mock OrderService orderService;
-    // Review finding ("Position Ledger is still not authoritative" -- full context in
-    // PositionLedgerService's own javadoc): @Mock with a default "genuine match" stub added in
-    // @BeforeEach below -- same reasoning as PositionMonitorServiceTest's own identical addition.
+    // @Mock with a default "genuine match" stub added in @BeforeEach below.
     @Mock PositionLedgerService positionLedgerService;
-    // Review finding ("Position close has atomic protection; not every position mutation does"
-    // -- P1, full context in PositionMonitorServiceTest's own identical addition): needed now
-    // that emergency-flatten's own full close uses a real conditional update.
+    // Emergency-flatten's own full close uses a real conditional update.
     @Mock org.springframework.data.mongodb.core.MongoTemplate mongoTemplate;
-    // Review finding ("Emergency flatten can execute twice concurrently" -- P0, full context at
-    // the actual lock acquisition in PositionSafetyService.emergencyFlatten): needed now that
-    // every emergencyFlatten() call requires a successful lock acquisition before doing
+    // Every emergencyFlatten() call requires a successful lock acquisition before doing
     // anything at all.
     @Mock DistributedLockService distributedLockService;
     @Mock com.tradevision.repository.FlattenAttemptRepository flattenAttemptRepo;
-    // P3-11 second re-audit fix ("only cancel orders that belong to the position being flattened
-    // or that aren't tracked at all" -- full context in PositionSafetyService's own updated
-    // cancelOtherOpenOrdersForSymbol javadoc): needed now that stray-order cancellation looks up
-    // real OMS ownership before cancelling anything.
+    // Stray-order cancellation looks up real OMS ownership before cancelling anything --
+    // only orders that belong to the position being flattened or that aren't tracked at
+    // all are eligible.
     @Mock com.tradevision.repository.OrderRepository orderRepository;
 
     @InjectMocks PositionSafetyService service;
@@ -107,58 +94,36 @@ class PositionSafetyServiceTest {
 
     @BeforeEach
     void setup() {
-        // Review finding ("Emergency flatten can execute twice concurrently" -- P0, full context
-        // at the actual lock acquisition in PositionSafetyService.emergencyFlatten): a realistic
-        // "this call won the lock" default -- Mockito's own real default for an unstubbed
-        // boolean-returning method is false, which would otherwise make EVERY existing test in
-        // this file silently no-op (the lock acquisition would fail, emergencyFlatten would
-        // return immediately, and every assertion checking real side effects would fail for the
-        // wrong reason). A test that specifically wants to exercise the lost-the-race path
-        // overrides this explicitly.
-        // Review finding ("Emergency flatten lock failure is ambiguous" -- external review, full
-        // context at DistributedLockService.tryAcquireWithDiagnosis's own javadoc): this
-        // method's own call site was converted to the new, richer result type -- this default
-        // must match, or every existing test in this file would silently fall through to the
-        // "acquired" branch by accident (null != either failure enum value) rather than through
-        // an explicit, intentional default.
+        // A realistic "this call won the lock" default -- Mockito's own real default for an
+        // unstubbed boolean-returning method is false, which would otherwise make EVERY existing
+        // test in this file silently no-op (the lock acquisition would fail, emergencyFlatten
+        // would return immediately, and every assertion checking real side effects would fail
+        // for the wrong reason). A test that specifically wants to exercise the lost-the-race
+        // path overrides this explicitly.
         //
-        // Review finding ("DistributedLockService has a subtle generation race" -- external
-        // review, twenty-ninth pass, P1, full context in DistributedLockService.LockLease's own
-        // javadoc): production code now calls tryAcquireWithDiagnosis() exclusively (the plain
-        // boolean tryAcquire() is never called by anything this file exercises), and reads the
+        // Production code calls tryAcquireWithDiagnosis() exclusively (the plain boolean
+        // tryAcquire() is never called by anything this file exercises), and reads the
         // generation directly off the returned LockLease -- no separate currentGeneration()
-        // stub needed or used anymore.
+        // stub needed or used.
         when(distributedLockService.tryAcquireWithDiagnosis(any(), any(), any()))
             .thenReturn(new DistributedLockService.LockLease(DistributedLockService.AcquireResult.ACQUIRED, 1L));
-        // Review finding ("DistributedLockService.renew() does not verify ownership generation"
-        // -- external review, second pass): a genuine, long-standing gap in this file's own
-        // test setup, only now surfacing -- there was NEVER a default stub for renew() at all in
-        // this file, at any point. This went unnoticed because, before this session's own P0-1
-        // fix ("Emergency-flatten lock can still be lost while the operation continues"), the
-        // production code logged a warning on renewal failure and proceeded regardless -- the
-        // return value was genuinely irrelevant to every test's own outcome. Once that fix made
-        // renewal failure a hard stop, Mockito's own real default (false, for an unstubbed
-        // boolean-returning call) should have silently broken every other test in this file
-        // right then -- caught now, while migrating renew()'s own call sites to the new,
-        // generation-aware 4-arg overload this pass adds, not before. Fixed properly here rather
-        // than left to coincidentally keep working.
+        // A default stub for renew() so a renewal failure reads as a genuine, deliberate
+        // outcome rather than an accidental null. Because renewal failure is a hard stop in
+        // production code, Mockito's own real default (false, for an unstubbed
+        // boolean-returning call) would otherwise silently break every other test in this file.
         when(distributedLockService.renew(any(), any(), anyLong(), any())).thenReturn(true);
-        // Review finding ("Position close has atomic protection; not every position mutation
-        // does" -- P1, full context at the actual new atomic update in finalizeFlatten): a
-        // realistic "the conditional update succeeded" default, same reasoning as
+        // A realistic "the conditional update succeeded" default, same reasoning as
         // PositionMonitorServiceTest's own identical addition -- an unstubbed updateFirst()
         // would otherwise NPE every existing test that reaches the full-close path.
         when(mongoTemplate.updateFirst(any(), any(org.springframework.data.mongodb.core.query.Update.class), eq(Position.class)))
             .thenReturn(com.mongodb.client.result.UpdateResult.acknowledged(1, 1L, null));
-        // P2-8 fix, full context in Position.flattenEpisode's own field javadoc: the OPEN ->
-        // FLATTENING transition now uses findAndModify (to read back the atomically-incremented
-        // flattenEpisode) instead of updateFirst -- a realistic "the conditional transition
-        // succeeded, this is now episode 1" default, matching this file's own existing
-        // updateFirst default's reasoning. An unstubbed findAndModify returns null, which
-        // production code treats as "transition failed" and aborts before any real sell --
-        // exactly the kind of silent, wrong-reason test failure this file's own existing
-        // defaults are already written to avoid. A test that wants a SPECIFIC episode number
-        // (e.g. proving a second episode gets a different one) overrides this explicitly.
+        // The OPEN -> FLATTENING transition uses findAndModify (to read back the
+        // atomically-incremented flattenEpisode) instead of updateFirst -- a realistic "the
+        // conditional transition succeeded, this is now episode 1" default, matching this
+        // file's own existing updateFirst default's reasoning. An unstubbed findAndModify
+        // returns null, which production code treats as "transition failed" and aborts before
+        // any real sell. A test that wants a SPECIFIC episode number (e.g. proving a second
+        // episode gets a different one) overrides this explicitly.
         when(mongoTemplate.findAndModify(any(), any(org.springframework.data.mongodb.core.query.Update.class),
                 any(org.springframework.data.mongodb.core.FindAndModifyOptions.class), eq(Position.class)))
             .thenAnswer(invocation -> {
@@ -177,24 +142,21 @@ class PositionSafetyServiceTest {
 
         when(riskProfileRepo.findByCredentialId("cred1")).thenReturn(Optional.of(profile));
         when(adapter.getSymbolRules(any(), any())).thenReturn(USDT_RULES);
-        // Review finding (🟠 #15 — "Emergency flatten still needs a true exchange-quantity
-        // source"): attemptFlatten now checks actual free balance before selling — needed here
-        // so every EXISTING test (which never cared about this balance check before) isn't
-        // silently capped to zero by Mockito's default empty list for an unstubbed getBalance(),
-        // which would otherwise skip the market sell entirely in every one of them. Generous
-        // (1000 BTC) — comfortably above any quantity used in this file's existing tests, so
-        // this default never actually caps anything unless a test explicitly overrides it.
+        // attemptFlatten checks actual free balance before selling -- needed here so every
+        // EXISTING test (which never cared about this balance check before) isn't silently
+        // capped to zero by Mockito's default empty list for an unstubbed getBalance(), which
+        // would otherwise skip the market sell entirely in every one of them. Generous (1000
+        // BTC) -- comfortably above any quantity used in this file's existing tests, so this
+        // default never actually caps anything unless a test explicitly overrides it.
         when(adapter.getBalance(any(), any(), any())).thenReturn(
             List.of(new AssetBalance("BTC", BigDecimal.valueOf(1000), BigDecimal.ZERO)));
 
-        // Review finding ("Fill Ledger can still fail without stopping financial state changes"
-        // -- full context in recordPartialFlattenPnl's own javadoc): a realistic "successful
-        // recording" default, matching the review's own reasoning for the getBalance() default
-        // just above -- every EXISTING test in this file that never cared about fill-ledger
+        // A realistic "successful recording" default, matching the getBalance() default just
+        // above -- every EXISTING test in this file that never cared about fill-ledger
         // recording specifically (most of them) now gets a genuine, size-matched success rather
-        // than Mockito's default empty list, which would otherwise silently exercise this
-        // pass's own new halt-on-ledger-failure escalation in tests that never intended to test
-        // it. A test that DOES want to exercise the failure path overrides this explicitly.
+        // than Mockito's default empty list, which would otherwise silently trigger the
+        // halt-on-ledger-failure escalation in tests that never intended to test it. A test
+        // that DOES want to exercise the failure path overrides this explicitly.
         when(fillLedgerService.recordFills(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
             .thenAnswer(invocation -> {
                 List<?> fills = invocation.getArgument(7);
@@ -205,11 +167,9 @@ class PositionSafetyServiceTest {
                 for (int i = 0; i < count; i++) result.add(mock(FillRecord.class));
                 return result;
             });
-        // Review finding ("Position Ledger is still not authoritative" -- full context in
-        // PositionLedgerService's own javadoc): a realistic "genuine match" default, same
-        // reasoning as the recordFills default just above -- an unstubbed
-        // reconcilePositionAgainstLedger would otherwise return null, NPEing every existing
-        // test that reaches the new position-close reconciliation check.
+        // A realistic "genuine match" default, same reasoning as the recordFills default just
+        // above -- an unstubbed reconcilePositionAgainstLedger would otherwise return null,
+        // NPEing every existing test that reaches the position-close reconciliation check.
         when(positionLedgerService.reconcilePositionAgainstLedger(any(), any(), any()))
             .thenAnswer(invocation -> new PositionLedgerService.ReconcileResult(PositionLedgerService.ReconcileStatus.MATCH, invocation.getArgument(1), invocation.getArgument(1)));
     }
@@ -233,7 +193,7 @@ class PositionSafetyServiceTest {
     }
 
     @Test
-    @DisplayName("emergencyFlatten: the distributed lock is renewed before the exchange-facing sell, not just acquired once for a fixed 60 seconds -- the actual review fix (\"Emergency-flatten distributed lock can still expire\")")
+    @DisplayName("emergencyFlatten: the distributed lock is renewed before the exchange-facing sell, not just acquired once for a fixed 60 seconds")
     void emergencyFlatten_renewsLockBeforeExchangeFacingSell() {
         Position position = openPosition(1.0, 100, 10.0);
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(fullSuccess(1.0, 90, List.of()));
@@ -244,7 +204,7 @@ class PositionSafetyServiceTest {
     }
 
     @Test
-    @DisplayName("emergencyFlatten: renewal failing before the exchange-facing sell is a hard stop -- NO order is submitted, unlike the previous behavior of logging a warning and proceeding anyway -- the actual review fix (\"Emergency-flatten lock can still be lost while the operation continues\")")
+    @DisplayName("emergencyFlatten: renewal failing before the exchange-facing sell is a hard stop -- NO order is submitted, rather than logging a warning and proceeding anyway")
     void emergencyFlatten_renewalFails_hardStopsBeforeAnySell() {
         Position position = openPosition(1.0, 100, 10.0);
         when(distributedLockService.renew(any(), any(), anyLong(), any())).thenReturn(false);
@@ -256,7 +216,7 @@ class PositionSafetyServiceTest {
     }
 
     @Test
-    @DisplayName("attemptFlatten: the order fails outright (no confirmed fill quantity at all) -- position's real quantity is still persisted via the atomic conditional update, not silently lost -- the actual review fix (\"Position close has atomic protection; not every position mutation does\")")
+    @DisplayName("attemptFlatten: the order fails outright (no confirmed fill quantity at all) -- position's real quantity is still persisted via the atomic conditional update, not silently lost")
     void orderFailsOutright_persistsRealQuantityAtomically() {
         Position position = openPosition(1.0, 100, 10.0);
         when(adapter.placeOrder(any(), any(), any(), any()))
@@ -264,7 +224,7 @@ class PositionSafetyServiceTest {
 
         service.emergencyFlatten(credential, adapter, "key", "secret", position, "test reason");
 
-        assertThat(position.getStatus()).isEqualTo("FLATTENING"); // Review finding ("Position still has no FLATTENING state" -- external review, second pass): never closed since nothing was confirmed sold, but no longer reverts to OPEN either -- a real flatten attempt happened and failed, which OPEN would misleadingly suggest never occurred. Stays FLATTENING for the recovery mechanism to find.
+        assertThat(position.getStatus()).isEqualTo("FLATTENING"); // never closed since nothing was confirmed sold, but doesn't revert to OPEN either -- a real flatten attempt happened and failed, which OPEN would misleadingly suggest never occurred. Stays FLATTENING for the recovery mechanism to find.
         ArgumentCaptor<org.springframework.data.mongodb.core.query.Update> updateCaptor =
             ArgumentCaptor.forClass(org.springframework.data.mongodb.core.query.Update.class);
         verify(mongoTemplate, atLeastOnce()).updateFirst(any(), updateCaptor.capture(), eq(Position.class));
@@ -277,12 +237,11 @@ class PositionSafetyServiceTest {
     }
 
     /**
-     * Audit fix (P0-2, "Failed emergency flatten leaves a naked position with no automatic
-     * retry" -- full context in attemptFlatten's own updated comment just above its new retry
-     * branch). The outright failure above (orderFailsOutright_persistsRealQuantityAtomically)
-     * already exercises this retry implicitly (placeOrder is stubbed to fail every time, so the
-     * retry fires and also fails) -- these two tests isolate the NEW behavior specifically:
-     * attempt 0 failing outright now retries once, and a retry that SUCCEEDS actually saves the
+     * A failed emergency flatten must not leave a naked position with no automatic retry.
+     * The outright failure above (orderFailsOutright_persistsRealQuantityAtomically) already
+     * exercises this retry implicitly (placeOrder is stubbed to fail every time, so the retry
+     * fires and also fails) -- these two tests isolate the retry behavior specifically:
+     * attempt 0 failing outright retries once, and a retry that SUCCEEDS actually saves the
      * naked position rather than halting it.
      */
     @Test
@@ -303,8 +262,8 @@ class PositionSafetyServiceTest {
         verify(credentialService).audit(any(), any(), any(), eq("EMERGENCY_FLATTEN_RETRYING"), any());
         // emergencyFlatten()'s own 6-arg overload always passes haltOnSuccess=true (an emergency
         // flatten is only ever triggered after a genuine protection failure, regardless of
-        // whether this specific attempt — or its retry — ultimately succeeds; see this class's
-        // own P1-2 javadoc on the haltOnSuccess parameter), so the position closing via the
+        // whether this specific attempt — or its retry — ultimately succeeds; see the
+        // haltOnSuccess parameter's own javadoc), so the position closing via the
         // retry does not itself mean the profile stays untouched.
         assertThat(position.getStatus()).isEqualTo("NAKED_FLATTENED"); // the retry's own success closed it, not an open/unprotected halt
         assertThat(profile.isTradingHalted()).isTrue();
@@ -327,11 +286,10 @@ class PositionSafetyServiceTest {
     }
 
     /**
-     * Audit fix (P0-2 follow-up — external re-review: "The OCO is still cancelled before the
-     * sell, so the position can still end up unprotected" — full context in
-     * tryReprotectAfterFailedFlatten's own class javadoc). Both tests below exercise its two
-     * call sites: an outright failure exhausting its retry, and a partial fill whose own retry
-     * also comes back partial.
+     * The position must not end up unprotected even though the OCO is cancelled before the
+     * sell. Both tests below exercise tryReprotectAfterFailedFlatten's two call sites: an
+     * outright failure exhausting its retry, and a partial fill whose own retry also comes
+     * back partial.
      */
     @Test
     @DisplayName("attemptFlatten: outright failure exhausts its retry, but a prior OCO_EXIT record lets this re-place protection at the old TP/SL — halted for review, but no longer naked")
@@ -362,14 +320,12 @@ class PositionSafetyServiceTest {
     }
 
     /**
-     * Audit fix (P0-2 follow-up #2 — external re-review of the first follow-up, confirmed real:
-     * "it only re-protects if the old levels still bracket the current price... If the price has
-     * already fallen through the stop, which is the most urgent case, it returns false and the
-     * position stays naked" — full context in tryReprotectAfterFailedFlatten's own updated
-     * javadoc). Unlike the reprotect test immediately above (price 100, stop 90 — the old OCO
-     * still brackets it), here the fresh price (85) has already fallen THROUGH the old stop
-     * trigger (90) — the exact gap the reviewer named. Re-placing the old OCO is unsafe here, so
-     * this must escalate to one more market-sell attempt instead of a bare naked halt.
+     * Re-protection only makes sense while the old levels still bracket the current price. If
+     * the price has already fallen through the stop, which is the most urgent case, re-placing
+     * the old OCO would be unsafe. Unlike the reprotect test immediately above (price 100, stop
+     * 90 — the old OCO still brackets it), here the fresh price (85) has already fallen THROUGH
+     * the old stop trigger (90), so this must escalate to one more market-sell attempt instead
+     * of a bare naked halt.
      */
     @Test
     @DisplayName("attemptFlatten: outright failure exhausts its retry, and price has already fallen through the old stop (re-protect OCO unsafe) -- escalates to one more backed-off market sell, which succeeds and closes the position")
@@ -425,12 +381,10 @@ class PositionSafetyServiceTest {
     }
 
     /**
-     * Audit fix (P0-2 follow-up #3 — user-flagged, confirmed real: "if the price is above the
-     * old take-profit when re-protection runs, it returns FAILED and the position stays
-     * unprotected. That means the position is in profit, so a plain market sell is the right
-     * move" — full context in tryReprotectAfterFailedFlatten's own updated javadoc). Mirrors the
-     * through-stop escalation tests above, but for the OPPOSITE, favorable direction: price has
-     * moved past the old take-profit, not through the old stop.
+     * If the price is above the old take-profit when re-protection runs, the position is in
+     * profit, so a plain market sell -- not re-placing the old OCO -- is the right move.
+     * Mirrors the through-stop escalation tests above, but for the OPPOSITE, favorable
+     * direction: price has moved past the old take-profit, not through the old stop.
      */
     @Test
     @DisplayName("attemptFlatten: outright failure exhausts its retry, and price has already moved past the old take-profit (re-protect OCO unsafe) -- escalates to a market sell that locks in the gain")
@@ -522,8 +476,8 @@ class PositionSafetyServiceTest {
         // Renew is called twice before the first placeOrder ever fires (once in
         // emergencyFlattenLocked before calling attemptFlatten, once more in attemptFlatten
         // immediately before the real market sell — see emergencyFlatten_renewsLockBeforeExchangeFacingSell
-        // above, which proves that exact count for one attempt). The THIRD call is this fix's
-        // own, right before the retry — that is the one that fails here.
+        // above, which proves that exact count for one attempt). The THIRD call renews right
+        // before the retry — that is the one that fails here.
         when(distributedLockService.renew(any(), any(), anyLong(), any())).thenReturn(true, true, false);
 
         service.emergencyFlatten(credential, adapter, "key", "secret", position, "test reason");
@@ -546,9 +500,8 @@ class PositionSafetyServiceTest {
         assertThat(position.getStatus()).isEqualTo("NAKED_FLATTENED");
         assertThat(position.getRealizedPnlQuote()).isEqualByComparingTo("-6.5");
         assertThat(position.getExitFeeQuote()).isEqualByComparingTo("1.5");
-        // Review finding ("NAKED_FLATTENED retains the old quantity"): a closed position must
-        // not still read as having a nonzero quantity — that's what a future "quantity > 0"
-        // query could misinterpret as still open.
+        // A closed position must not still read as having a nonzero quantity — that's what a
+        // future "quantity > 0" query could misinterpret as still open.
         assertThat(position.getQuantity()).isEqualByComparingTo("0");
         assertThat(position.getClosedQuantity()).isEqualByComparingTo("1.0");
         verify(slotReservationService).releaseByKey("cred1");
@@ -556,10 +509,8 @@ class PositionSafetyServiceTest {
     }
 
     /**
-     * Review finding ("Emergency flatten still allows an exchange sell without durable
-     * pre-submission intent" -- external review, twenty-sixth pass, P1, full context in
-     * FlattenAttempt's own class javadoc): the actual test proving the durable pre-submission
-     * record is written before the real sell.
+     * Verifies the durable pre-submission record is written before the real sell, so an
+     * exchange sell is never attempted without durable pre-submission intent recorded first.
      */
     @Test
     @DisplayName("emergencyFlatten: writes a durable FlattenAttempt record with this attempt's exact clientOrderId before the real exchange sell")
@@ -578,24 +529,19 @@ class PositionSafetyServiceTest {
     }
 
     /**
-     * P2-8 fix ("PositionSafetyService.attemptFlatten: flatten clientOrderId deterministic per
-     * positionId:attempt; a later flatten episode on the same position reuses it" -- external
-     * review, full context in Position.flattenEpisode's own field javadoc): this position can
-     * legitimately return to OPEN after a recovered partial flatten and go through a genuinely
-     * SEPARATE flatten episode later. Before this fix, that second episode's own attempt-0
-     * clientOrderId was a pure function of positionId + attempt, so it exactly reproduced the
-     * FIRST episode's own attempt-0 id -- OrderService.create's own unique-clientOrderId
-     * constraint would then reject the second episode's OMS Order as a duplicate, leaving that
-     * episode's real exchange sell with no OMS record at all. This is the actual review-required
-     * test: "Two flatten episodes -> two OMS orders" -- proven here by asserting the two
-     * episodes' clientOrderIds passed to orderService.create are genuinely different, not by
-     * asserting on OMS Order objects directly (this mock's own create() isn't stubbed to persist
-     * anything — every other test in this file already relies on that same non-persisting
-     * default), which is exactly what a real duplicate-key rejection versus two independent
-     * inserts would hinge on.
+     * This position can legitimately return to OPEN after a recovered partial flatten and go
+     * through a genuinely SEPARATE flatten episode later. A naive clientOrderId that is a pure
+     * function of positionId + attempt would exactly reproduce the FIRST episode's own attempt-0
+     * id -- OrderService.create's own unique-clientOrderId constraint would then reject the
+     * second episode's OMS Order as a duplicate, leaving that episode's real exchange sell with
+     * no OMS record at all. Proven here by asserting the two episodes' clientOrderIds passed to
+     * orderService.create are genuinely different, not by asserting on OMS Order objects
+     * directly (this mock's own create() isn't stubbed to persist anything — every other test in
+     * this file already relies on that same non-persisting default), which is exactly what a
+     * real duplicate-key rejection versus two independent inserts would hinge on.
      */
     @Test
-    @DisplayName("emergencyFlatten: two separate flatten episodes on the same position produce two genuinely different clientOrderIds — the actual review fix (\"flatten clientOrderId deterministic per positionId:attempt; a later flatten episode reuses it\")")
+    @DisplayName("emergencyFlatten: two separate flatten episodes on the same position produce two genuinely different clientOrderIds")
     void twoFlattenEpisodesOnSamePosition_produceDifferentClientOrderIds() {
         Position position = openPosition(1.0, 100, 10.0);
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(fullSuccess(1.0, 105, List.of()));
@@ -634,7 +580,7 @@ class PositionSafetyServiceTest {
         assertThat(allClientOrderIds).hasSize(2);
         assertThat(allClientOrderIds.get(0)).isNotBlank();
         assertThat(allClientOrderIds.get(1)).isNotBlank();
-        assertThat(allClientOrderIds.get(1)).isNotEqualTo(allClientOrderIds.get(0)); // the actual fix: episode 2 != episode 1
+        assertThat(allClientOrderIds.get(1)).isNotEqualTo(allClientOrderIds.get(0)); // episode 2's clientOrderId must differ from episode 1's
     }
 
     @Test
@@ -663,11 +609,9 @@ class PositionSafetyServiceTest {
         assertThat(position.getEntryFeeQuote()).isEqualByComparingTo("6");
         assertThat(position.getExitFeeQuote()).isEqualByComparingTo("1.2"); // accumulated, not overwritten
         assertThat(position.getRealizedPnlQuote()).isEqualByComparingTo("-7.4");
-        // Review finding ("One remaining accounting inconsistency" -- external review,
-        // thirty-third pass, P2): closedQuantity is now cumulative across every confirmed exit
-        // leg on this position (0.4 from leg 1 + 0.6 from leg 2 = 1.0, the real total closed),
-        // matching the crash-recovery path's own already-established semantics -- not just this
-        // final leg's own amount alone, which used to leave the two paths inconsistent.
+        // closedQuantity is cumulative across every confirmed exit leg on this position (0.4
+        // from leg 1 + 0.6 from leg 2 = 1.0, the real total closed), matching the
+        // crash-recovery path's own semantics -- not just this final leg's own amount alone.
         assertThat(position.getQuantity()).isEqualByComparingTo("0");
         assertThat(position.getClosedQuantity()).isEqualByComparingTo("1.0");
         verify(slotReservationService, times(1)).releaseByKey("cred1"); // only once, on the final close
@@ -676,7 +620,7 @@ class PositionSafetyServiceTest {
     }
 
     @Test
-    @DisplayName("attemptFlatten: the clientOrderId sent to Binance for BOTH the first attempt and the retry stays within the 36-character limit, and the two attempts produce genuinely DIFFERENT ids -- the actual review fix (\"Emergency-flatten clientOrderId is still invalid\"), since \"flat-\" + a 36-char UUID + \"-\" + attempt was 43+ characters, over Binance's own limit, on the exact safety path meant to save a naked position")
+    @DisplayName("attemptFlatten: the clientOrderId sent to Binance for BOTH the first attempt and the retry stays within the 36-character limit, and the two attempts produce genuinely DIFFERENT ids -- a naive \"flat-\" + a 36-char UUID + \"-\" + attempt would be 43+ characters, over Binance's own limit, on the exact safety path meant to save a naked position")
     void flattenClientOrderId_staysWithinLengthLimit_andDiffersAcrossRetries() {
         Position position = openPosition(1.0, 100, 10.0);
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(
@@ -697,7 +641,7 @@ class PositionSafetyServiceTest {
     }
 
     @Test
-    @DisplayName("emergencyFlatten: losing the distributed-lock race means NOTHING happens -- no OCO status check, no cancel, no market sell, not even a status read -- the actual review fix (\"Emergency flatten can execute twice concurrently\"), since by definition another process already owns this exact position's flatten")
+    @DisplayName("emergencyFlatten: losing the distributed-lock race means NOTHING happens -- no OCO status check, no cancel, no market sell, not even a status read, since by definition another process already owns this exact position's flatten")
     void emergencyFlatten_lostLockRace_doesNothing() {
         Position position = openPosition(1.0, 100, 10.0);
         when(distributedLockService.tryAcquireWithDiagnosis(any(), any(), any()))
@@ -711,7 +655,7 @@ class PositionSafetyServiceTest {
     }
 
     @Test
-    @DisplayName("emergencyFlatten: a genuine INFRASTRUCTURE_FAILURE acquiring the lock (not another instance holding it) escalates -- halts trading and raises a critical incident, rather than silently doing nothing while a real, unprotected position sits there -- the actual review fix (\"Emergency flatten lock failure is ambiguous\")")
+    @DisplayName("emergencyFlatten: a genuine INFRASTRUCTURE_FAILURE acquiring the lock (not another instance holding it) escalates -- halts trading and raises a critical incident, rather than silently doing nothing while a real, unprotected position sits there")
     void emergencyFlatten_lockInfrastructureFailure_haltsAndRaisesIncident() {
         Position position = openPosition(1.0, 100, 10.0);
         when(distributedLockService.tryAcquireWithDiagnosis(any(), any(), any()))
@@ -738,7 +682,7 @@ class PositionSafetyServiceTest {
 
         service.emergencyFlatten(credential, adapter, "key", "secret", position, "test reason");
 
-        assertThat(position.getStatus()).isEqualTo("FLATTENING"); // Review finding ("Position still has no FLATTENING state" -- external review, second pass): never set to NAKED_FLATTENED, but no longer reverts to OPEN either -- see this file's own identical fix above.
+        assertThat(position.getStatus()).isEqualTo("FLATTENING"); // never set to NAKED_FLATTENED, but doesn't revert to OPEN either -- see the identical case above.
         assertThat(position.getQuantity()).isEqualByComparingTo("0.3"); // 1.0 - 0.4 - 0.3
         assertThat(profile.isTradingHalted()).isTrue();
         verify(slotReservationService, never()).release(any());
@@ -754,7 +698,7 @@ class PositionSafetyServiceTest {
 
         service.emergencyFlatten(credential, adapter, "key", "secret", position, "test reason");
 
-        assertThat(position.getStatus()).isEqualTo("FLATTENING"); // Review finding ("Position still has no FLATTENING state" -- external review, second pass): no longer reverts to OPEN -- see this file's own identical fix above.
+        assertThat(position.getStatus()).isEqualTo("FLATTENING"); // doesn't revert to OPEN -- see the identical case above.
         assertThat(position.getRealizedPnlQuote()).isNull();
         assertThat(profile.isTradingHalted()).isTrue();
         verify(slotReservationService, never()).release(any());
@@ -791,12 +735,11 @@ class PositionSafetyServiceTest {
         assertThat(position.getExitFeeQuote()).isNull(); // genuinely unknown — not fabricated as zero
     }
 
-    // ── OCO collision avoidance ("P0 #1") ──────────────────────────────────────
-    // Review's own explicitly requested tests #1 and #2, plus the adjacent branches of the new
-    // state machine.
+    // ── OCO collision avoidance ──────────────────────────────────────────────
+    // Covers the core cases plus the adjacent branches of the state machine.
 
     @Test
-    @DisplayName("Test 7 (review's own test #1 — 'OCO unknown'): OCO status cannot be verified — HALTS, never sends a market sell")
+    @DisplayName("emergencyFlatten: OCO status cannot be verified — HALTS, never sends a market sell")
     void ocoStatusUnknown_haltsWithoutFlattening() {
         Position position = openPosition(1.0, 100, 10.0);
         position.setOcoOrderListId("oco-123");
@@ -811,7 +754,7 @@ class PositionSafetyServiceTest {
     }
 
     @Test
-    @DisplayName("Test 8 (review's own test #2 — 'active OCO'): an active OCO is cancelled, verified, then the position is safely sold")
+    @DisplayName("emergencyFlatten: an active OCO is cancelled, verified, then the position is safely sold")
     void activeOco_cancelledThenFlattened() {
         Position position = openPosition(1.0, 100, 10.0);
         position.setOcoOrderListId("oco-123");
@@ -833,7 +776,7 @@ class PositionSafetyServiceTest {
     }
 
     @Test
-    @DisplayName("P1-2: exitPosition (routine planned exit) closes cleanly and does NOT halt the profile or raise a CRITICAL incident")
+    @DisplayName("exitPosition (routine planned exit) closes cleanly and does NOT halt the profile or raise a CRITICAL incident")
     void exitPosition_cleanClose_doesNotHaltProfile() {
         Position position = openPosition(1.0, 100, 10.0);
         position.setOcoOrderListId("oco-123");
@@ -855,7 +798,7 @@ class PositionSafetyServiceTest {
     }
 
     @Test
-    @DisplayName("P1-2: exitPosition still halts on a genuine protection failure (could not verify OCO) — the flag only suppresses the SUCCESS-path halt")
+    @DisplayName("exitPosition still halts on a genuine protection failure (could not verify OCO) — the flag only suppresses the SUCCESS-path halt")
     void exitPosition_genuineFailure_stillHalts() {
         Position position = openPosition(1.0, 100, 10.0);
         position.setOcoOrderListId("oco-123");
@@ -937,16 +880,12 @@ class PositionSafetyServiceTest {
         assertThat(position.getStatus()).isEqualTo("NAKED_FLATTENED");
     }
 
-    // ── Exchange-quantity source ("🟠 #15") ──────────────────────────────────
+    // ── Exchange-quantity source ──────────────────────────────────────────────
 
     /**
-     * Review finding ("Emergency flatten can incorrectly close a partially-held position" --
-     * external review, thirtieth pass, P0, the review's own explicit "biggest issue in v178,"
-     * full context in attemptFlatten's own updated comment): the review's own review of THIS
-     * EXACT TEST, before this fix, made the point directly -- it asserted closedQuantity==0.4
-     * AND status==NAKED_FLATTENED together, meaning it validated the dangerous behavior instead
-     * of catching it. Rewritten to assert the actual, safe behavior instead: a capped sell that
-     * fully fills its own (smaller) target must NEVER be read as the whole position being gone.
+     * Emergency flatten must never incorrectly close a partially-held position: a capped sell
+     * that fully fills its own (smaller) target must NEVER be read as the whole position
+     * being gone.
      */
     @Test
     @DisplayName("attemptFlatten: internal quantity exceeds actual free balance — caps the sell at what's actually free, but a full fill of the CAPPED target is correctly read as only a PARTIAL flatten of the real position, never NAKED_FLATTENED")
@@ -955,8 +894,8 @@ class PositionSafetyServiceTest {
         when(adapter.getBalance(any(), any(), any())).thenReturn(
             List.of(new AssetBalance("BTC", BigDecimal.valueOf(0.4), BigDecimal.ZERO))); // exchange actually only has 0.4 free, 0 locked
         // Every placeOrder call (the initial attempt AND the one retry) fills exactly 0.4 --
-        // the mock can't distinguish calls, and that's fine: it proves the fix holds across
-        // both attempts, not just the first.
+        // the mock can't distinguish calls, and that's fine: it proves the capping behavior
+        // holds across both attempts, not just the first.
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(fullSuccess(0.4, 105, List.of()));
 
         service.emergencyFlatten(credential, adapter, "key", "secret", position, "test reason");
@@ -966,22 +905,20 @@ class PositionSafetyServiceTest {
         verify(adapter, atLeastOnce()).placeOrder(any(), any(), any(), orderCaptor.capture());
         assertThat(orderCaptor.getAllValues().get(0).quantity()).isEqualByComparingTo("0.4"); // capped, not the stale 1.0
 
-        // The actual fix under test: filling the CAPPED 0.4 target completely must NEVER be
-        // read as the real 1.0 position being fully closed.
+        // Filling the CAPPED 0.4 target completely must NEVER be read as the real 1.0 position
+        // being fully closed.
         assertThat(position.getStatus()).isNotEqualTo("NAKED_FLATTENED");
         // One retry attempted the remainder (1.0 - 0.4 = 0.6), which also filled only 0.4 of
         // ITS OWN target (0.6), leaving 0.2 genuinely unprotected after both attempts --
-        // matching the review's own required "remaining = internalQuantity - totalExecuted"
-        // formula, not the old "quantityToFlatten - executedQty" one.
+        // matching the "remaining = internalQuantity - totalExecuted" formula.
         verify(adapter, times(2)).placeOrder(any(), any(), any(), any());
         assertThat(position.getQuantity()).isEqualByComparingTo("0.2");
     }
 
     /**
-     * Review finding, same context as the test above: the review's own first required test --
-     * a single capped sell that fully fills its own target, verified against the intermediate
+     * A single capped sell that fully fills its own target, verified against the intermediate
      * PARTIAL state directly (isolated from the retry this file's own other test already
-     * covers), with the review's own exact numbers.
+     * covers).
      */
     @Test
     @DisplayName("attemptFlatten: capped sell (0.4 of a 1.0 real position) fully fills — remaining is internalQuantity minus executedQty (0.6), not quantityToFlatten minus executedQty (0.0)")
@@ -1000,22 +937,20 @@ class PositionSafetyServiceTest {
 
         service.emergencyFlatten(credential, adapter, "key", "secret", position, "test reason");
 
-        // The review's own exact expected value: 1.0 (real internal) - 0.4 (actually sold) =
-        // 0.6 -- not 0.4 (capped target) - 0.4 (sold) = 0.0, which is what the bug computed.
+        // The correct expected value: 1.0 (real internal) - 0.4 (actually sold) =
+        // 0.6 -- not 0.4 (capped target) - 0.4 (sold) = 0.0.
         assertThat(position.getQuantity()).isEqualByComparingTo("0.6");
         assertThat(position.getStatus()).isNotEqualTo("NAKED_FLATTENED");
-        // Review finding ("One remaining accounting inconsistency" -- external review,
-        // thirty-third pass, P2): this leg's own confirmed sale (0.4) is recorded in
-        // closedQuantity even though the position itself stays open -- so a later leg that
-        // finally closes it has something real to accumulate onto.
+        // This leg's own confirmed sale (0.4) is recorded in closedQuantity even though the
+        // position itself stays open -- so a later leg that finally closes it has something
+        // real to accumulate onto.
         assertThat(position.getClosedQuantity()).isEqualByComparingTo("0.4");
         verify(adapter, times(1)).placeOrder(any(), any(), any(), any()); // the retry never actually fired
     }
 
     /**
-     * Review finding, same context as the tests above: the review's own second required test --
-     * a partial fill of an already-capped target must still compute the real remaining position
-     * correctly.
+     * A partial fill of an already-capped target must still compute the real remaining
+     * position correctly.
      */
     @Test
     @DisplayName("attemptFlatten: capped sell (0.4 of a 1.0 real position) partially fills (0.2) — remaining is 0.8 (internalQuantity - executedQty), not 0.2 (quantityToFlatten - executedQty)")
@@ -1028,15 +963,14 @@ class PositionSafetyServiceTest {
 
         service.emergencyFlatten(credential, adapter, "key", "secret", position, "test reason");
 
-        // The review's own exact expected value: 1.0 - 0.2 = 0.8 -- not 0.4 - 0.2 = 0.2.
+        // The correct expected value: 1.0 - 0.2 = 0.8 -- not 0.4 - 0.2 = 0.2.
         assertThat(position.getQuantity()).isEqualByComparingTo("0.8");
         assertThat(position.getStatus()).isNotEqualTo("NAKED_FLATTENED");
         assertThat(position.getClosedQuantity()).isEqualByComparingTo("0.2");
     }
 
     /**
-     * Review finding, same context as the tests above: confirms the normal, uncapped case
-     * (free balance covers the whole position) is completely unaffected by this fix -- full
+     * Confirms the normal, uncapped case (free balance covers the whole position): full
      * closure still correctly fires when the entire real position is actually sold.
      */
     @Test
@@ -1055,9 +989,8 @@ class PositionSafetyServiceTest {
     }
 
     /**
-     * Review finding ("zero FREE balance can falsely mean 'position is gone'" -- external
-     * review, thirtieth pass, P1, full context in attemptFlatten's own updated comment): the
-     * actual test for the fix -- free==0 with locked>0 must halt, never falsely close.
+     * Zero FREE balance must never be read as "position is gone": free==0 with locked>0
+     * must halt, never falsely close.
      */
     @Test
     @DisplayName("attemptFlatten: free balance is zero but locked balance is positive — coins are genuinely still held (locked by another order), never marked closed, never attempts a zero-quantity sell")
@@ -1075,14 +1008,12 @@ class PositionSafetyServiceTest {
     }
 
     /**
-     * P3-11 fix ("Cancel all open orders for the symbol before any flatten" -- external review,
-     * second pass, re-audit, P0, full context in PositionSafetyService.cancelOtherOpenOrdersForSymbol's
-     * own javadoc): the actual regression this fixes -- a stop leg (or any other order) resting
-     * on this exact symbol that this application's own records don't track (no
-     * position.ocoOrderListId match) would otherwise lock real coins and drive straight into
-     * zeroFreeBalanceWithLockedBalance_haltsInsteadOfFalselyClosing's own halt above, even though
-     * the actual fix is simple: cancel it first. Proves the stray order is actually identified
-     * and cancelled, by orderId, before the sell.
+     * Open orders for the symbol must be cancelled before any flatten: a stop leg (or any
+     * other order) resting on this exact symbol that this application's own records don't
+     * track (no position.ocoOrderListId match) would otherwise lock real coins and drive
+     * straight into zeroFreeBalanceWithLockedBalance_haltsInsteadOfFalselyClosing's own halt
+     * above. Proves the stray order is actually identified and cancelled, by orderId, before
+     * the sell.
      */
     @Test
     @DisplayName("emergencyFlatten: a stray open order on this position's symbol (not tracked as this position's OCO) is cancelled before the sell is attempted")
@@ -1144,14 +1075,12 @@ class PositionSafetyServiceTest {
     }
 
     /**
-     * P3-11 second re-audit fix ("The emergency flatten cancels too much... only cancel orders
-     * that belong to the position being flattened or that aren't tracked at all" -- external
-     * review, third pass, item #3 of its own "before real money" list, full context in
-     * cancelOtherOpenOrdersForSymbol's own updated javadoc): the actual regression this fixes --
-     * an open order this application's own OMS records show belongs to a DIFFERENT, still-open
-     * position on the same symbol must be left completely alone, not swept up and cancelled just
-     * because it happens to share this position's symbol -- that position would otherwise go
-     * naked until the next reconciliation pass, roughly 60s later.
+     * Emergency flatten must only cancel orders that belong to the position being flattened
+     * or that aren't tracked at all: an open order this application's own OMS records show
+     * belongs to a DIFFERENT, still-open position on the same symbol must be left completely
+     * alone, not swept up and cancelled just because it happens to share this position's
+     * symbol -- that position would otherwise go naked until the next reconciliation pass,
+     * roughly 60s later.
      */
     @Test
     @DisplayName("emergencyFlatten: an open order on this symbol that belongs to a DIFFERENT, still-open position (per this application's own OMS records) is left alone")
@@ -1201,15 +1130,14 @@ class PositionSafetyServiceTest {
     }
 
     /**
-     * Third re-audit fix ("The flatten can still cancel another position's stop-loss" -- external
-     * review, fourth pass, item #1 of its own list, full context in cancelOtherOpenOrdersForSymbol's
-     * and OpenOrderInfo's own updated javadocs): the exact gap the previous ownership check
-     * (openOrderTrackedToADifferentPosition_isNotCancelled, above) could NOT catch -- an OCO leg
-     * belonging to another still-OPEN position is never recorded as a standalone Order keyed by
-     * its own orderId (orderRepository.findByCredentialIdAndSymbolAndBrokerOrderId legitimately
-     * finds nothing for it), only via that other position's own Position.ocoOrderListId. Proves
-     * the new orderListId-based check catches exactly this case, which the orderId-only lookup
-     * alone cannot.
+     * The flatten must never cancel another position's stop-loss. This is the exact gap the
+     * previous ownership check (openOrderTrackedToADifferentPosition_isNotCancelled, above)
+     * could NOT catch -- an OCO leg belonging to another still-OPEN position is never recorded
+     * as a standalone Order keyed by its own orderId
+     * (orderRepository.findByCredentialIdAndSymbolAndBrokerOrderId legitimately finds nothing
+     * for it), only via that other position's own Position.ocoOrderListId. Proves the
+     * orderListId-based check catches exactly this case, which the orderId-only lookup alone
+     * cannot.
      */
     @Test
     @DisplayName("emergencyFlatten: an open order that is a leg of a DIFFERENT, still-open position's own OCO (matched by orderListId, not orderId) is left alone")
@@ -1282,10 +1210,9 @@ class PositionSafetyServiceTest {
     }
 
     /**
-     * Review finding ("zero-total-balance after a previous partial" -- external review,
-     * thirty-first pass, full context in Position.unverifiedClosedQuantity's own field
-     * javadoc): the actual test proving the fix -- the remaining quantity is recorded as
-     * unverified, not silently manufactured as a confirmed sale by this specific operation.
+     * A zero-total-balance after a previous partial close must leave the remaining quantity
+     * recorded as unverified, not silently manufactured as a confirmed sale by this specific
+     * operation.
      */
     @Test
     @DisplayName("attemptFlatten: zero total balance -- the remaining quantity is recorded as unverifiedClosedQuantity, never silently manufactured as a confirmed closedQuantity sale")
@@ -1334,7 +1261,7 @@ class PositionSafetyServiceTest {
     }
 
     @Test
-    @DisplayName("emergencyFlatten: when recordFills returns fewer records than expected, the profile is halted and a CRITICAL incident is raised, but the position's own closure still proceeds normally -- the actual review fix (\"Fill Ledger can still fail without stopping financial state changes\"), extended to the emergency-flatten path too")
+    @DisplayName("emergencyFlatten: when recordFills returns fewer records than expected, the profile is halted and a CRITICAL incident is raised, but the position's own closure still proceeds normally")
     void emergencyFlattenLedgerRecordingFailed_haltsProfileButStillClosesPosition() {
         Position position = openPosition(1.0, 100, 10.0);
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(
@@ -1375,7 +1302,7 @@ class PositionSafetyServiceTest {
     }
 
     @Test
-    @DisplayName("emergencyFlatten: getSymbolRules() itself failing (previously completely unprotected -- no try/catch at all) no longer prevents the position from being saved as closed -- the actual review fix (\"Full emergency flatten has another similar catch\"), and raises the same halt+incident escalation as the sibling gap in the partial-flatten path")
+    @DisplayName("emergencyFlatten: getSymbolRules() itself failing does not prevent the position from being saved as closed, and raises the same halt+incident escalation as the sibling gap in the partial-flatten path")
     void emergencyFlattenSymbolRulesFailure_stillClosesPositionAndEscalates() {
         Position position = openPosition(1.0, 100, 10.0);
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(
@@ -1399,7 +1326,7 @@ class PositionSafetyServiceTest {
     }
 
     @Test
-    @DisplayName("emergencyFlatten: the market SELL order gets its own real OMS Order record (side=SELL, type=MARKET) -- the actual review fix (\"OMS not actually authoritative\"), extended from entry/OCO placement to the emergency-flatten market order too")
+    @DisplayName("emergencyFlatten: the market SELL order gets its own real OMS Order record (side=SELL, type=MARKET), extended from entry/OCO placement to the emergency-flatten market order too")
     void emergencyFlattenOrder_getsOwnOmsOrderRecord() {
         Position position = openPosition(1.0, 100, 10.0);
         when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(

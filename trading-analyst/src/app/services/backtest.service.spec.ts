@@ -5,17 +5,12 @@ import { BacktestService, BacktestConfig } from './backtest.service';
 import { OHLCV, TradeCall } from './ta-engine.service';
 
 /**
- * P1-19 fix ("Backtest (frontend) is systematically optimistic and uses a different engine than
- * live" -- full context in BacktestService's own class-level javadoc): this file did not exist
- * before this pass. These tests exercise the four concrete numerical-distortion bugs that fix
- * closed directly against simulateTrade/runStrategyAsync (both private, reached via `as any`,
- * the same reflection-style access this codebase's frontend specs don't otherwise need since
- * these methods were never independently testable before): SL-first on an ambiguous bar, T1-only
- * exit (never T2/T3), fee/slippage modeling on both legs, and the corrected fixed-fractional
- * equity-curve math. This is NOT the audit's own suggested "golden-file parity vs a server
- * backtest" test -- that requires the genuinely separate server-side backtest endpoint this pass's
- * own javadoc explicitly disclosed as out of scope; these tests instead directly verify the bug
- * fixes that WERE shipped.
+ * Covers BacktestService's execution-modeling behavior, exercised directly against
+ * simulateTrade/runStrategyAsync (both private, reached via `as any`): SL-first on an
+ * ambiguous bar, T1-only exit (never T2/T3), fee/slippage modeling on both legs, and the
+ * fixed-fractional equity-curve math. This does not attempt golden-file parity against a
+ * server-side backtest, since no such endpoint exists — see BacktestService's own
+ * class-level comment for why engine parity is out of scope.
  */
 describe('BacktestService', () => {
   let service: BacktestService;

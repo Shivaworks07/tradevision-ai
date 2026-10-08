@@ -40,9 +40,8 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
- * Review finding ("The biggest missing thing" — "TradeVision does not autonomously discover
- * trades"): verifies the actual discovery flow — candles fetched from the broker directly (not
- * from a frontend request), run through ServerSignalEngine, and dispatched via
+ * Verifies the autonomous discovery flow: candles fetched from the broker directly (not from a
+ * frontend request), run through ServerSignalEngine, and dispatched via
  * TradeCallService.saveCall() with zero browser interaction anywhere in the path.
  */
 @ExtendWith(MockitoExtension.class)
@@ -58,14 +57,8 @@ class AutonomousScannerServiceTest {
     @Mock PositionSafetyService positionSafetyService;
     @Mock com.tradevision.service.BrokerCredentialService credentialService;
     @Mock ServerSignalEngine serverSignalEngine;
-    // Review finding ("Strategy engine is not the complete strategy actually represented by the
-    // frontend" -- P1, full context in this service's own new field comment): needed now that
-    // this class calls mlWeightService.getWeights before every analyze() call. Note the real
-    // regression risk here isn't this field being null (that specific call is wrapped in its
-    // own inner try/catch, same design as NoTradeFilterService's own identical addition) -- it's
-    // that this class's own subsequent analyze() call always uses the 2-arg overload, and every
-    // existing stub in this file targets the old 1-arg one, which the unconditional 2-arg call
-    // path never reaches (see this file's own bulk-updated stubs below).
+    // Needed because this class calls mlWeightService.getWeights before every analyze() call,
+    // and the subsequent analyze() call always uses the 2-arg overload (see the stubs below).
     @Mock MLWeightService mlWeightService;
     @Mock TradeCallService tradeCallService;
     @Mock com.tradevision.config.ShutdownState shutdownState;
@@ -77,14 +70,10 @@ class AutonomousScannerServiceTest {
     @Mock com.tradevision.service.strategy.SmcEngineService smcEngineService;
     @Mock com.tradevision.service.strategy.VolumeProfileService volumeProfileService;
     @Mock com.tradevision.service.strategy.OrderFlowService orderFlowService;
-    // Review finding ("Order-flow enrichment is an expensive, uncapped per-symbol-per-scan cost
-    // that doesn't yet affect the decision" -- P1, full context at the actual gating call in
-    // AutonomousScannerService itself): needed now that order-flow enrichment is budget-gated.
+    // Needed because order-flow enrichment is budget-gated.
     @Mock ExchangeHealthService exchangeHealth;
     @Mock com.tradevision.service.strategy.SignalCombinerService signalCombinerService;
-    // P3-3 fix ("lastSignalAt -- in-memory cooldown lost on restart -- persist" -- external
-    // review, full context in TradeCallRepository's own new query method javadoc): needed now
-    // that a cache miss on the in-memory cooldown map falls back to this repository.
+    // Needed because a cache miss on the in-memory cooldown map falls back to this repository.
     @Mock com.tradevision.repository.TradeCallRepository tradeCallRepository;
 
     @InjectMocks AutonomousScannerService service;
@@ -97,33 +86,29 @@ class AutonomousScannerServiceTest {
     void setup() {
         ReflectionTestUtils.setField(service, "adapters", List.of(adapter));
         when(adapter.getType()).thenReturn(BrokerType.BINANCE);
-        // P1-1 fix: every per-credential adapter lookup in this service now goes through
-        // credentialService.adapterForCredential(...) instead of the local BrokerType-keyed
+        // Every per-credential adapter lookup in this service goes through
+        // credentialService.adapterForCredential(...) instead of a local BrokerType-keyed
         // adapterMap, so PAPER credentials route to the simulated adapter instead of the real
         // one. Tests exercise TESTNET/LIVE credentials by default, so this just returns the same
         // mocked adapter.
         when(credentialService.adapterForCredential(any())).thenReturn(adapter);
         when(startupState.isTradingEnabled()).thenReturn(true);
-        // Review finding ("#8 — Market-Data Quality Engine"): the scanner now gates every symbol
-        // through this check before analysis — needed here so existing tests (which never cared
-        // about data quality) aren't NPE'd by Mockito's default null return for the unstubbed
-        // QualityResult object, which would otherwise happen the instant .safe() is called on it.
+        // The scanner gates every symbol through this check before analysis — stubbed here so
+        // tests that don't care about data quality aren't NPE'd by Mockito's default null return
+        // for the unstubbed QualityResult object, which would otherwise happen the instant
+        // .safe() is called on it.
         when(marketDataQualityService.isMarketSafeToTrade(any(), any(), anyLong(), any(), any()))
             .thenReturn(MarketDataQualityService.QualityResult.ok());
-        // Review finding ("Order-flow enrichment is an expensive, uncapped per-symbol-per-scan
-        // cost that doesn't yet affect the decision" -- P1, full context at the actual gating
-        // call in AutonomousScannerService itself): same reasoning as marketDataQualityService's
-        // own default just above -- a realistic "budget is healthy" default so existing tests
-        // (which never cared about request-weight budget) aren't NPE'd by Mockito's default null
-        // return for the unstubbed RequestBudgetStatus object.
+        // Order-flow enrichment is budget-gated; a realistic "budget is healthy" default keeps
+        // tests that don't care about request-weight budget from being NPE'd by Mockito's
+        // default null return for the unstubbed RequestBudgetStatus object.
         when(exchangeHealth.checkRequestBudget()).thenReturn(new ExchangeHealthService.RequestBudgetStatus(0, 6000, 0.0, true));
-        // Review finding, same reasoning as the two defaults just above: scanForProfile now
-        // iterates strategyPlanService.getEnabledPlans(...) instead of scanning directly off the
-        // profile -- an unstubbed mock would otherwise return an empty list (Mockito's own real
-        // default for a List-returning method), meaning NO plan, and therefore NO symbol, would
-        // ever be scanned in any existing test at all. A single default plan matching this
-        // fixture's own profile settings (minConfidence, timeframe) keeps every existing test's
-        // own assumptions -- "TIER1 gets scanned", "confidence threshold is 60.0" -- true.
+        // scanForProfile iterates strategyPlanService.getEnabledPlans(...) instead of scanning
+        // directly off the profile -- an unstubbed mock would otherwise return an empty list,
+        // meaning no plan, and therefore no symbol, would ever be scanned. A single default plan
+        // matching this fixture's profile settings (minConfidence, timeframe) keeps every
+        // existing test's assumptions -- "TIER1 gets scanned", "confidence threshold is 60.0" --
+        // true.
         var defaultPlan = new com.tradevision.model.StrategyPlan();
         defaultPlan.setId("plan1");
         defaultPlan.setEnabled(true);
@@ -131,13 +116,11 @@ class AutonomousScannerServiceTest {
         defaultPlan.setMinConfidence(60.0);
         this.defaultPlan = defaultPlan;
         when(strategyPlanService.getEnabledPlans(any())).thenReturn(List.of(defaultPlan));
-        // Same reasoning as strategyPlanService.getEnabledPlans's own default just above:
-        // scanForPlan now gates every plan through isWithinSession before scanning any symbol at
+        // scanForPlan gates every plan through isWithinSession before scanning any symbol at
         // all -- an unstubbed boolean-returning mock defaults to false in Mockito, which would
-        // otherwise make every existing test in this file that never explicitly stubbed this
-        // silently skip straight past scanOneSymbol, never reaching saveCall, confirmed directly
-        // against the actual failing test run rather than assumed. A test that specifically wants
-        // the outside-session path overrides this explicitly, as a few already do.
+        // make a test that never explicitly stubbed this silently skip straight past
+        // scanOneSymbol, never reaching saveCall. A test that specifically wants the
+        // outside-session path overrides this explicitly, as a few already do.
         when(strategyPlanService.isWithinSession(any())).thenReturn(true);
 
         credential = new BrokerCredential();
@@ -152,24 +135,23 @@ class AutonomousScannerServiceTest {
         profile.setCredentialId("cred1");
         profile.setAutoTradeEnabled(true);
         profile.setMinConfidence(60.0);
-        // Review finding (P1-6 -- "Plan symbol universe always includes BTC/ETH/SOL/BNB/XRP;
-        // profile symbol whitelist ignored when a plan exists"): TIER1 is no longer scanned
-        // unconditionally -- it must also be explicitly present in the account's own risk-profile
-        // whitelist. This default fixture profile enables every TIER1 symbol so every existing
-        // test in this file that exercises a TIER1 symbol (overwhelmingly BTCUSDT) keeps working
-        // unchanged; a test that specifically wants to prove the P1-6 fix itself overrides this.
+        // TIER1 is not scanned unconditionally -- it must also be explicitly present in the
+        // account's own risk-profile whitelist. This default fixture profile enables every
+        // TIER1 symbol so every existing test in this file that exercises a TIER1 symbol
+        // (overwhelmingly BTCUSDT) keeps working unchanged; a test that specifically wants to
+        // prove the whitelist restriction itself overrides this.
         profile.setEnabledSymbols(new java.util.HashSet<>(AutonomousScannerService.TIER1_SYMBOLS));
 
         when(riskProfileRepo.findByAutoTradeEnabledTrueAndTradingHaltedFalse()).thenReturn(List.of(profile));
         when(credentialRepo.findById("cred1")).thenReturn(Optional.of(credential));
-        // P3-3 fix default: "never signaled before" for every existing test in this file that
-        // never cared about the cooldown fallback -- matches the pre-fix behavior (in-memory map
-        // empty) exactly, so nothing else in this file needs to change.
+        // Default: "never signaled before" for tests that don't care about the cooldown
+        // fallback -- matches an empty in-memory map, so nothing else in this file needs to
+        // change.
         when(tradeCallRepository.findFirstByUserIdAndPlanIdAndSymbolOrderByCalledAtDesc(any(), any(), any()))
             .thenReturn(Optional.empty());
     }
 
-    // P1-6 test helper: the account's own risk-profile whitelist, TIER1 plus one or more extra
+    // Test helper: the account's own risk-profile whitelist, TIER1 plus one or more extra
     // symbols a specific test needs (e.g. a plan-only symbol like SCAMCOINUSDT/DOGEUSDT).
     private static java.util.Set<String> union(java.util.Set<String> base, String... extra) {
         var result = new java.util.HashSet<>(base);
@@ -184,7 +166,7 @@ class AutonomousScannerServiceTest {
     }
 
     @Test
-    @DisplayName("P1-6: a plan with a restrictive profile whitelist (only ADAUSDT) never scans or dispatches TIER1 symbols like BTCUSDT, even though the plan itself exists and is enabled -- the actual review fix (\"Plan symbol universe always includes BTC/ETH/SOL/BNB/XRP; profile symbol whitelist ignored when a plan exists\")")
+    @DisplayName("a plan with a restrictive profile whitelist (only ADAUSDT) never scans or dispatches TIER1 symbols like BTCUSDT, even though the plan itself exists and is enabled")
     void profileWhitelistRestrictsToOneSymbol_tier1NeverScannedOrExecuted() {
         profile.setEnabledSymbols(java.util.Set.of("ADAUSDT")); // the user's own explicit "only ADAUSDT" choice
         when(adapter.getRecentCandles(any(), anyString(), anyInt(), eq(BrokerMode.TESTNET))).thenReturn(fakeCandles());
@@ -221,7 +203,7 @@ class AutonomousScannerServiceTest {
     }
 
     @Test
-    @DisplayName("scan: fetches this symbol's own learned ML weights via mlWeightService and passes them to analyze() -- the actual review fix (\"Strategy engine is not the complete strategy actually represented by the frontend\")")
+    @DisplayName("scan: fetches this symbol's own learned ML weights via mlWeightService and passes them to analyze()")
     void scan_fetchesAndPassesMLWeights() {
         when(adapter.getRecentCandles(eq("BTCUSDT"), anyString(), anyInt(), eq(BrokerMode.TESTNET))).thenReturn(fakeCandles());
         when(adapter.getRecentCandles(argThat(s -> !"BTCUSDT".equals(s)), anyString(), anyInt(), any())).thenReturn(List.of());
@@ -253,7 +235,7 @@ class AutonomousScannerServiceTest {
     }
 
     @Test
-    @DisplayName("scan: a second scan against the SAME closed candle never re-runs strategy analysis, even after the unrelated signal cooldown has expired -- the actual review fix (\"Scanner can still repeatedly process the same closed candle\"), isolated from the pre-existing time-based cooldown by clearing it between calls so this test verifies the NEW candle-dedup mechanism specifically, not the old one incidentally blocking the second call too")
+    @DisplayName("scan: a second scan against the SAME closed candle never re-runs strategy analysis, even after the unrelated signal cooldown has expired -- isolated from the pre-existing time-based cooldown by clearing it between calls so this test verifies the candle-dedup mechanism specifically, not the cooldown incidentally blocking the second call too")
     void sameClosedCandle_secondScanSkipsAnalysisEntirely() {
         when(adapter.getRecentCandles(eq("BTCUSDT"), anyString(), anyInt(), eq(BrokerMode.TESTNET))).thenReturn(fakeCandles());
         when(adapter.getRecentCandles(argThat(s -> !"BTCUSDT".equals(s)), anyString(), anyInt(), any())).thenReturn(List.of());
@@ -272,11 +254,10 @@ class AutonomousScannerServiceTest {
         verify(serverSignalEngine, times(1)).analyze(any(), any());
     }
 
-    // ── SMC/regime/volume-profile enrichment ("Client-Side Signal Generation" — full context
-    // in AutonomousScannerService's own field comments) ────────────────────────────────────
+    // ── SMC/regime/volume-profile enrichment ────────────────────────────────────
 
     @Test
-    @DisplayName("scan: a qualifying signal has TradeCallRequest's smcBias/regime/vpLocation fields populated from the real ported services -- the actual review fix, not a no-op stub")
+    @DisplayName("scan: a qualifying signal has TradeCallRequest's smcBias/regime/vpLocation fields populated from the real ported services, not a no-op stub")
     void qualifyingSignal_populatesEnrichmentFields() {
         when(adapter.getRecentCandles(eq("BTCUSDT"), anyString(), anyInt(), eq(BrokerMode.TESTNET))).thenReturn(fakeCandles());
         when(adapter.getRecentCandles(argThat(s -> !"BTCUSDT".equals(s)), anyString(), anyInt(), any())).thenReturn(List.of());
@@ -306,8 +287,7 @@ class AutonomousScannerServiceTest {
         assertThat(req.getVpLocation()).isEqualTo("INSIDE_VA");
         assertThat(req.getVpPoc()).isEqualTo(98.0);
         // direction/confidence/entryPrice remain driven by ServerSignalEngine + the existing
-        // pre-filter gates, completely unaffected by this enrichment -- confirming the review's
-        // own scope boundary (observability fields only) actually held.
+        // pre-filter gates, completely unaffected by this enrichment (observability fields only).
         assertThat(req.getDirection()).isEqualTo("LONG");
         assertThat(req.getConfidence()).isEqualTo(75);
     }
@@ -368,14 +348,14 @@ class AutonomousScannerServiceTest {
         assertThat(req.getHtf1Trend()).isEqualTo("UP");
         assertThat(req.getHtf2Trend()).isEqualTo("STRONG_UP");
         // direction/confidence remain the base signal's own values -- the combined signal's own
-        // (different) confidence of 80 is never used for execution, confirming the review's own
-        // scope boundary held even with order-flow/MTF now wired in too.
+        // (different) confidence of 80 is never used for execution, even with order-flow/MTF
+        // wired in too.
         assertThat(req.getDirection()).isEqualTo("LONG");
         assertThat(req.getConfidence()).isEqualTo(75);
     }
 
     @Test
-    @DisplayName("scan: an unhealthy request-weight budget skips order-flow/MTF enrichment entirely (never even calls orderFlowService), but the rest of the scan still completes normally -- the actual review fix (\"Order-flow enrichment is an expensive, uncapped per-symbol-per-scan cost that doesn't yet affect the decision\")")
+    @DisplayName("scan: an unhealthy request-weight budget skips order-flow/MTF enrichment entirely (never even calls orderFlowService), but the rest of the scan still completes normally")
     void unhealthyRequestBudget_skipsOrderFlowEnrichment_butScanStillCompletes() {
         when(adapter.getRecentCandles(eq("BTCUSDT"), anyString(), anyInt(), eq(BrokerMode.TESTNET))).thenReturn(fakeCandles());
         when(adapter.getRecentCandles(argThat(s -> !"BTCUSDT".equals(s)), anyString(), anyInt(), any())).thenReturn(List.of());
@@ -396,14 +376,13 @@ class AutonomousScannerServiceTest {
         assertThat(req2.getConfidence()).isEqualTo(75);
     }
 
-    // ── liquidity-aware universe (review finding "Scanner universe is a fixed list, not
-    // liquidity/volume/spread-aware" -- full context at the actual check in scanOneSymbol) ──
+    // ── liquidity-aware universe ──
 
     @Test
-    @DisplayName("scan: a user-added, low-liquidity symbol is skipped entirely (never even reaches serverSignalEngine.analyze) -- the actual review fix")
+    @DisplayName("scan: a user-added, low-liquidity symbol is skipped entirely (never even reaches serverSignalEngine.analyze)")
     void userAddedLowLiquiditySymbol_skippedEntirely() {
         defaultPlan.setEnabledSymbols(java.util.Set.of("SCAMCOINUSDT")); // symbol universe is owned by the plan, not the profile
-        // P1-6: the plan's own universe must still survive intersection with the profile's own whitelist.
+        // The plan's own universe must still survive intersection with the profile's own whitelist.
         profile.setEnabledSymbols(union(AutonomousScannerService.TIER1_SYMBOLS, "SCAMCOINUSDT"));
         List<Candle> illiquidCandles = new ArrayList<>();
         for (int i = 0; i < 60; i++) illiquidCandles.add(new Candle(i * 3600L, 0.001, 0.0011, 0.0009, 0.001, 500)); // 500 * 0.001 = $0.50/candle avg quote volume
@@ -424,7 +403,7 @@ class AutonomousScannerServiceTest {
     @DisplayName("scan: a user-added symbol with sufficient liquidity is NOT skipped -- this check only filters genuinely illiquid symbols, not every non-TIER1 one")
     void userAddedSufficientLiquiditySymbol_notSkipped() {
         defaultPlan.setEnabledSymbols(java.util.Set.of("DECENTCOINUSDT")); // symbol universe is owned by the plan, not the profile
-        // P1-6: the plan's own universe must still survive intersection with the profile's own whitelist.
+        // The plan's own universe must still survive intersection with the profile's own whitelist.
         profile.setEnabledSymbols(union(AutonomousScannerService.TIER1_SYMBOLS, "DECENTCOINUSDT"));
         // fakeCandles() itself: close=100, volume=1000 -> $100,000 avg quote volume, exactly AT
         // (not below) the threshold -- deliberately reused here to confirm the boundary itself
@@ -496,9 +475,8 @@ class AutonomousScannerServiceTest {
         // every TIER1 symbol this scan processes, and the shared positionRepo stub matches any
         // symbol too -- this test verifies the reversal-exit mechanism actually fires, not a
         // specific call count that depends on how many symbols happen to trigger it.
-        // P1-2 fix: a signal-reversal exit is routine, plan-configured behavior, not a
-        // protection failure -- now goes through exitPosition() so a clean close doesn't halt
-        // the profile.
+        // A signal-reversal exit is routine, plan-configured behavior, not a protection
+        // failure -- it goes through exitPosition() so a clean close doesn't halt the profile.
         verify(positionSafetyService, atLeastOnce()).exitPosition(eq(credential), eq(adapter), any(), any(), eq(openPosition), contains("SIGNAL_REVERSAL"));
     }
 
@@ -540,7 +518,7 @@ class AutonomousScannerServiceTest {
     }
 
     @Test
-    @DisplayName("scan: a market-data quality failure blocks the symbol before analysis even runs — the actual review's own suggested integration point, verified as more than a no-op default stub")
+    @DisplayName("scan: a market-data quality failure blocks the symbol before analysis even runs")
     void marketDataQualityFailure_blocksBeforeAnalysis() {
         when(adapter.getRecentCandles(eq("BTCUSDT"), anyString(), anyInt(), eq(BrokerMode.TESTNET))).thenReturn(fakeCandles());
         when(adapter.getRecentCandles(argThat(s -> !"BTCUSDT".equals(s)), anyString(), anyInt(), any())).thenReturn(List.of());
@@ -675,7 +653,7 @@ class AutonomousScannerServiceTest {
         secondProfile.setCredentialId("cred2");
         secondProfile.setAutoTradeEnabled(true);
         secondProfile.setMinConfidence(60.0);
-        secondProfile.setEnabledSymbols(new java.util.HashSet<>(AutonomousScannerService.TIER1_SYMBOLS)); // P1-6: BTCUSDT must be explicitly whitelisted
+        secondProfile.setEnabledSymbols(new java.util.HashSet<>(AutonomousScannerService.TIER1_SYMBOLS)); // BTCUSDT must be explicitly whitelisted
         when(riskProfileRepo.findByAutoTradeEnabledTrueAndTradingHaltedFalse()).thenReturn(List.of(profile, secondProfile));
         when(credentialRepo.findById("cred1")).thenThrow(new RuntimeException("simulated database error"));
 
@@ -696,16 +674,14 @@ class AutonomousScannerServiceTest {
     }
 
     /**
-     * Review finding ("1m trading still isn't truly event-driven" -- external review, twentieth
-     * pass, P1, full context in this method's own javadoc): the actual tests for the new,
-     * shared candidate-gathering logic Kline1mStreamService relies on.
+     * Tests for the shared candidate-gathering logic Kline1mStreamService relies on.
      */
     @Test
     @DisplayName("compute1mScanTargets: a 1m plan within session produces one target per TIER1/enabledSymbols symbol")
     void compute1mScanTargets_1mPlanWithinSession_producesTargets() {
         defaultPlan.setTimeframe("1m");
         defaultPlan.setEnabledSymbols(java.util.Set.of("DOGEUSDT"));
-        profile.setEnabledSymbols(union(AutonomousScannerService.TIER1_SYMBOLS, "DOGEUSDT")); // P1-6
+        profile.setEnabledSymbols(union(AutonomousScannerService.TIER1_SYMBOLS, "DOGEUSDT"));
         when(strategyPlanService.isWithinSession(defaultPlan)).thenReturn(true);
 
         var targets = service.compute1mScanTargets();
@@ -738,9 +714,7 @@ class AutonomousScannerServiceTest {
     }
 
     /**
-     * Review finding ("Scanner deduplication is JVM-local" -- external review, twenty-second
-     * pass, P1, full context in ScannedCandle's own class javadoc): the actual tests for the new
-     * cross-instance claim. Private method, accessed via reflection.
+     * Tests for the cross-instance candle claim. Private method, accessed via reflection.
      */
     private boolean invokeTryClaim(String candleDedupKey, long candleCloseTimeMillis, BrokerMode mode) throws Exception {
         var m = AutonomousScannerService.class.getDeclaredMethod("tryClaimCandleProcessing", String.class, long.class, BrokerMode.class);
@@ -770,10 +744,7 @@ class AutonomousScannerServiceTest {
     }
 
     /**
-     * Review finding ("Scanner deduplication fails OPEN on database failure" -- external
-     * review, twenty-fourth pass, P1, full context in tryClaimCandleProcessing's own updated
-     * javadoc): this session's own earlier "always fail open" policy is reconsidered here --
-     * the two tests below replace the single prior test that asserted unconditional fail-open.
+     * The failure-handling policy differs by mode: LIVE fails closed, TESTNET/PAPER fails open.
      */
     @Test
     @DisplayName("tryClaimCandleProcessing: for LIVE, any OTHER exception (e.g. a transient connection failure) now fails CLOSED -- returns false, since an unknown duplicate evaluation is worse than a missed signal for real money")
@@ -796,14 +767,11 @@ class AutonomousScannerServiceTest {
     }
 
     /**
-     * P3-3 fix ("AutonomousScannerService.lastSignalAt -- in-memory cooldown lost on restart --
-     * persist" -- external review, full context in TradeCallRepository's own new query method
-     * javadoc): the actual new behavior -- simulates "this is a fresh process" (the in-memory
-     * lastSignalAt map is empty, exactly as it would be right after a restart) by never calling
-     * scan() a first time in this test, and instead stubbing the durable repository fallback
-     * directly to return a very recent TradeCallRecord for this exact user+plan+symbol. Before
-     * this fix, an empty in-memory map unconditionally meant "never signaled, cooldown does not
-     * apply" -- this proves the durable fallback now closes that gap.
+     * Simulates "this is a fresh process" (the in-memory lastSignalAt map is empty, exactly as
+     * it would be right after a restart) by never calling scan() a first time in this test, and
+     * instead stubbing the durable repository fallback directly to return a very recent
+     * TradeCallRecord for this exact user+plan+symbol -- proving the durable fallback enforces
+     * the cooldown even when the in-memory map alone would say "never signaled".
      */
     @Test
     @DisplayName("scan: a recent persisted TradeCallRecord for this exact user+plan+symbol still enforces cooldown even with an empty in-memory map (simulating a just-restarted process)")

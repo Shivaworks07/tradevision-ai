@@ -83,15 +83,12 @@ public class AdminService {
             ));
         }
 
-        // Review finding ("strategy-level performance attribution" -- external review, P3,
-        // confirmed real by direct inspection before this fix: TradeCallRecord already carries
-        // planId on every autonomously-generated signal, but nothing anywhere segmented
-        // win-rate by it the way this method already does for market -- an operator running
-        // several StrategyPlans had no way to see which one was actually performing): the
-        // actual attribution -- same win-rate computation as the by-market segment above, now
-        // also grouped by planId, over the same 30-day/1000-record bounded window (`recent`).
-        // Calls with no planId (manually-entered signals, or ones from before this field
-        // existed) are grouped under "MANUAL_OR_UNATTRIBUTED" rather than silently dropped.
+        // Strategy-level performance attribution: same win-rate computation as the by-market
+        // segment above, grouped by planId instead, over the same 30-day/1000-record bounded
+        // window (`recent`). Lets an operator running several StrategyPlans see which one is
+        // actually performing. Calls with no planId (manually-entered signals, or ones from
+        // before this field existed) are grouped under "MANUAL_OR_UNATTRIBUTED" rather than
+        // silently dropped.
         Map<String, Map<String,Object>> accuracyByPlan = recent.stream()
             .filter(r -> r.getOutcome() != null && r.getOutcome().getResult() != null
                       && !r.getOutcome().getResult().equals("PENDING"))

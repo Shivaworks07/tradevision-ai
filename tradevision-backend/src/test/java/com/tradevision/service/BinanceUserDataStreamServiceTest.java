@@ -16,13 +16,9 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Review finding ("WebSocket lifecycle on shutdown" -- full context in
- * BinanceUserDataStreamService's own closeAllStreams() javadoc): the earlier version of this
- * comment disclosed an honest gap here -- full coverage of closeAllStreams() actually closing a
- * live connection needed either package-private visibility for the private ManagedConnection
- * record or a reflection-based harness, and neither was built at the time. That gap is now
- * closed below, using the same reflection-based construction technique already proven in this
- * codebase's own OrderFlowServiceTest.
+ * Covers closeAllStreams() actually closing a live connection, using a reflection-based
+ * construction technique for the private ManagedConnection record, the same technique already
+ * proven in this codebase's own OrderFlowServiceTest.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -36,12 +32,11 @@ class BinanceUserDataStreamServiceTest {
     @Mock com.tradevision.repository.OrderRepository orderRepo;
     @Mock com.tradevision.config.ShutdownState shutdownState;
     @Mock ExchangeHealthService exchangeHealthService;
-    // P1-18 fix ("WebSocket listener does blocking reconciliation on the socket thread" -- full
-    // context in scheduleDebouncedReconcile's own javadoc): the dedicated dispatch scheduler that
-    // method now uses instead of calling positionMonitorService.reconcileCredential() directly on
-    // onText's own thread. Mocked (not a real ThreadPoolTaskScheduler) so the tests below can
-    // control exactly when -- or whether -- the scheduled reconciliation task actually runs, via
-    // an ArgumentCaptor on schedule()'s own Runnable argument.
+    // The dedicated dispatch scheduler that scheduleDebouncedReconcile uses instead of calling
+    // positionMonitorService.reconcileCredential() directly on onText's own thread. Mocked (not
+    // a real ThreadPoolTaskScheduler) so the tests below can control exactly when -- or whether
+    // -- the scheduled reconciliation task actually runs, via an ArgumentCaptor on schedule()'s
+    // own Runnable argument.
     @Mock org.springframework.scheduling.TaskScheduler wsReconcileDispatchScheduler;
 
     @InjectMocks BinanceUserDataStreamService service;
@@ -57,12 +52,9 @@ class BinanceUserDataStreamServiceTest {
     }
 
     /**
-     * Review finding ("No subscription-response timeout" -- external review, twelfth pass, P0,
-     * full context in Listener.pendingSubscribeAt's own field comment): the actual test proving
-     * the fix -- a connection whose subscribe request has been pending for longer than
+     * A connection whose subscribe request has been pending for longer than
      * SUBSCRIBE_TIMEOUT_MS gets torn down by reconcileConnections() itself, rather than sitting
-     * in `connections` forever the way it did before this pass's own fix (confirmed real by
-     * direct inspection of this exact code path before writing this test).
+     * in `connections` forever.
      */
     @Test
     @DisplayName("reconcileConnections: a connection whose subscribe request has been pending too long is closed and removed, not left as a silent zombie")
@@ -109,12 +101,10 @@ class BinanceUserDataStreamServiceTest {
     }
 
     /**
-     * Audit item P1-8 ("No watchdog detects a connection that hangs without ever firing
-     * onClose/onError" -- full context in MAX_CONSECUTIVE_MISSED_SESSION_STATUS's own javadoc):
-     * the actual tests proving the new hung-connection detection in verifySubscriptionHealth --
-     * a connection that never answers repeated active session.status probes is force-closed
-     * (so reconcileConnections reopens it), while one that's only missed a single probe so far
-     * is given another chance rather than closed prematurely.
+     * Covers hung-connection detection in verifySubscriptionHealth -- a connection that never
+     * answers repeated active session.status probes is force-closed (so reconcileConnections
+     * reopens it), while one that's only missed a single probe so far is given another chance
+     * rather than closed prematurely.
      */
     private Object buildSubscribedListenerWithPendingSessionStatus(String credentialId, String pendingId, int missedSoFar) throws Exception {
         Class<?> listenerClass = Class.forName("com.tradevision.service.BinanceUserDataStreamService$Listener");
@@ -202,18 +192,14 @@ class BinanceUserDataStreamServiceTest {
     }
 
     /**
-     * Review finding ("No pure paper-trading mode with full isolation" -- external review,
-     * eighteenth pass, P0, full context in this file's own reconcileConnections eligibility
-     * comment): confirmed real by auditing every mode==LIVE branch after PAPER mode was
-     * introduced -- this eligibility check used to only consider isActive()/autoTradeEnabled/
-     * tradingHalted, never mode, meaning a PAPER credential could be considered eligible for a
-     * genuine WebSocket connection attempt to Binance's testnet endpoint. Tested via the
-     * synchronous, safe half of this behavior: an EXISTING connection for a credential that has
-     * since become PAPER (or was always PAPER, however it got a connection registered) must be
-     * torn down, since it's no longer eligible -- verifying the OPPOSITE case (a fresh PAPER
-     * credential never gets a new connection opened) isn't safely unit-testable here, since the
-     * real connect() path makes a genuine, unmocked network call this test must never risk
-     * triggering.
+     * A PAPER credential must never be considered eligible for a real WebSocket connection to
+     * Binance's testnet endpoint -- the eligibility check must consider mode, not just
+     * isActive()/autoTradeEnabled/tradingHalted. Tested via the synchronous, safe half of this
+     * behavior: an EXISTING connection for a credential that has since become PAPER (or was
+     * always PAPER, however it got a connection registered) must be torn down, since it's no
+     * longer eligible -- verifying the OPPOSITE case (a fresh PAPER credential never gets a new
+     * connection opened) isn't safely unit-testable here, since the real connect() path makes a
+     * genuine, unmocked network call this test must never risk triggering.
      */
     @Test
     @DisplayName("reconcileConnections: a PAPER-mode credential is never eligible for a real WebSocket connection -- an existing connection for one is torn down, even with auto-trade enabled")
@@ -261,14 +247,11 @@ class BinanceUserDataStreamServiceTest {
     }
 
     /**
-     * Review finding ("WebSocket lifecycle on shutdown" -- full context in closeAllStreams' own
-     * javadoc): this is the exact behavior the earlier version of this test file's own comment
-     * disclosed as an honest gap ("would need... a reflection-based test harness -- not built
-     * here"). Built now, using the same reflection-based construction technique already
-     * established and proven in this codebase's own OrderFlowServiceTest -- injects a real
-     * ManagedConnection (a private nested record) into the private connections map, with a
-     * WebSocket mock whose sendClose() returns a controllable, delayed CompletableFuture, so
-     * this actually exercises the graceful-wait fix rather than just the empty-map early return.
+     * Uses the same reflection-based construction technique already established and proven in
+     * this codebase's own OrderFlowServiceTest -- injects a real ManagedConnection (a private
+     * nested record) into the private connections map, with a WebSocket mock whose sendClose()
+     * returns a controllable, delayed CompletableFuture, so this actually exercises the
+     * graceful-wait behavior rather than just the empty-map early return.
      */
     @Test
     @DisplayName("closeAllStreams: genuinely waits for a real (mocked) close handshake to complete before returning, not a fire-and-forget call that merely looked synchronous")
@@ -279,9 +262,9 @@ class BinanceUserDataStreamServiceTest {
 
         // Construct the private ManagedConnection(WebSocket, Instant, Listener) record via
         // reflection. Listener is itself a non-static inner class of BinanceUserDataStreamService
-        // (needed for the subscribe-timeout fix -- see Listener.pendingSubscribeAt's own field
-        // comment), so its reflective constructor implicitly takes the outer instance as its own
-        // first parameter, same as any non-static inner class's real, compiler-generated one.
+        // (it tracks Listener.pendingSubscribeAt for the subscribe-timeout check), so its
+        // reflective constructor implicitly takes the outer instance as its own first
+        // parameter, same as any non-static inner class's real, compiler-generated one.
         Class<?> listenerClass = Class.forName("com.tradevision.service.BinanceUserDataStreamService$Listener");
         var listenerConstructor = listenerClass.getDeclaredConstructor(BinanceUserDataStreamService.class, String.class);
         listenerConstructor.setAccessible(true);
@@ -315,14 +298,14 @@ class BinanceUserDataStreamServiceTest {
 
         verify(mockSocket).sendClose(java.net.http.WebSocket.NORMAL_CLOSURE, "application shutdown");
         assertThat(connections).isEmpty(); // removed from the map immediately, matching closeConnection's own existing behavior
-        // The actual proof of the fix: closeAllStreams() must not have returned before the
-        // close future genuinely completed (~200ms later) -- a fire-and-forget call that never
-        // awaited anything would return in well under 200ms regardless of the future's state.
+        // closeAllStreams() must not have returned before the close future genuinely completed
+        // (~200ms later) -- a fire-and-forget call that never awaited anything would return in
+        // well under 200ms regardless of the future's state.
         assertThat(elapsedMs).isGreaterThanOrEqualTo(190L);
     }
 
     @Test
-    @DisplayName("Listener: onOpen() alone does NOT record WS connected -- only the actual subscribe confirmation does -- the actual review fix (\"WebSocket onOpen() records CONNECTED before subscription confirmed\"), verified via the same reflection-based construction technique this file already established for its own private inner types")
+    @DisplayName("Listener: onOpen() alone does NOT record WS connected -- only the actual subscribe confirmation does -- verified via the same reflection-based construction technique this file already established for its own private inner types")
     void listenerOnOpen_doesNotRecordConnected_untilSubscribeConfirmed() throws Exception {
         Class<?> listenerClass = Class.forName("com.tradevision.service.BinanceUserDataStreamService$Listener");
         var constructor = listenerClass.getDeclaredConstructor(BinanceUserDataStreamService.class, String.class);
@@ -333,7 +316,7 @@ class BinanceUserDataStreamServiceTest {
         java.net.http.WebSocket mockSocket = org.mockito.Mockito.mock(java.net.http.WebSocket.class);
         onOpenMethod.invoke(listener, mockSocket);
 
-        // The raw handshake alone must NOT be treated as "connected" -- the actual review fix.
+        // The raw handshake alone must NOT be treated as "connected".
         verify(exchangeHealthService, never()).recordWsConnected(any());
 
         // Now simulate the actual subscribe confirmation arriving, matching the pending id.
@@ -349,7 +332,7 @@ class BinanceUserDataStreamServiceTest {
     }
 
     @Test
-    @DisplayName("recordConnectFailure/recordConnectSuccess: each successive failure doubles the backoff delay (30s, 60s, 120s...), and a success afterward resets it entirely -- the actual review fix (\"WebSocket reconnection is still a slow sweep, not exponential backoff\")")
+    @DisplayName("recordConnectFailure/recordConnectSuccess: each successive failure doubles the backoff delay (30s, 60s, 120s...), and a success afterward resets it entirely")
     void connectBackoff_doublesOnFailure_resetsOnSuccess() throws Exception {
         var failMethod = BinanceUserDataStreamService.class.getDeclaredMethod("recordConnectFailure", String.class);
         failMethod.setAccessible(true);
@@ -377,13 +360,10 @@ class BinanceUserDataStreamServiceTest {
     }
 
     /**
-     * Review finding ("OLD WebSocket callbacks can remove a NEW WebSocket" -- external review,
-     * fourteenth pass, P0, full context in Listener.onClose's own updated comment): this is the
-     * review's own explicit required test, built exactly to its own named scenario -- "socket A
-     * connected -> socket A refresh starts -> socket B connected -> socket A.onClose() -> assert
-     * socket B STILL exists." Confirmed real by direct inspection before the fix was written:
-     * onClose() used to be an unconditional connections.remove(credentialId) with no check on
-     * which socket the callback actually belonged to.
+     * Builds the scenario "socket A connected -> socket A refresh starts -> socket B connected
+     * -> socket A.onClose() -> assert socket B STILL exists" -- onClose() must check which
+     * socket the callback actually belongs to, not unconditionally remove the connections entry
+     * for the credential.
      */
     @Test
     @DisplayName("Listener.onClose: a STALE callback from an old, already-superseded socket must never remove a NEWER socket's own live connection entry")
@@ -426,14 +406,11 @@ class BinanceUserDataStreamServiceTest {
     }
 
     /**
-     * Review finding ("WebSocket health still isn't fully semantic" / "You should track
-     * RAW_CONNECTED, SUBSCRIBING, SUBSCRIBED... rather than simply: exists in map = connected"
-     * -- external review, fourteenth pass, P1, full context in ConnectionState's own class-level
-     * comment): the actual test proving the state machine is observable and honest, not just
-     * present in the code.
+     * Proves the RAW_CONNECTED/SUBSCRIBING/SUBSCRIBED state machine is observable and honest,
+     * not just present in the code.
      */
     @Test
-    @DisplayName("getConnectionState/isSubscribed: distinguishes no-connection, subscribing, and genuinely-subscribed states -- collapsing these into one exists-in-map boolean was exactly the gap the review named")
+    @DisplayName("getConnectionState/isSubscribed: distinguishes no-connection, subscribing, and genuinely-subscribed states, rather than collapsing them into one exists-in-map boolean")
     void getConnectionState_distinguishesRealStates() throws Exception {
         assertThat(service.getConnectionState("cred1")).isNull();
         assertThat(service.isSubscribed("cred1")).isFalse();
@@ -472,9 +449,7 @@ class BinanceUserDataStreamServiceTest {
     }
 
     /**
-     * Review finding ("Event ordering isn't explicitly protected" -- external review, thirteenth
-     * pass, P1, full context in Listener.lastEventTimeMs's own field comment): the actual test
-     * proving event time is tracked and out-of-order delivery is detected (via log output this
+     * Proves event time is tracked and out-of-order delivery is detected (via log output this
      * test can't directly assert on, but getLastEventTimeMs's own behavior is directly
      * verifiable and is exactly what the out-of-order check itself reads).
      */
@@ -509,8 +484,8 @@ class BinanceUserDataStreamServiceTest {
         // A second event arrives with an EARLIER event time -- genuinely out-of-order delivery.
         onTextMethod.invoke(listener, mockSocket,
             "{\"event\":{\"e\":\"executionReport\",\"E\":900000}}", true);
-        // Logged as a warning (this pass's own explicit, deliberate scope -- observability, not
-        // a gating decision), but the tracked value itself does not regress backward.
+        // Logged as a warning (deliberately observability-only, not a gating decision), but the
+        // tracked value itself does not regress backward.
         assertThat(service.getLastEventTimeMs("cred1")).isEqualTo(1000000L);
 
         // A THIRD event, later than both, correctly advances it again.
@@ -526,11 +501,9 @@ class BinanceUserDataStreamServiceTest {
     }
 
     /**
-     * Review finding ("WebSocket health is still not fully production-grade" -- external review,
-     * sixteenth pass, P1, full context in Listener.pendingSessionStatusId's own field comment):
-     * the actual tests proving this new feature only ever asks Binance's own side about
-     * genuinely SUBSCRIBED connections, and -- most importantly -- never acts on a mismatch
-     * beyond logging it.
+     * Proves the session.status health check only ever asks Binance's own side about genuinely
+     * SUBSCRIBED connections, and -- most importantly -- never acts on a mismatch beyond
+     * logging it.
      */
     @Test
     @DisplayName("verifySubscriptionHealth: sends session.status only for connections in the SUBSCRIBED state, never for one still SUBSCRIBING or RAW_CONNECTED")
@@ -614,9 +587,8 @@ class BinanceUserDataStreamServiceTest {
     }
 
     /**
-     * Review finding ("User-data WebSocket is still 'wake-up + REST', not true OMS event
-     * processing" -- external review, twentieth pass, P1, full context in
-     * applyExecutionReportFastPath's own javadoc): the actual tests for the new fast-path.
+     * Covers the execution-report fast path, which applies fills directly from the WebSocket
+     * event rather than falling back to a REST poll.
      * applyExecutionReportFastPath is private on the outer class (not the Listener inner class),
      * so it's accessed via reflection directly on the service instance.
      */
@@ -659,14 +631,12 @@ class BinanceUserDataStreamServiceTest {
     }
 
     /**
-     * Audit fix (P1-2 follow-up -- external review, second pass: "Add the partial-fill-then-
-     * EXPIRED websocket test" -- full context in applyExecutionReportFastPath's own updated
-     * EXPIRED-branch comment). Before this fix, this exact scenario (orderStatus=EXPIRED, but z
-     * shows some quantity genuinely filled first) went through the same success=false branch as
-     * a genuine REJECTED, silently discarding the filled quantity. It must now report
-     * success=true with the real cumulative quantity/price so OrderService.recordBrokerResult's
-     * own EXPIRED-specific handling records the correct terminal state WITH the fill, not a
-     * REJECTED with the fill lost.
+     * orderStatus=EXPIRED with a prior partial fill (z shows some quantity genuinely filled
+     * first) must not go through the same success=false branch as a genuine REJECTED, which
+     * would silently discard the filled quantity. It must report success=true with the real
+     * cumulative quantity/price so OrderService.recordBrokerResult's own EXPIRED-specific
+     * handling records the correct terminal state WITH the fill, not a REJECTED with the fill
+     * lost.
      */
     @Test
     @DisplayName("applyExecutionReportFastPath: orderStatus=EXPIRED with a prior partial fill (z > 0) calls recordBrokerResult with success=true and the real filled quantity/price, not a discarded failure")
@@ -758,14 +728,12 @@ class BinanceUserDataStreamServiceTest {
     }
 
     /**
-     * P1-18 fix ("WebSocket listener does blocking reconciliation on the socket thread" -- full
-     * context in onText's own updated comment and scheduleDebouncedReconcile's own javadoc): the
-     * audit's own suggested test scenario -- "Burst of 50 events -> one or two reconciles, socket
-     * stays open, no event loss." Simulated here via 50 back-to-back executionReport events for
-     * the SAME credential, all arriving before the debounced task itself is ever run (exactly the
-     * real-world race this fix protects against: the dispatch scheduler is mocked, so nothing runs
-     * until this test explicitly executes the captured Runnable, standing in for "the debounce
-     * window hasn't elapsed yet").
+     * Builds the scenario "burst of 50 events -> one or two reconciles, socket stays open, no
+     * event loss." Simulated here via 50 back-to-back executionReport events for the SAME
+     * credential, all arriving before the debounced task itself is ever run (the real-world
+     * race this behavior must protect against: the dispatch scheduler is mocked, so nothing
+     * runs until this test explicitly executes the captured Runnable, standing in for "the
+     * debounce window hasn't elapsed yet").
      */
     @Test
     @DisplayName("onText: a burst of 50 executionReport events for the same credential coalesces into exactly ONE scheduled reconciliation dispatch, not 50 -- and onText itself never blocks on reconcileCredential()")

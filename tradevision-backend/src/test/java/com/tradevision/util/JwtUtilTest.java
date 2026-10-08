@@ -62,9 +62,7 @@ class JwtUtilTest {
     }
 
     /**
-     * Review finding ("JWT secret format is not strongly validated" -- external review,
-     * twenty-third pass, P2, full context in validateSecretAtStartup's own javadoc): the actual
-     * tests for the new startup validation.
+     * Verifies the startup validation of the JWT secret's format.
      */
     @Test
     @DisplayName("validateSecretAtStartup: a sufficiently long secret (the shared test fixture's own 49-byte value) passes without throwing")

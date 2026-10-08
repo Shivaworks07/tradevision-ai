@@ -31,52 +31,42 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * Review finding ("The biggest missing thing" / "Autonomous discovery and strategy execution" —
- * "TradeVision does not autonomously discover trades... That's signal-triggered execution, not a
- * fully autonomous strategy bot"): confirmed real and correctly identified as the single most
- * important gap in the whole system. Every fix before this one made the EXECUTION path safer —
- * none of them made the browser optional. This is the first piece that does: it periodically
- * fetches real market data directly from the broker, runs it through the same ServerSignalEngine
- * that already authoritatively validates every signal, and — for anything that clears the bar —
- * creates a TradeCallRecord and dispatches it through the EXISTING evaluateSignal() pipeline,
- * with zero duplicated execution/risk logic. No browser tab, no frontend request, no user action
- * required for a signal to exist in the first place.
+ * Autonomous signal discovery: periodically fetches real market data directly from the broker,
+ * runs it through the same ServerSignalEngine that already authoritatively validates every
+ * signal, and — for anything that clears the bar — creates a TradeCallRecord and dispatches it
+ * through the existing evaluateSignal() pipeline, with zero duplicated execution/risk logic. No
+ * browser tab, no frontend request, no user action required for a signal to exist in the first
+ * place.
  *
  * HONEST SCOPE — what this is NOT, stated plainly rather than implied by omission:
- * - Review finding ("Stale documentation" -- P0, and directly the review's own "Scanner class
- *   comments partially lag strategy wiring" line): this bullet used to say ServerSignalEngine
- *   does NOT have SMC/BOS/CHOCH/order blocks/FVG/volume profile/order flow/CVD/open interest/
- *   funding/regime detection — that gap has since been fully closed (SmcEngineService,
- *   VolumeProfileService, OrderFlowService, MarketRegimeService, SignalCombinerService all
- *   exist, are wired into this scanner's own enrichment below, and SMC/regime/volume-profile
- *   ARE folded into the actual execution-gate decision via NoTradeFilterService's own
- *   SignalCombinerService.combine() call). What's still genuinely true, stated precisely rather
- *   than left to whichever old claim survives: order-flow specifically remains excluded from
- *   that execution-gate combination (a deliberate choice — a live Binance Futures call on the
- *   money-moving path is a real new failure surface, not an oversight), and this scanner's own
- *   enrichment call below still passes null for smc/orderFlow/vp/regime since it exists only to
- *   extract MTF context, not to run the real combination. An autonomously-discovered
- *   TradeCallRecord's features are still sparser than a frontend-created one in some respects,
- *   but "ServerSignalEngine doesn't have this data at all" is no longer one of them.
- * - Not the formal OMS/Signal-lifecycle/FillLedger architecture the review sketches (GENERATED
- *   -> VALIDATING -> RISK_REJECTED -> APPROVED -> ... states, Order/OrderState, first-class
- *   Fill records). This reuses the EXISTING TradeCallRecord/ExecutedOrder/Position model as-is.
- * - Review finding ("Strategy universe is still hard-coded" -- external review, fifth pass, P1
- *   feature request): this WAS "not tiered by liquidity/volume the way the review describes" --
- *   that gap is now closed via DynamicUniverseService (exchange-wide USDT symbol discovery,
- *   liquidity/spread filtering, ranked selection), but it is opt-in per profile
- *   (RiskProfile.dynamicUniverseEnabled, default false) rather than always-on, so an existing
- *   profile's own trading behavior never changes just because this shipped. What's still
- *   genuinely true: the ranking itself is liquidity-only (24hr USDT quote volume), not the
- *   review's own fuller "volume -> spread -> volatility -> minimum order size -> liquidity ->
- *   risk exclusions" composite -- see DynamicUniverseService's own class javadoc for exactly
- *   which of those this pass does and doesn't build, and why.
+ * - Order-flow specifically remains excluded from the execution-gate combination (a deliberate
+ *   choice — a live Binance Futures call on the money-moving path is a real new failure
+ *   surface), and this scanner's own enrichment call below still passes null for
+ *   smc/orderFlow/vp/regime since it exists only to extract MTF context, not to run the real
+ *   combination. An autonomously-discovered TradeCallRecord's features are still sparser than a
+ *   frontend-created one in some respects, but ServerSignalEngine does have access to SMC/BOS/
+ *   CHOCH/order blocks/FVG/volume profile/order flow/CVD/open interest/funding/regime detection
+ *   via SmcEngineService, VolumeProfileService, OrderFlowService, MarketRegimeService and
+ *   SignalCombinerService, all wired into this scanner's own enrichment below, and SMC/regime/
+ *   volume-profile are folded into the actual execution-gate decision via
+ *   NoTradeFilterService's own SignalCombinerService.combine() call.
+ * - Not the formal OMS/Signal-lifecycle/FillLedger architecture (GENERATED -> VALIDATING ->
+ *   RISK_REJECTED -> APPROVED -> ... states, Order/OrderState, first-class Fill records). This
+ *   reuses the existing TradeCallRecord/ExecutedOrder/Position model as-is.
+ * - The symbol universe is tiered by liquidity via DynamicUniverseService (exchange-wide USDT
+ *   symbol discovery, liquidity/spread filtering, ranked selection), but it is opt-in per
+ *   profile (RiskProfile.dynamicUniverseEnabled, default false) rather than always-on, so an
+ *   existing profile's own trading behavior never changes just because this shipped. The
+ *   ranking itself is liquidity-only (24hr USDT quote volume), not a fuller "volume -> spread ->
+ *   volatility -> minimum order size -> liquidity -> risk exclusions" composite -- see
+ *   DynamicUniverseService's own class javadoc for exactly which of those this pass does and
+ *   doesn't build, and why.
  * - Not rate-limit-budget-aware. getRecentCandles() is called for every distinct symbol this
  *   pass decides to scan, with no tracking of Binance's actual request-weight budget. The
- *   conservative scan interval (60s, not the review's suggested 15s) and small default symbol
- *   set are the mitigation for this pass, not a real budget tracker.
+ *   conservative scan interval (60s) and small default symbol set are the mitigation for this
+ *   pass, not a real budget tracker.
  * - Market-data-freshness checking is a bare minimum (candle count, not staleness/gaps/spread/
- *   REST-vs-WS-disagreement) — the review's own MarketDataQualityService is real further scope.
+ *   REST-vs-WS-disagreement) — MarketDataQualityService's own further scope covers more.
  */
 @Service
 @RequiredArgsConstructor
@@ -84,50 +74,44 @@ public class AutonomousScannerService {
 
     private static final Logger log = LoggerFactory.getLogger(AutonomousScannerService.class);
 
-    // Deliberately small and fixed rather than the review's tiered/liquidity-screened universe —
-    // see this class's own javadoc for why. Every auto-trade-enabled profile gets these scanned
+    // Deliberately small and fixed rather than a tiered/liquidity-screened universe — see this
+    // class's own javadoc for why. Every auto-trade-enabled profile gets these scanned
     // regardless of its own enabledSymbols configuration, plus whatever it has explicitly added.
-    // Review finding ("Dynamic candidate authorization needs durable provenance" -- external
-    // review, eighth pass, P1, full context in StrategyPlanService.authorizeExecution's own
-    // javadoc): package-visible (not private) so the execution-gate authorization can recompute
-    // a plan's own allowed symbol set using the SAME core universe this scanner itself uses,
-    // rather than a second, potentially-drifting hardcoded copy.
+    // Package-visible (not private) so the execution-gate authorization can recompute a plan's
+    // own allowed symbol set using the same core universe this scanner itself uses, rather than
+    // a second, potentially-drifting hardcoded copy. See
+    // StrategyPlanService.authorizeExecution's own javadoc.
     static final Set<String> TIER1_SYMBOLS = Set.of("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT");
-    // Review finding ("Scanner universe is a fixed list, not liquidity/volume/spread-aware" --
-    // P1, full context at the actual check in scanOneSymbol): a disclosed heuristic, not a
-    // statistically-derived value -- same spirit as SlippageMetricsService's own LOW/HIGH
-    // volatility thresholds. $100k average quote-asset volume per candle is a conservative
-    // floor matching typical "minimum liquidity" heuristics for retail-scale algo trading; a
-    // genuinely different risk tolerance would need a different number, stated plainly rather
-    // than presented as universally correct.
+    // A disclosed heuristic, not a statistically-derived value -- same spirit as
+    // SlippageMetricsService's own LOW/HIGH volatility thresholds. $100k average quote-asset
+    // volume per candle is a conservative floor matching typical "minimum liquidity" heuristics
+    // for retail-scale algo trading; a genuinely different risk tolerance would need a different
+    // number, stated plainly rather than presented as universally correct.
     private static final double MIN_AVG_QUOTE_VOLUME_FOR_USER_SYMBOL = 100_000;
-    // Review finding ("Config for scanner universe / interval"): kept as the DEFAULT/fallback —
-    // used when a profile's own scanTimeframe is missing or fails to parse (timeframeToSeconds
-    // below) — not removed, since a safe fallback still matters when a profile is misconfigured.
+    // The default/fallback — used when a profile's own scanTimeframe is missing or fails to
+    // parse (timeframeToSeconds below) — since a safe fallback still matters when a profile is
+    // misconfigured.
     private static final String DEFAULT_SCAN_INTERVAL = "1h";
-    // Review finding ("Scanner's EMA200 isn't really EMA200 with only 100 candles"): confirmed
-    // real — ServerSignalEngine.analyze computes ema(candles, Math.min(200, n-1)), which with
-    // 100 candles is EMA99, not EMA200, even though the strategy's own logic and labeling assume
-    // a real 200-period EMA. Raised to 300 so a genuine EMA200 has the warm-up history it needs.
+    // ServerSignalEngine.analyze computes ema(candles, Math.min(200, n-1)), which with 100
+    // candles is EMA99, not EMA200, even though the strategy's own logic and labeling assume a
+    // real 200-period EMA. Raised to 300 so a genuine EMA200 has the warm-up history it needs.
     private static final int CANDLE_LIMIT = 300;
     private static final int MIN_CANDLES_FOR_SIGNAL = 50;
     private static final Duration SIGNAL_COOLDOWN = Duration.ofMinutes(15);
-    // Review finding ("Client-Side Signal Generation" -- MTF context wiring): matches
-    // SignalCombinerService's own private NEXT_HIGHER_TF exactly (duplicated here since that
-    // one is private to that class) -- used only to decide WHICH interval to fetch; combine()
+    // Matches SignalCombinerService's own private NEXT_HIGHER_TF exactly (duplicated here since
+    // that one is private to that class) -- used only to decide which interval to fetch; combine()
     // itself independently re-derives the same mapping internally for labeling each MTFContext.
     private static final java.util.Map<String, String> NEXT_HIGHER_TF = java.util.Map.of(
         "1m", "15m", "5m", "1h", "15m", "4h", "30m", "4h", "1h", "4h", "4h", "1d", "1d", "1w"
     );
 
     /**
-     * Review finding ("Config for scanner universe / interval" — "Hard-coded tier-1 + 1h; should
-     * be profile- or config-driven for a real bot"): the actual conversion this fix needs —
-     * Binance's kline interval strings verified against its own official docs
-     * (developers.binance.com/docs/binance-spot-api-docs) before hardcoding this map, not
-     * assumed. An unrecognized or null value falls back to DEFAULT_SCAN_INTERVAL's own seconds
-     * value (3600) rather than throwing — a misconfigured profile shouldn't be able to break the
-     * scan for every symbol it's eligible for.
+     * Converts a profile's own configured scan timeframe into seconds. Binance's kline interval
+     * strings verified against its own official docs
+     * (developers.binance.com/docs/binance-spot-api-docs) before hardcoding this map. An
+     * unrecognized or null value falls back to DEFAULT_SCAN_INTERVAL's own seconds value (3600)
+     * rather than throwing — a misconfigured profile shouldn't be able to break the scan for
+     * every symbol it's eligible for.
      */
     static long timeframeToSeconds(String timeframe) {
         if (timeframe == null) return 3600;
@@ -160,56 +144,45 @@ public class AutonomousScannerService {
     private final PositionSafetyService positionSafetyService;
     private final com.tradevision.service.BrokerCredentialService credentialService;
     private final ServerSignalEngine serverSignalEngine;
-    // Review finding ("Strategy engine is not the complete strategy actually represented by the
-    // frontend" -- P1, full context in ServerSignalEngine.analyze's own new overload javadoc):
-    // the read side of the ML weight port -- fetches this symbol's current learned weights
-    // (or the honest, unadjusted default if none exist yet) immediately before scoring.
+    // The read side of the ML weight port -- fetches this symbol's current learned weights
+    // (or the honest, unadjusted default if none exist yet) immediately before scoring. See
+    // ServerSignalEngine.analyze's own overload javadoc.
     private final MLWeightService mlWeightService;
     private final TradeCallService tradeCallService;
     private final com.tradevision.config.ShutdownState shutdownState;
     private final com.tradevision.config.StartupState startupState;
     private final com.tradevision.config.TradingHeartbeatService heartbeatService;
-    /**
-     * Review finding ("Scanner deduplication is JVM-local" -- external review, twenty-second
-     * pass, P1, full context in ScannedCandle's own class javadoc): needed for the actual,
-     * cross-instance/cross-restart durable claim this fix is built around.
-     */
+    /** Backs the cross-instance/cross-restart durable candle-dedup claim. See ScannedCandle's own class javadoc. */
     private final com.tradevision.repository.ScannedCandleRepository scannedCandleRepo;
-    // P3-3 fix ("lastSignalAt -- in-memory cooldown lost on restart -- persist" -- external
-    // review, full context in TradeCallRepository.findFirstByUserIdAndPlanIdAndSymbolOrderBy
-    // CalledAtDesc's own javadoc): the durable backstop this scanner's own in-memory cooldown map
-    // falls back to whenever it has no entry for a given dedup key (a fresh process after a
-    // restart, or the very first scan of this key in this process).
+    // The durable backstop this scanner's own in-memory cooldown map falls back to whenever it
+    // has no entry for a given dedup key (a fresh process after a restart, or the very first
+    // scan of this key in this process). See
+    // TradeCallRepository.findFirstByUserIdAndPlanIdAndSymbolOrderByCalledAtDesc's own javadoc.
     private final com.tradevision.repository.TradeCallRepository tradeCallRepository;
     private final MarketDataQualityService marketDataQualityService;
-    // Review finding ("Client-Side Signal Generation = Trusting the Browser with Money" —
-    // "Move this to Angular to Java"): wired in here — TradeCallRequest already has smcBias/
-    // regime/vpLocation/etc. fields (the manual, frontend-submitted path already populates
-    // them), so the scanner populating the SAME existing fields with server-computed values is
-    // additive, not a new schema or a new execution path. Deliberately scoped to what's
-    // computable from candles already fetched for this scan (zero new network calls) — order-
-    // flow (needs a live Binance futures call) and real multi-timeframe context (needs an
-    // additional candle fetch) are NOT wired in this pass, stated plainly rather than silently
-    // left out. These three populate observability/feature fields only — they do not touch
+    // TradeCallRequest already has smcBias/regime/vpLocation/etc. fields (the manual,
+    // frontend-submitted path already populates them), so the scanner populating the same
+    // existing fields with server-computed values is additive, not a new schema or a new
+    // execution path. Deliberately scoped to what's computable from candles already fetched for
+    // this scan (zero new network calls) — order-flow (needs a live Binance futures call) and
+    // real multi-timeframe context (needs an additional candle fetch) are not wired in this
+    // pass. These three populate observability/feature fields only — they do not touch
     // direction/confidence/entryPrice, which remain driven entirely by ServerSignalEngine +
     // NoTradeFilterService's own independent verification, unchanged.
     private final com.tradevision.service.strategy.MarketRegimeService marketRegimeService;
     private final com.tradevision.service.strategy.SmcEngineService smcEngineService;
     private final com.tradevision.service.strategy.VolumeProfileService volumeProfileService;
-    // Review finding ("Client-Side Signal Generation" -- continued from the 3-service wiring
-    // above): order-flow needs a LIVE call to Binance's futures API (a genuinely different risk
-    // profile from the other three, which only need candles already fetched for this scan --
-    // see OrderFlowService's own javadoc for the honest disclosure that its live HTTP fetching
-    // specifically is unverified end-to-end, since Binance is network-blocked from this
-    // development sandbox). Wired in anyway, since OrderFlowService's own per-endpoint
-    // graceful-degradation design (verified separately) means a futures-API outage or rate
-    // limit here degrades to missing order-flow data for that one scan, not a crash or a
-    // blocked trade -- the same additive, non-fatal contract as the other three.
+    // Order-flow needs a live call to Binance's futures API (a genuinely different risk profile
+    // from the other three, which only need candles already fetched for this scan -- see
+    // OrderFlowService's own javadoc for the honest disclosure that its live HTTP fetching
+    // specifically is unverified end-to-end in a network-blocked development sandbox). Wired in
+    // anyway, since OrderFlowService's own per-endpoint graceful-degradation design means a
+    // futures-API outage or rate limit here degrades to missing order-flow data for that one
+    // scan, not a crash or a blocked trade -- the same additive, non-fatal contract as the other
+    // three.
     private final com.tradevision.service.strategy.OrderFlowService orderFlowService;
-    // Review finding ("Order-flow enrichment is an expensive, uncapped per-symbol-per-scan cost
-    // that doesn't yet affect the decision" -- P1, full context at the actual gating call
-    // below): needed to check the existing (already real, already wired) request-weight budget
-    // before paying for this specific enrichment's own extra Binance Futures calls.
+    // Checks the existing request-weight budget before paying for this specific enrichment's
+    // own extra Binance Futures calls (see the gating call below).
     private final ExchangeHealthService exchangeHealth;
     private final com.tradevision.service.strategy.SignalCombinerService signalCombinerService;
 
@@ -217,10 +190,9 @@ public class AutonomousScannerService {
     // Dedup: don't re-signal the same user+credential+symbol within the cooldown window, even if
     // the scan runs again a minute later and the indicators still say the same thing.
     private final Map<String, Instant> lastSignalAt = new ConcurrentHashMap<>();
-    // Review finding ("Scanner can still repeatedly process the same closed candle" -- P1):
-    // confirmed real -- the existing lastSignalAt dedup above is purely time-based (a flat
-    // 15-minute cooldown), which is a genuinely different thing from "have I already evaluated
-    // THIS exact closed candle" -- a symbol scanned every 60 seconds on a 1h timeframe gets
+    // The lastSignalAt dedup above is purely time-based (a flat 15-minute cooldown), which is a
+    // genuinely different thing from "have I already evaluated this exact closed candle" -- a
+    // symbol scanned every 60 seconds on a 1h timeframe gets
     // re-analyzed ~60 times per real candle close, all but the first of which is wasted API/CPU
     // work on data that hasn't changed. Keyed by credentialId+symbol+timeframe (not just
     // credentialId+symbol, since a profile's own scanTimeframe can differ from another's for
@@ -235,30 +207,27 @@ public class AutonomousScannerService {
         ensureAdapterMap();
 
         List<RiskProfile> activeProfiles = riskProfileRepo.findByAutoTradeEnabledTrueAndTradingHaltedFalse().stream()
-            // Review finding ("Risk" — "strategy consecutive-loss breaker"): tradingHalted (the
-            // query above) and autoTradeHalted are deliberately separate flags — see
-            // RiskProfile's own field comments for exactly what distinguishes them. Filtered
-            // in-memory rather than adding a new compound repository query method for one
-            // additional boolean condition.
+            // tradingHalted (the query above) and autoTradeHalted are deliberately separate
+            // flags — see RiskProfile's own field comments for exactly what distinguishes them.
+            // Filtered in-memory rather than adding a new compound repository query method for
+            // one additional boolean condition.
             .filter(p -> !p.isAutoTradeHalted())
             .toList();
-        // Review finding ("#10 — External Watchdog"): recorded here, unconditionally, once the
-        // gates above pass — a cycle with genuinely zero active profiles to scan is still a
-        // HEALTHY cycle (the worker ran, it just had no work), not something a watchdog should
-        // ever treat as "stuck". Recording this only inside the loop below would produce a false
-        // DOWN for any user with zero auto-trade-enabled profiles configured.
+        // Recorded here, unconditionally, once the gates above pass — a cycle with genuinely
+        // zero active profiles to scan is still a healthy cycle (the worker ran, it just had no
+        // work), not something a watchdog should ever treat as "stuck". Recording this only
+        // inside the loop below would produce a false DOWN for any user with zero
+        // auto-trade-enabled profiles configured.
         heartbeatService.recordScanCompleted();
         if (activeProfiles.isEmpty()) return;
 
-        // Review finding ("1m strategy still uses a 60-second polling scheduler" -- external
-        // review, thirteenth pass, P1, confirmed real: this scheduler's own fixedDelay means a
-        // scan that takes 45s effectively becomes a ~105s cycle -- multiple plans/dynamic
-        // symbols make this worse, and for a 1m strategy that's long enough to miss candle
-        // opportunities): this pass does NOT redesign the scheduler (a genuine fix needs either
-        // per-timeframe scheduling or a closed-kline WebSocket, both real further work) -- this
-        // is only visibility, so an operator can actually SEE the overrun happening rather than
-        // silently losing scan cadence. 50s is deliberately short of the 60s interval itself, so
-        // this fires before the next cycle's own delay compounds the problem further.
+        // This scheduler's own fixedDelay means a scan that takes 45s effectively becomes a
+        // ~105s cycle -- multiple plans/dynamic symbols make this worse, and for a 1m strategy
+        // that's long enough to miss candle opportunities. This does not redesign the scheduler
+        // (a genuine fix needs either per-timeframe scheduling or a closed-kline WebSocket) --
+        // this is only visibility, so an operator can actually see the overrun happening rather
+        // than silently losing scan cadence. 50s is deliberately short of the 60s interval
+        // itself, so this fires before the next cycle's own delay compounds the problem further.
         long scanStartedAt = System.currentTimeMillis();
         for (RiskProfile profile : activeProfiles) {
             try {
@@ -273,18 +242,17 @@ public class AutonomousScannerService {
         if (scanDurationMs > 50_000) {
             log.warn("Autonomous scan took {}ms across {} profile(s) -- approaching or exceeding this scheduler's own 60s interval. "
                 + "For fast timeframes (1m/3m), this means real candle opportunities can be missed; consider reducing enabled symbols/"
-                + "plans per credential, or note this as evidence for the review's own recommended fix (per-timeframe scheduling or a "
-                + "closed-kline WebSocket) if it recurs.", scanDurationMs, activeProfiles.size());
+                + "plans per credential, or per-timeframe scheduling / a closed-kline WebSocket if it recurs.",
+                scanDurationMs, activeProfiles.size());
         }
     }
 
     private void scanForProfile(RiskProfile profile) {
         BrokerCredential credential = credentialRepo.findById(profile.getCredentialId()).orElse(null);
         if (credential == null || !credential.isActive()) return;
-        // Review finding (P1-1 -- PAPER credentials must never resolve to the real broker
-        // adapter): adapterMap is keyed by BrokerType only and has no PAPER concept; routing
-        // through adapterForCredential is what actually special-cases BrokerMode.PAPER to the
-        // simulated adapter.
+        // adapterMap is keyed by BrokerType only and has no PAPER concept; routing through
+        // adapterForCredential is what special-cases BrokerMode.PAPER to the simulated adapter,
+        // so a PAPER credential never resolves to the real broker adapter.
         BrokerAdapter adapter = credentialService.adapterForCredential(credential);
         if (adapter == null) return;
 
@@ -301,31 +269,26 @@ public class AutonomousScannerService {
             return;
         }
         for (StrategyPlan plan : plans) {
-            // Review finding ("disabling all plans can still cause the default plan to be
-            // returned" -- external review, seventh pass, P0, full context in
-            // StrategyPlanService.getEnabledPlans's own updated javadoc): the review's own
-            // explicit recommendation -- a defensive, final re-check at the actual point of
-            // execution, never trusting a single upstream method's own name/contract alone for
-            // a real-money safety property. Belt-and-suspenders: getEnabledPlans is now
-            // correctly named, but this scanner must never silently process a disabled plan
-            // even if a future change to that method's own logic reopened the same gap.
+            // A defensive, final re-check at the actual point of execution, never trusting a
+            // single upstream method's own name/contract alone for a real-money safety
+            // property. Belt-and-suspenders: getEnabledPlans is correctly named, but this
+            // scanner must never silently process a disabled plan even if a future change to
+            // that method's own logic reopened the gap. See
+            // StrategyPlanService.getEnabledPlans's own javadoc.
             if (!plan.isEnabled()) continue;
             scanForPlan(profile, credential, adapter, plan);
         }
     }
 
     /**
-     * User's own explicit design: each plan independently owns its own coin universe (TIER1 +
-     * its own enabledSymbols + its own dynamic-universe setting/cap), exactly as
-     * scanForProfile's own previous single-plan version did for the whole credential -- now
-     * scoped per plan instead.
+     * Each plan independently owns its own coin universe (TIER1 + its own enabledSymbols + its
+     * own dynamic-universe setting/cap).
      */
     private void scanForPlan(RiskProfile profile, BrokerCredential credential, BrokerAdapter adapter, StrategyPlan plan) {
-        // User's own explicit design ("Session approaching end -> STOP NEW ENTRIES"), full
-        // context in StrategyPlanService.isWithinSession's own javadoc: a plan outside its own
-        // configured trading window is never scanned for new entries at all this pass -- ALWAYS_
-        // ON (the default) is always within session, so this is a no-op for every plan that
-        // hasn't explicitly configured a session.
+        // A plan outside its own configured trading window is never scanned for new entries at
+        // all this pass -- ALWAYS_ON (the default) is always within session, so this is a no-op
+        // for every plan that hasn't explicitly configured a session. See
+        // StrategyPlanService.isWithinSession's own javadoc.
         if (!strategyPlanService.isWithinSession(plan)) return;
 
         Set<String> symbolsToScan = new HashSet<>(TIER1_SYMBOLS);
@@ -339,16 +302,12 @@ public class AutonomousScannerService {
             }
         }
 
-        // Review finding (P1 #6 -- "Plan symbol universe always includes BTC/ETH/SOL/BNB/XRP;
-        // profile symbol whitelist ignored when a plan exists"): confirmed real -- TIER1_SYMBOLS
-        // used to be unconditionally scanned for every plan regardless of what the user actually
-        // whitelisted on their own risk profile. A user who configured "only ADAUSDT" was still
-        // having this scanner discover and (via StrategyPlanService.authorizeExecution's own
-        // matching TIER1 auto-allow, fixed in the same pass) actually TRADE BTC/ETH/SOL/BNB/XRP
-        // with real money, purely because those five are hardcoded as always-on. The actual fix:
-        // a plan's own universe is never bigger than what the account's own profile has
-        // explicitly enabled -- TIER1 membership is no longer a free pass, it only survives this
-        // intersection when the user separately, explicitly enabled that exact symbol too.
+        // A plan's own universe is never bigger than what the account's own profile has
+        // explicitly enabled -- TIER1 membership is not a free pass on its own; a symbol only
+        // survives this intersection when the user separately, explicitly enabled that exact
+        // symbol too. Without this, a user who configured "only ADAUSDT" could still have this
+        // scanner discover and trade BTC/ETH/SOL/BNB/XRP with real money, purely because those
+        // five are hardcoded as always-on candidates.
         symbolsToScan.retainAll(profile.getEnabledSymbols());
 
         for (String symbol : symbolsToScan) {
@@ -362,13 +321,11 @@ public class AutonomousScannerService {
      * IndexInitializer) is what makes this a genuine, cross-instance guarantee (see
      * ScannedCandle's own class javadoc for the full "why a durable claim record" background).
      *
-     * P3-8 fix ("Code hygiene ... Move rationale to ADRs" -- external review): the fail-open-vs-
-     * fail-closed-by-mode policy below (LIVE fails closed on an ambiguous claim result,
-     * TESTNET/PAPER fails open) used to be re-derived across two separate, stacked javadoc
-     * blocks here -- that's a codebase-wide policy, not something specific to this one method, so
-     * it now lives in one place: see docs/adr/0001-fail-open-vs-fail-closed-by-mode.md for the
-     * full reasoning. DuplicateKeyException specifically always means genuinely already claimed
-     * (returns false) regardless of mode -- that part IS specific to this method, not the ADR.
+     * The fail-open-vs-fail-closed-by-mode policy below (LIVE fails closed on an ambiguous claim
+     * result, TESTNET/PAPER fails open) is a codebase-wide policy, not something specific to
+     * this one method: see docs/adr/0001-fail-open-vs-fail-closed-by-mode.md for the full
+     * reasoning. DuplicateKeyException specifically always means genuinely already claimed
+     * (returns false) regardless of mode -- that part is specific to this method, not the ADR.
      */
     private boolean tryClaimCandleProcessing(String candleDedupKey, long candleCloseTimeMillis, BrokerMode mode) {
         String claimKey = candleDedupKey + "|" + candleCloseTimeMillis;
@@ -393,24 +350,22 @@ public class AutonomousScannerService {
     }
 
     /**
-     * Review finding ("1m trading still isn't truly event-driven" -- external review, twentieth
-     * pass, P1, confirmed real by direct inspection: this scanner's own @Scheduled(fixedDelay =
-     * 60_000) means a 1m candle can close and this scanner may not act on it for up to a full
-     * minute -- for a 1m strategy specifically, this can genuinely miss the intended entry):
-     * the actual fix's own data-gathering half, extracted here so Kline1mStreamService (the
-     * WebSocket half) and this class's own periodic scan share ONE traversal of "which profiles/
-     * credentials/plans are actively watching which symbol", not two independently-maintained
-     * copies that could drift.
+     * This scanner's own @Scheduled(fixedDelay = 60_000) means a 1m candle can close and this
+     * scanner may not act on it for up to a full minute -- for a 1m strategy specifically, this
+     * can genuinely miss the intended entry. This method is the data-gathering half of the
+     * event-driven path, extracted here so Kline1mStreamService (the WebSocket half) and this
+     * class's own periodic scan share one traversal of "which profiles/credentials/plans are
+     * actively watching which symbol", not two independently-maintained copies that could drift.
      *
      * HONEST SCOPE, stated plainly: dynamic-universe symbols (plan.isDynamicUniverseEnabled())
      * are deliberately excluded from this method's own result -- computing them requires a live
      * REST call (dynamicUniverseService.selectTopCandidates), and this method is also called to
      * build the WebSocket's own subscription list, where making a REST call just to decide what
      * to subscribe to would defeat a real part of the point. A 1m plan's own TIER1 and explicitly
-     * enabledSymbols ARE covered by the immediate, event-driven trigger; its dynamic-universe
-     * symbols remain covered only by this class's own existing 60s REST poll, same as before
-     * this fix -- narrower than "every symbol a 1m plan could ever touch", but a real, meaningful
-     * improvement for the common case (a plan's own explicitly-configured symbols), not nothing.
+     * enabledSymbols are covered by the immediate, event-driven trigger; its dynamic-universe
+     * symbols remain covered only by this class's own existing 60s REST poll -- narrower than
+     * "every symbol a 1m plan could ever touch", but a real, meaningful improvement for the
+     * common case (a plan's own explicitly-configured symbols), not nothing.
      */
     record OneMinuteScanTarget(RiskProfile profile, BrokerCredential credential, BrokerAdapter adapter,
                                 StrategyPlan plan, String symbol) {}
@@ -423,9 +378,9 @@ public class AutonomousScannerService {
         for (RiskProfile profile : activeProfiles) {
             BrokerCredential credential = credentialRepo.findById(profile.getCredentialId()).orElse(null);
             if (credential == null || !credential.isActive()) continue;
-            // Review finding (P1-1): same PAPER-routing fix as scanForProfile -- 1m scan targets
-            // must be resolved through adapterForCredential so a PAPER credential's scans and any
-            // downstream orders stay on the simulated adapter.
+            // 1m scan targets must be resolved through adapterForCredential so a PAPER
+            // credential's scans and any downstream orders stay on the simulated adapter, same
+            // as scanForProfile.
             BrokerAdapter adapter = credentialService.adapterForCredential(credential);
             if (adapter == null) continue;
             List<StrategyPlan> plans;
@@ -440,9 +395,9 @@ public class AutonomousScannerService {
                 if (!strategyPlanService.isWithinSession(plan)) continue;
                 Set<String> symbols = new HashSet<>(TIER1_SYMBOLS);
                 if (plan.getEnabledSymbols() != null) symbols.addAll(plan.getEnabledSymbols());
-                // Review finding (P1 #6 -- same fix as scanForPlan's own identical change above):
-                // the 1m target list must be gated by the account's own explicit whitelist too --
-                // this is the other place this codebase builds a plan's symbol universe.
+                // The 1m target list must be gated by the account's own explicit whitelist too --
+                // this is the other place this codebase builds a plan's symbol universe, same
+                // reasoning as scanForPlan above.
                 symbols.retainAll(profile.getEnabledSymbols());
                 for (String symbol : symbols) {
                     targets.add(new OneMinuteScanTarget(profile, credential, adapter, plan, symbol));
@@ -462,12 +417,11 @@ public class AutonomousScannerService {
         return adapterMap;
     }
 
-    // Review finding ("1m strategy still uses a 60-second polling scheduler" -- external review,
-    // twentieth pass, P1, full context in Kline1mStreamService's own class javadoc): package-
-    // visible (not private) so that service can trigger an immediate re-scan the instant a real
-    // 1m candle closes, reusing this exact method -- including its own cooldown/dedup check,
-    // its own REST candle fetch, and its own full analysis pipeline -- rather than a second,
-    // potentially-drifting copy of any of that logic.
+    // Package-visible (not private) so Kline1mStreamService can trigger an immediate re-scan the
+    // instant a real 1m candle closes, reusing this exact method -- including its own
+    // cooldown/dedup check, its own REST candle fetch, and its own full analysis pipeline --
+    // rather than a second, potentially-drifting copy of any of that logic. See
+    // Kline1mStreamService's own class javadoc.
     void scanOneSymbol(RiskProfile profile, BrokerCredential credential, BrokerAdapter adapter, String symbol,
                                 StrategyPlan plan) {
         // Dedup key includes the plan id -- two plans watching the same symbol at different
@@ -477,12 +431,11 @@ public class AutonomousScannerService {
         String dedupKey = profile.getUserId() + "|" + profile.getCredentialId() + "|" + plan.getId() + "|" + symbol;
         java.time.Duration cooldown = java.time.Duration.ofMinutes(Math.max(1, plan.getCooldownMinutes()));
         Instant last = lastSignalAt.get(dedupKey);
-        // P3-3 fix ("lastSignalAt -- in-memory cooldown lost on restart -- persist" -- external
-        // review, full context in TradeCallRepository's own new query method javadoc): a fresh
-        // process (just restarted, or this is the first scan of this exact dedup key since
-        // startup) has no in-memory entry yet, which used to mean "never signaled, cooldown does
-        // not apply" -- wrong whenever a signal was actually emitted moments before the restart.
-        // Falls back to the last persisted TradeCallRecord for this exact user+plan+symbol only
+        // A fresh process (just restarted, or this is the first scan of this exact dedup key
+        // since startup) has no in-memory entry yet -- treating that as "never signaled, cooldown
+        // does not apply" would be wrong whenever a signal was actually emitted moments before
+        // the restart. Falls back to the last persisted TradeCallRecord for this exact
+        // user+plan+symbol only
         // when the in-memory map has nothing (one extra DB read on the miss path only, not every
         // scan), and immediately re-populates the in-memory map either way so this fallback is
         // never repeated for the same key while this process keeps running.
@@ -512,11 +465,9 @@ public class AutonomousScannerService {
         // dropped one toward the minimum.
         if (candles == null || candles.size() < MIN_CANDLES_FOR_SIGNAL + 1) return;
 
-        // Review finding ("Scanner universe is a fixed list, not liquidity/volume/spread-aware"
-        // -- P1): confirmed real for user-added symbols specifically -- TIER1_SYMBOLS is a
-        // fixed, known-liquid list this codebase already trusts, but profile.getEnabledSymbols()
-        // lets a user add ANY symbol, with no check that it's actually liquid enough to trade
-        // safely. Uses the candles already fetched above (no new API call, no new data pipeline
+        // TIER1_SYMBOLS is a fixed, known-liquid list this codebase already trusts, but
+        // profile.getEnabledSymbols() lets a user add any symbol, with no check that it's
+        // actually liquid enough to trade safely. Uses the candles already fetched above (no new API call, no new data pipeline
         // -- Candle.volume already exists), so this costs nothing extra. Deliberately scoped to
         // non-TIER1 symbols only: applying this to the core, already-vetted symbols too would
         // risk silently skipping BTC/ETH/etc. during a temporary, ordinary volume dip, which is
@@ -528,8 +479,7 @@ public class AutonomousScannerService {
             // very different prices (a low-price altcoin's base-asset volume can be huge in its
             // own units while being genuinely illiquid in real dollar terms). volume * close
             // approximates real, comparable QUOTE-asset (USDT) volume per candle instead, the
-            // actual, cross-symbol-comparable liquidity measure this check needs -- caught and
-            // fixed before this shipped, not the first version of this check.
+            // actual, cross-symbol-comparable liquidity measure this check needs.
             double avgQuoteVolume = candles.stream().mapToDouble(c -> c.volume() * c.close()).average().orElse(0);
             if (avgQuoteVolume < MIN_AVG_QUOTE_VOLUME_FOR_USER_SYMBOL) {
                 log.info("Autonomous scan: skipping user-added symbol {} -- average quote-asset volume ${} over the last "
@@ -539,9 +489,8 @@ public class AutonomousScannerService {
             }
         }
 
-        // Review finding ("#8 — Market-data quality engine" — "every strategy asks:
-        // isMarketSafeToTrade(symbol)? If NO -> no trade"): the review's own suggested
-        // integration point, wired in exactly as described — before analysis, not after.
+        // Market-data quality gate: every strategy effectively asks isMarketSafeToTrade(symbol)?
+        // before analysis runs, not after.
         var quality = marketDataQualityService.isMarketSafeToTrade(symbol, candles, timeframeToSeconds(scanInterval), adapter, credential.getMode());
         if (!quality.safe()) {
             log.info("Autonomous scan: skipping {} ({}) — market data quality check failed: {}",
@@ -549,36 +498,29 @@ public class AutonomousScannerService {
             return;
         }
 
-        // Real compile error, confirmed by the person's own local build ("cannot find symbol
-        // variable closedCandles" at the smcEngineService.analyze/marketRegimeService.detect/
-        // volumeProfileService.analyze call sites further below): this declaration used to live
-        // INSIDE the try block immediately below, whose scope closes well before those later
-        // call sites -- a genuine Java scoping bug, not a logic error in the analysis itself.
-        // Moved to this method's own scope so both the signal-analysis try block below AND the
-        // SMC/regime/volume-profile enrichment try block further down can both see it.
+        // Declared at this method's own scope so both the signal-analysis try block below and
+        // the SMC/regime/volume-profile enrichment try block further down can both see it.
         //
-        // Review finding ("Scanner has one trading-quality issue" — "The latest Binance
-        // kline can be the currently forming candle... the signal can change 10:00 -> LONG,
-        // 10:15 -> WAIT, 10:30 -> LONG, 10:45 -> SHORT all inside the same hourly candle"):
-        // confirmed real — getRecentCandles' own last element is the in-progress candle for
-        // the current interval, not a closed one. Dropped before strategy analysis
+        // getRecentCandles' own last element is the in-progress candle for the current
+        // interval, not a closed one -- without dropping it, the signal could flip repeatedly
+        // within the same still-forming candle (10:00 -> LONG, 10:15 -> WAIT, 10:30 -> LONG,
+        // 10:45 -> SHORT all inside the same hourly candle). Dropped before strategy analysis
         // specifically (not from the quality check above, which benefits from seeing the
         // freshest — possibly still-forming — candle to judge whether data is actually
-        // flowing right now). The review's own framing: for autonomous trading, this should
-        // be an explicit choice, not accidental behavior — closed-candle-only is that choice.
+        // flowing right now). For autonomous trading, this is an explicit choice, not
+        // accidental behavior — closed-candle-only is that choice.
         List<Candle> closedCandles = candles.subList(0, candles.size() - 1);
 
         com.tradevision.service.ServerSignalEngine.Signal signal;
         try {
-            // Review finding ("Scanner can still repeatedly process the same closed candle" --
-            // P1, full context in lastProcessedCandleTime's own field comment): the actual gate
-            // -- if the last-closed candle's own timestamp is the SAME one already analyzed for
+            // If the last-closed candle's own timestamp is the same one already analyzed for
             // this exact credential+symbol+timeframe, skip re-running the strategy engine on
-            // data that hasn't changed. A genuinely new closed candle (a different timestamp)
-            // always proceeds. This check is deliberately scoped to skipping wasted STRATEGY
-            // ANALYSIS work specifically -- it runs after the quality check above (which still
-            // benefits from checking every scan, not just new candles) and before signal
-            // creation, not as an early-return before this method's other responsibilities.
+            // data that hasn't changed. See lastProcessedCandleTime's own field comment. A
+            // genuinely new closed candle (a different timestamp) always proceeds. This check is
+            // deliberately scoped to skipping wasted strategy analysis work specifically -- it
+            // runs after the quality check above (which still benefits from checking every scan,
+            // not just new candles) and before signal creation, not as an early-return before
+            // this method's other responsibilities.
             String candleDedupKey = profile.getCredentialId() + "|" + symbol + "|" + scanInterval;
             long lastClosedCandleTime = closedCandles.get(closedCandles.size() - 1).time();
             Long previouslyProcessed = lastProcessedCandleTime.get(candleDedupKey);
@@ -587,15 +529,14 @@ public class AutonomousScannerService {
                     symbol, scanInterval, lastClosedCandleTime);
                 return;
             }
-            // Review finding ("Scanner deduplication is JVM-local" -- external review, twenty-
-            // second pass, P1, full context in ScannedCandle's own class javadoc): the actual
-            // fix -- the in-memory check just above is a fast, same-JVM-only pre-filter (kept
-            // for its own sake, avoiding a DB round trip on the common case of repeatedly
-            // scanning the SAME still-current candle within one process); this is the real,
-            // cross-instance, cross-restart authoritative claim. If this exact
-            // credential/symbol/timeframe/candle-close-time was already claimed by ANY instance
-            // (including this one, in an earlier process before a restart), skip -- a genuinely
-            // new candle (a different close time) always proceeds regardless of history.
+            // The in-memory check just above is a fast, same-JVM-only pre-filter (kept for its
+            // own sake, avoiding a DB round trip on the common case of repeatedly scanning the
+            // same still-current candle within one process); this is the cross-instance,
+            // cross-restart authoritative claim. See ScannedCandle's own class javadoc. If this
+            // exact credential/symbol/timeframe/candle-close-time was already claimed by any
+            // instance (including this one, in an earlier process before a restart), skip -- a
+            // genuinely new candle (a different close time) always proceeds regardless of
+            // history.
             if (!tryClaimCandleProcessing(candleDedupKey, lastClosedCandleTime, credential.getMode())) {
                 log.debug("Autonomous scan: skipping {} ({}) -- candle at {} already claimed by another instance/process, "
                     + "nothing new to evaluate.", symbol, scanInterval, lastClosedCandleTime);
@@ -603,12 +544,10 @@ public class AutonomousScannerService {
                 return;
             }
 
-            // Review finding ("Strategy engine is not the complete strategy actually
-            // represented by the frontend" -- P1, full context in ServerSignalEngine.analyze's
-            // own new overload javadoc): fetched fresh before every scan, not cached -- this is
-            // a single, cheap, indexed lookup (or a fast in-memory default when nothing's been
-            // learned yet for this symbol), not worth caching at the cost of scoring against a
-            // stale weight snapshot. "CRYPTO" matches this scanner's own hardcoded market value
+            // Fetched fresh before every scan, not cached -- this is a single, cheap, indexed
+            // lookup (or a fast in-memory default when nothing's been learned yet for this
+            // symbol), not worth caching at the cost of scoring against a stale weight snapshot.
+            // See ServerSignalEngine.analyze's own overload javadoc. "CRYPTO" matches this scanner's own hardcoded market value
             // used identically a few lines below when this signal is later saved. Wrapped in its
             // own, inner try/catch specifically: this lookup is purely additive to scoring, not
             // essential to whether a signal can be computed at all -- a transient MongoDB
@@ -636,38 +575,33 @@ public class AutonomousScannerService {
         // (AutoTradeService never executes SHORT/WAIT). No point creating a record that would
         // just be silently ignored downstream.
         if (!"LONG".equalsIgnoreCase(signal.direction())) {
-            // User's own explicit multi-strategy-plan design ("15m strategy changes strongly
-            // bearish? -> EXIT"), full context in checkSignalReversalExit's own javadoc: a
-            // SHORT/bearish signal is exactly what this codebase would otherwise silently drop
+            // A SHORT/bearish signal is exactly what this codebase would otherwise silently drop
             // here -- but before dropping it, it's still the real, ground-truth signal a plan
             // with exitOnSignalReversal enabled needs to see, for the position it might already
-            // hold on this exact symbol.
+            // hold on this exact symbol. See checkSignalReversalExit's own javadoc.
             checkSignalReversalExit(profile, credential, symbol, plan, signal);
             return;
         }
-        // User's own explicit design: "A plan explicitly owns its direction." A plan configured
-        // SHORT-only must not silently substitute a LONG signal it never asked for -- even
-        // though this codebase can only ever EXECUTE long-only anyway (the check above), a plan
-        // that only wants SHORT setups shouldn't have LONG ones sneaked in just because SHORT
-        // isn't executable.
+        // A plan explicitly owns its direction. A plan configured SHORT-only must not silently
+        // substitute a LONG signal it never asked for -- even though this codebase can only ever
+        // execute long-only anyway (the check above), a plan that only wants SHORT setups
+        // shouldn't have LONG ones sneaked in just because SHORT isn't executable.
         if (plan.getDirection() == TradeDirection.SHORT) return;
         // Cheap pre-filter, not a substitute for AutoTradeService's own authoritative
-        // confidence/finite-value gate (P0 #4/#8) — that gate still runs regardless, this just
-        // avoids creating a database record for a signal that would obviously fail it anyway.
+        // confidence/finite-value gate — that gate still runs regardless, this just avoids
+        // creating a database record for a signal that would obviously fail it anyway.
         if (!Double.isFinite(signal.confidence()) || signal.confidence() < plan.getMinConfidence()) return;
         if (!Double.isFinite(signal.entry()) || !Double.isFinite(signal.stopLoss()) || !Double.isFinite(signal.target1())
                 || signal.entry() <= 0 || signal.stopLoss() <= 0 || signal.target1() <= 0) return;
 
         TradeCallRequest req = new TradeCallRequest();
-        // Real bug, confirmed by a live user's own test run: candleCount was never set here, so it was always
-        // null -> TradeCallService.saveCall() defaulted it to 0 -> NoTradeFilterService's sufficientHistory
-        // check (candleCount >= 50) failed for every single signal, on every symbol, permanently -- the entire
-        // autonomous trading pipeline never got past this gate, no matter how much real history existed.
+        // candleCount feeds NoTradeFilterService's sufficientHistory check (candleCount >= 50) --
+        // must be set explicitly here or every signal on every symbol would fail that gate
+        // regardless of how much real history existed.
         req.setCandleCount(closedCandles.size());
-        // Review finding ("Client-Side Signal Generation" — full context in this class's own
-        // field comments above): additive, non-fatal by design (matching this whole codebase's
-        // own established pattern) — a bug in this enrichment must never block a signal the
-        // rest of the pipeline would otherwise accept. Populates TradeCallRequest's own
+        // Additive, non-fatal by design (matching this whole codebase's own established
+        // pattern) — a bug in this enrichment must never block a signal the rest of the
+        // pipeline would otherwise accept. Populates TradeCallRequest's own
         // pre-existing smcBias/regime/vpLocation/etc. fields, which the manual frontend path
         // never actually populates either (checked directly, not assumed) -- these feed the ML
         // feature-export pipeline (TradeFeatures/MLDatasetExportService), not execution.
@@ -703,30 +637,25 @@ public class AutonomousScannerService {
             log.debug("Autonomous scan: SMC/regime/volume-profile enrichment failed for {} (non-fatal, additive only): {}", symbol, e.getMessage());
         }
 
-        // Review finding ("Order-flow enrichment is an expensive, uncapped per-symbol-per-scan
-        // cost that doesn't yet affect the decision" -- P1): confirmed real -- checked directly
-        // whether this enrichment feeds the actual trading decision (it doesn't: this call's own
-        // combine() below passes null for smc/orderFlow/volumeProfile/regime, since this is pure
+        // This enrichment does not feed the actual trading decision: this call's own combine()
+        // below passes null for smc/orderFlow/volumeProfile/regime, since this is pure
         // observability populating TradeCallRequest fields, not the execution gate --
         // NoTradeFilterService's own separate combine() call is that gate, and deliberately
-        // excludes order-flow too, for a documented reason: a live Binance Futures call is a new
-        // external failure surface this codebase has chosen not to add to a money-moving
-        // decision path). Given it doesn't affect the decision, the honest fix for its own real
-        // cost isn't folding it in -- it's making it skippable under real budget pressure,
-        // using the request-weight tracking that already exists and is already real
-        // (ExchangeHealthService.recordUsedWeight is wired to Binance's own X-MBX-USED-WEIGHT-1M
-        // header on every response) but was never actually gating anything before this.
+        // excludes order-flow too, since a live Binance Futures call is a new external failure
+        // surface this codebase has chosen not to add to a money-moving decision path. Since it
+        // doesn't affect the decision, it's made skippable under real budget pressure, using the
+        // request-weight tracking that already exists (ExchangeHealthService.recordUsedWeight is
+        // wired to Binance's own X-MBX-USED-WEIGHT-1M header on every response).
         var budget = exchangeHealth.checkRequestBudget();
         if (!budget.healthy()) {
             log.debug("Autonomous scan: skipping order-flow/MTF enrichment for {} -- request-weight budget at {}/{} ({}%), "
                 + "reserving remaining capacity for actual trading calls.", symbol, budget.usedWeight(), budget.limit(),
                 Math.round(budget.usedFraction() * 100));
         } else {
-        // Review finding ("Client-Side Signal Generation" -- continued, full context in this
-        // class's own field comments): order-flow and real multi-timeframe context, in their
-        // own separate try/catch -- a failure here must not discard the SMC/regime/volume-profile
-        // enrichment already captured above, and vice versa. Independent per-component failure
-        // isolation, the same principle as everywhere else in this codebase.
+        // Order-flow and real multi-timeframe context, in their own separate try/catch -- a
+        // failure here must not discard the SMC/regime/volume-profile enrichment already
+        // captured above, and vice versa. Independent per-component failure isolation, the same
+        // principle as everywhere else in this codebase.
         try {
             var orderFlow = orderFlowService.analyze(symbol);
             req.setOfBias(orderFlow.overallBias());
@@ -759,15 +688,13 @@ public class AutonomousScannerService {
         req.setTarget1(signal.target1());
         req.setTarget2(signal.target2());
         req.setTarget3(signal.target3());
-        // Review finding ("Strategy engine is not the complete strategy actually represented by
-        // the frontend" -- P1, full context in MLWeightService's own header javadoc): these 4
-        // fields used to never be set for an autonomously-discovered signal at all (confirmed by
-        // reading this exact construction site, not assumed) -- this record's own TradeFeatures
-        // would silently default to rsi=0/macdBull=false/patterns=[]/volumeRatio=0 for every
-        // server-side signal, which MLWeightService.recordOutcome would then learn from as if
-        // those were the real values. Wired from the same Signal object that already computed
-        // them internally in ServerSignalEngine.analyze -- see Signal's own updated record
-        // definition for why these 4 raw values are captured on it at all.
+        // These 4 fields must be set explicitly for an autonomously-discovered signal, or this
+        // record's own TradeFeatures would silently default to rsi=0/macdBull=false/
+        // patterns=[]/volumeRatio=0, which MLWeightService.recordOutcome would then learn from
+        // as if those were the real values. Wired from the same Signal object that already
+        // computed them internally in ServerSignalEngine.analyze -- see Signal's own record
+        // definition for why these 4 raw values are captured on it at all. See
+        // MLWeightService's own header javadoc.
         req.setRsi(signal.rsi14());
         req.setMacdBull(signal.macdBull());
         req.setPatterns(signal.patterns());
@@ -785,16 +712,14 @@ public class AutonomousScannerService {
     }
 
     /**
-     * User's own explicit multi-strategy-plan design: "Don't make TP/SL the only way out. Each
-     * strategy plan should support: Exit Policy... Signal Reversal... 15m strategy changes
-     * strongly bearish? -> EXIT." Opt-in per plan (exitOnSignalReversal, default false) --
-     * matches every other exit-policy feature this session built. Only ever closes the position
-     * THIS plan itself opened on this exact symbol (via
+     * Lets a strategy plan exit on a signal reversal rather than only via TP/SL. Opt-in per plan
+     * (exitOnSignalReversal, default false) -- matches every other exit-policy feature in this
+     * codebase. Only ever closes the position this plan itself opened on this exact symbol (via
      * PositionRepository.findByPlanIdAndSymbolAndStatus's own precise, plan-scoped lookup), so a
      * bearish signal under one plan can never reach across and close a different plan's own,
-     * separate position on the same coin -- the user's own named risk ("multiple plans could all
-     * buy SOL and accidentally create excessive exposure" applies just as much to accidentally
-     * CLOSING each other's positions).
+     * separate position on the same coin -- the same exposure-isolation concern as multiple
+     * plans accidentally creating excessive combined exposure applies just as much to
+     * accidentally closing each other's positions.
      */
     private void checkSignalReversalExit(RiskProfile profile, BrokerCredential credential, String symbol,
                                           StrategyPlan plan, ServerSignalEngine.Signal signal) {
@@ -811,9 +736,8 @@ public class AutonomousScannerService {
         }
         if (openPositions.isEmpty()) return;
 
-        // Review finding (P1-1): same PAPER-routing fix as scanForProfile -- reversal-exit
-        // flattens must go through the same adapter reconcile/entry uses, or a "paper" credential
-        // gets real testnet orders sent against it.
+        // Reversal-exit flattens must go through the same adapter reconcile/entry uses, same as
+        // scanForProfile, or a "paper" credential gets real testnet orders sent against it.
         BrokerAdapter adapter = credentialService.adapterForCredential(credential);
         if (adapter == null) return;
         String apiKey = credentialService.decrypt(credential, true);
@@ -822,9 +746,9 @@ public class AutonomousScannerService {
             log.warn("Plan \"{}\" ({}) detected a SHORT/bearish reversal signal on {} while holding an OPEN position from this exact "
                 + "plan -- emergency-flattening per the plan's own configured exit policy.", plan.getName(), plan.getId(), symbol);
             try {
-                // Review finding (P1-2): a signal-reversal exit is routine, plan-configured
-                // behavior, not a protection failure -- uses exitPosition() so a clean close
-                // doesn't halt the whole profile or raise a CRITICAL incident.
+                // A signal-reversal exit is routine, plan-configured behavior, not a protection
+                // failure -- uses exitPosition() so a clean close doesn't halt the whole profile
+                // or raise a CRITICAL incident.
                 positionSafetyService.exitPosition(credential, adapter, apiKey, apiSecret, position,
                     "SIGNAL_REVERSAL: plan \"" + plan.getName() + "\" (" + plan.getId() + ") has exitOnSignalReversal enabled, and a "
                         + "new SHORT/bearish signal was detected on " + symbol + " while this position was still open.");

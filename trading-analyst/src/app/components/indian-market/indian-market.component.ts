@@ -34,9 +34,6 @@ export class IndianMarketComponent implements OnInit, OnDestroy {
   private smcSvc   = inject(SmcEngineService);
   private vpSvc    = inject(VolumeProfileService);
   private regimeSvc = inject(MarketRegimeService);
-  // P3-4 fix ("client 'risk engine' ... unrelated to server limits" -- external review): this
-  // RiskEngineService injection was genuinely dead code -- never referenced anywhere else in this
-  // component, confirmed by grepping this file before removing it, not assumed.
   private tradeHistory = inject(TradeHistoryService);
   selectedForHistory = '';
   historyRefresh = 0;
@@ -58,10 +55,9 @@ export class IndianMarketComponent implements OnInit, OnDestroy {
   selectedStock: LiveQuote | null = null;
   lastUpdated    = '';
   dataSource     = 'Loading...';
-  // Review finding (P1 #10 — "Index fallback is also fake market data"): the INITIAL state
-  // shown before the first live fetch resolves was ALSO these exact static numbers with no
-  // stale marking — the same gap, just at component construction time rather than in the
-  // fallback function itself.
+  // Placeholder index values shown before the first live fetch resolves; marked
+  // stale so the template can flag them as not-yet-live rather than presenting
+  // them as current data.
   nifty          = { value: '24,013', change: '-154.90', pct: '-0.64', up: false, stale: true };
   sensex         = { value: '79,212', change: '-512.30', pct: '-0.64', up: false, stale: true };
 
@@ -141,11 +137,9 @@ export class IndianMarketComponent implements OnInit, OnDestroy {
       daily:  this.liveData.getIndianKlines(stock.symbol + '.NS'),
       weekly: this.liveData.getIndianKlinesOnce(stock.symbol + '.NS', '1y', '1wk')
     }).subscribe(({ daily, weekly }) => {
-      // Review finding (P1 #9 — "Synthetic candles are still used to generate trading
-      // analysis" — "I'd actually make it P0 for anything connected to live trading"):
-      // confirmed real — this fell back to Math.random()-generated candles and fed them
-      // straight into the real signal pipeline with no indication to the user. Matches the
-      // pattern analyzeIntraday() below already correctly uses: refuse rather than fabricate.
+      // Require enough real daily candles before running the signal pipeline —
+      // refuse to analyze rather than fabricate a call on insufficient data,
+      // the same guard analyzeIntraday() below applies for its timeframe.
       if (daily.length < 20) {
         this.analyzing = '';
         this.tradeCall = null as any;
@@ -219,10 +213,6 @@ export class IndianMarketComponent implements OnInit, OnDestroy {
       direction: this.tradeCall.direction,
     };
   }
-
-  // Review finding (P1 #9 — full context above at analyze()): syntheticCandles() was removed
-  // entirely, not just unused — Math.random()-generated fake market history has no legitimate
-  // caller left in this file and shouldn't be a temptation for a future call site to reach for.
 
   openChart(symbol: string, event?: Event) {
     event?.stopPropagation();

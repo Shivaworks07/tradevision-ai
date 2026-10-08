@@ -32,23 +32,19 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding ("StrategyPlan update() / setEnabled() can lose concurrent changes" -- external
- * review, fifteenth pass, P0, full context in StrategyPlan.version's own field javadoc): this
- * session's own claimPlanExecution/@Version design has only ever been verified against Mockito,
- * never against a real MongoDB actually serializing concurrent writes to the same plan document
- * -- same honest gap as every other integration test in this package.
+ * Verifies that StrategyPlan's update()/setEnabled() cannot lose concurrent changes, against
+ * a real MongoDB actually serializing concurrent writes to the same plan document, rather
+ * than only against Mockito.
  *
- * HONEST LIMITATION, same as every other integration test in this package: `docker ps` fails
- * outright in this sandbox -- no Docker daemon is available here, so I have not executed this
- * test and cannot confirm it passes. Run
- * `mvn test -Dtest=StrategyPlanVersionIntegrationTest` on a machine with Docker available to
- * actually confirm this before trusting it.
+ * Requires Docker (via Testcontainers) and is skipped automatically when no Docker daemon is
+ * available. Run `mvn test -Dtest=StrategyPlanVersionIntegrationTest` on a machine with
+ * Docker to execute it.
  */
 @Testcontainers(disabledWithoutDocker = true)
-// P1-16 fix: spring.profiles.active now defaults to "prod" (fail-closed), which has no default
-// secrets at all -- without this, this Testcontainers-backed context would fail to start
-// outside a real deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, the
-// same secrets this test always implicitly relied on before that default changed.
+// spring.profiles.active defaults to "prod" (fail-closed), which has no default secrets at
+// all -- without this, this Testcontainers-backed context would fail to start outside a real
+// deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, which has the
+// secrets this test relies on.
 @ActiveProfiles("local")
 @SpringBootTest
 class StrategyPlanVersionIntegrationTest {
@@ -88,8 +84,8 @@ class StrategyPlanVersionIntegrationTest {
     }
 
     /**
-     * The review's own first required test: "two concurrent updates -> exactly one succeeds ->
-     * version increments once -> no lost fields."
+     * Two concurrent updates to the same plan -> exactly one succeeds -> version increments
+     * once -> no lost fields.
      */
     @Test
     @DisplayName("update(): against a REAL MongoDB, two concurrent updates to the SAME plan cannot both silently win -- exactly one succeeds, the other throws OptimisticLockingFailureException, and the surviving write's own fields are genuinely intact, not a merge of both")
@@ -144,12 +140,12 @@ class StrategyPlanVersionIntegrationTest {
         assertThat(allDone.await(30, TimeUnit.SECONDS)).isTrue();
         executor.shutdown();
 
-        // The actual review fix under test: NOT both can have won.
+        // Not both can have won.
         long successCount = succeeded.stream().filter(Boolean::booleanValue).count();
         assertThat(successCount).isEqualTo(1);
 
-        // Version incremented exactly once total, not twice (the lost-update bug's own second
-        // symptom the review named) -- and not zero (a working update must still increment it).
+        // Version incremented exactly once total, not twice (the lost-update symptom this
+        // guards against) -- and not zero (a working update must still increment it).
         StrategyPlan finalState = strategyPlanRepo.findById(planId).orElseThrow();
         assertThat(finalState.getVersion()).isEqualTo(2L);
 
@@ -162,7 +158,7 @@ class StrategyPlanVersionIntegrationTest {
     }
 
     /**
-     * The review's own second required test: "update vs setEnabled -> no lost update."
+     * update() vs setEnabled() -> no lost update.
      */
     @Test
     @DisplayName("update() vs setEnabled(): against a REAL MongoDB, a concurrent update() and setEnabled() on the same plan cannot both silently win either -- the same optimistic-lock guarantee holds across these two different write paths, not just within one of them")
@@ -211,9 +207,8 @@ class StrategyPlanVersionIntegrationTest {
     }
 
     /**
-     * The review's own third required test: "update vs claimPlanExecution -> old signal cannot
-     * execute under an incorrectly reused version." Proves the actual end-to-end point of this
-     * entire fix -- a concurrency-safe version field is what makes claimPlanExecution's own
+     * update() vs claimPlanExecution() -> a stale signal cannot execute under an incorrectly
+     * reused version. A concurrency-safe version field is what makes claimPlanExecution's own
      * atomic authorization boundary meaningful in the first place.
      */
     @Test

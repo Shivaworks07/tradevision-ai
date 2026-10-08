@@ -16,12 +16,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 
 /**
- * Review finding ("Position Ledger is still not authoritative" -- full context in
- * PositionLedgerService's own javadoc): no test file existed for this class at all before this
- * pass, despite it now being where every position-close and entry-time reconciliation check in
- * this codebase gets its answer from. Covers the reconstruction math itself and the
- * ReconcileResult contract its callers (AutoTradeService, PositionMonitorService,
- * PositionSafetyService) now depend on to decide whether to escalate.
+ * Covers PositionLedgerService, where every position-close and entry-time reconciliation check
+ * in this codebase gets its answer from: the reconstruction math itself and the ReconcileResult
+ * contract its callers (AutoTradeService, PositionMonitorService, PositionSafetyService) depend
+ * on to decide whether to escalate.
  */
 @ExtendWith(MockitoExtension.class)
 class PositionLedgerServiceTest {
@@ -31,16 +29,9 @@ class PositionLedgerServiceTest {
     @InjectMocks PositionLedgerService service;
 
     private FillRecord fill(String side, double qty) {
-        // Review finding (critical, discovered while extending this test file for
-        // reconstructTotalFees -- full context in PositionLedgerService's own new method
-        // javadoc): FillRecord has had NO setters since this session's own earlier immutability
-        // fix (@Data replaced with @Getter-only, see FillRecord's own javadoc) except setId --
-        // this helper's own f.setSide()/f.setQuantity() calls do not exist on the class at all,
-        // meaning this ENTIRE TEST FILE could not compile, which would break the WHOLE backend
-        // test suite's compilation (one file's compile error blocks every other test file too).
-        // Fixed to use the all-args constructor instead, matching every other fixture in this
-        // codebase written since the immutability fix (SlippageMetricsServiceTest's own order()
-        // helper, etc.).
+        // FillRecord has no setters except setId (@Getter-only), so fixtures use the all-args
+        // constructor instead, matching other fixtures in this codebase (e.g.
+        // SlippageMetricsServiceTest's order() helper).
         return new FillRecord(null, null, null, null, null, null, null,
             null, null, null, side,
             null, BigDecimal.valueOf(qty),
@@ -80,8 +71,7 @@ class PositionLedgerServiceTest {
     @DisplayName("reconstructPosition: fill records with a null quantity are safely skipped rather than NPEing the whole reconstruction")
     void reconstructPosition_nullQuantityFill_safelySkipped() {
         // Constructed directly (not via the fill() helper + a setter afterward) -- FillRecord
-        // has had no setters since this session's own earlier immutability fix except setId,
-        // same reasoning as the fill() helper's own fix above.
+        // has no setters except setId, same reasoning as the fill() helper above.
         FillRecord nullQtyFill = new FillRecord(null, null, null, null, null, null, null,
             null, null, null, "BUY",
             null, null,
@@ -117,7 +107,7 @@ class PositionLedgerServiceTest {
     }
 
     @Test
-    @DisplayName("reconcileAgainstLedger: no ledger data at all is now treated as NO_LEDGER_DATA, NOT a match -- the actual fix for the review's own follow-up (\"PositionLedgerService still treats 'no ledger data' as a match\"). matches() correctly returns false so every existing caller escalates without needing any change.")
+    @DisplayName("reconcileAgainstLedger: no ledger data at all is treated as NO_LEDGER_DATA, not a match -- matches() returns false so every caller escalates")
     void reconcileAgainstLedger_noLedgerData_isNotAMatch() {
         when(fillRecordRepo.findByOrderId("order1")).thenReturn(List.of());
 
@@ -140,7 +130,7 @@ class PositionLedgerServiceTest {
     }
 
     @Test
-    @DisplayName("reconcilePositionAgainstLedger: a position believed fully closed but whose ledger still nets to a real remaining quantity is a genuine mismatch -- exactly the scenario the review's own escalation exists for")
+    @DisplayName("reconcilePositionAgainstLedger: a position believed fully closed but whose ledger still nets to a real remaining quantity is a genuine mismatch -- exactly the scenario escalation exists for")
     void reconcilePositionAgainstLedger_incompletelyClosedPosition_isMismatch() {
         when(fillRecordRepo.findByPositionIdOrderByExecutedAtAsc("pos1")).thenReturn(
             List.of(fill("BUY", 1.0), fill("SELL", 0.7))); // only 0.7 of 1.0 actually sold, per the ledger
@@ -151,8 +141,7 @@ class PositionLedgerServiceTest {
         assertThat(result.ledgerQuantity()).isEqualByComparingTo("0.3");
     }
 
-    // ── resolvedQuantity (review finding "Position Ledger is still not authoritative" -- full
-    // context in ReconcileResult.resolvedQuantity's own javadoc) ────────────────
+    // ── resolvedQuantity (see ReconcileResult.resolvedQuantity's own javadoc) ────────────────
 
     @Test
     @DisplayName("resolvedQuantity: a genuine MISMATCH with a known-complete ledger recording resolves to the LEDGER's value -- the actual derivation, not just a louder warning")
@@ -194,8 +183,7 @@ class PositionLedgerServiceTest {
         assertThat(result.resolvedQuantity(false)).isEqualByComparingTo("1.0");
     }
 
-    // ── reconstructTotalFees (review finding "Position P&L architecture is still scattered" --
-    // continued, full context in the method's own javadoc) ────────────────
+    // ── reconstructTotalFees (see the method's own javadoc) ────────────────
 
     private FillRecord fillWithQuoteCommission(double qty, Double quoteCommission) {
         return new FillRecord(null, null, null, null, null, null, null,

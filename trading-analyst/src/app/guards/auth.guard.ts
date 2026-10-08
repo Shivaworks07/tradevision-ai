@@ -2,12 +2,9 @@ import { inject } from '@angular/core';
 import { CanActivateFn, Router } from '@angular/router';
 import { AuthService } from '../services/auth.service';
 
-// Review finding ("Frontend still caches non-secret user profile in localStorage; residual XSS
-// surface for session continuity" -- external review, nineteenth pass, P1, full context in
-// AuthService's own sessionReady field comment): this guard now awaits sessionReady before ever
-// reading isLoggedIn -- without this, a page refresh on a protected route could run this check
-// BEFORE the new, async session-restoration call resolves, incorrectly redirecting a genuinely
-// logged-in user (whose HttpOnly cookie is perfectly valid) to /login every time.
+// Awaits sessionReady before reading isLoggedIn, since session restoration is an async
+// call — without this, a page refresh on a protected route could run this check before
+// that call resolves and incorrectly redirect a genuinely logged-in user to /login.
 export const authGuard: CanActivateFn = async () => {
   const auth   = inject(AuthService);
   const router = inject(Router);

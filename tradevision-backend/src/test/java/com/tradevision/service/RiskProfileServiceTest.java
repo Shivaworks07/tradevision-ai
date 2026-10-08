@@ -30,10 +30,9 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
- * Review finding (P1 #6 — "LIVE auto-trade authorization doesn't revalidate broker
- * permissions"): confirmed real — the only checks were the confirmation phrase and the stored
- * risk profile, never the broker's actual CURRENT permission state. Verifies the fix re-queries
- * and enforces exactly the same permission rules used at connection time.
+ * Verifies that LIVE auto-trade authorization re-queries and enforces the broker's actual
+ * current permission state, not just the confirmation phrase and stored risk profile, applying
+ * exactly the same permission rules used at connection time.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -46,18 +45,15 @@ class RiskProfileServiceTest {
     @Mock PositionRepository positionRepo;
     @Mock IncidentService incidentService;
     @Mock BrokerAdapter adapter;
-    // Review finding ("Risk-profile updates/resume can race with safety state" -- P0, full
-    // context in RiskProfileService.doUpsert's own comment): needed now that halt/resume/
-    // authorizeLiveAutoTrade/revokeLiveAutoTrade/doUpsert (for an existing profile) all use a
-    // targeted mongoTemplate.updateFirst() instead of a full riskProfileRepo.save().
+    // Needed because halt/resume/authorizeLiveAutoTrade/revokeLiveAutoTrade/doUpsert (for an
+    // existing profile) all use a targeted mongoTemplate.updateFirst() instead of a full
+    // riskProfileRepo.save(), to avoid racing with concurrent safety-state writes.
     @Mock org.springframework.data.mongodb.core.MongoTemplate mongoTemplate;
-    // Review finding ("Resume does not prove existing positions are protected" -- P0, full
-    // context in RiskProfileService.resume's own javadoc): needed now that resume checks for
-    // unresolved UNKNOWN/RECONCILIATION_REQUIRED orders and unresolved CRITICAL incidents.
-    // Mockito's own real default for an unstubbed List-returning method is an empty list, which
-    // is the correct, safe "nothing unresolved" default for these two -- no explicit stub
-    // needed for the happy path, only for tests that specifically want to exercise the new
-    // blocking checks.
+    // Needed because resume checks for unresolved UNKNOWN/RECONCILIATION_REQUIRED orders and
+    // unresolved CRITICAL incidents. Mockito's own real default for an unstubbed
+    // List-returning method is an empty list, which is the correct, safe "nothing unresolved"
+    // default for these two -- no explicit stub needed for the happy path, only for tests that
+    // specifically want to exercise the blocking checks.
     @Mock com.tradevision.repository.OrderRepository orderRepo;
     @Mock StrategyPlanService strategyPlanService;
     @Mock com.tradevision.repository.UserRepository userRepo;
@@ -65,11 +61,8 @@ class RiskProfileServiceTest {
     @Mock com.tradevision.repository.BrokerCredentialRepository credentialRepo;
     @Mock com.tradevision.repository.TradingIncidentRepository tradingIncidentRepo;
     @Mock com.tradevision.config.StartupState startupState;
-    // Audit item P0-1, full context in LiveCanaryRecord's own class javadoc.
     @Mock com.tradevision.service.LiveCanaryService liveCanaryService;
-    // Audit item P1-5, full context in RiskProfileService.authorizeLiveAutoTrade's own updated
-    // javadoc: needed now that authorization also requires a fresh step-up OTP verified via
-    // AuthService.
+    // Needed because authorization also requires a fresh step-up OTP verified via AuthService.
     @Mock AuthService authService;
 
     @InjectMocks RiskProfileService service;
@@ -90,11 +83,9 @@ class RiskProfileServiceTest {
         profile.setId("profile1"); // an EXISTING, already-persisted profile -- realistic for every method under test here, which all operate via get()/findByUserIdAndCredentialId on a profile that already exists
         profile.setUserId("user1");
         profile.setCredentialId("cred1");
-        // P0-6 fix ("LIVE risk-limit enforcement" -- full context in
-        // authorizeLiveAutoTrade's own updated javadoc): a fully-configured, healthy default so
-        // every existing LIVE-authorization test in this file, none of which are about this
-        // specific new gate, is unaffected by it -- see the dedicated
-        // incompleteLiveRiskLimits_* tests below for the gate itself.
+        // A fully-configured, healthy default so every existing LIVE-authorization test in this
+        // file, none of which are about the LIVE risk-limit gate, is unaffected by it -- see the
+        // dedicated incompleteLiveRiskLimits_* tests below for the gate itself.
         profile.setDailyLossLimitQuote(java.math.BigDecimal.valueOf(25));
         profile.setMaxPositionQuoteAmount(java.math.BigDecimal.valueOf(50));
         profile.setMaxTotalExposureQuote(java.math.BigDecimal.valueOf(100));
@@ -103,19 +94,14 @@ class RiskProfileServiceTest {
 
         when(riskProfileRepo.findByUserIdAndCredentialId("user1", "cred1")).thenReturn(Optional.of(profile));
         when(riskProfileRepo.save(any())).thenAnswer(i -> i.getArguments()[0]);
-        // Review finding ("Mongo standalone deployment still weakens the plan/profile execution
-        // atomicity guarantee" -- external review, twenty-fourth pass, P1, full context in
-        // authorizeLiveAutoTrade's own updated check): a healthy default so every existing
-        // LIVE-authorization test in this file, none of which are about this specific check, is
-        // unaffected by this new gate.
+        // A healthy default so every existing LIVE-authorization test in this file, none of
+        // which are about this specific check, is unaffected by this gate.
         when(startupState.areMongoTransactionsSupported()).thenReturn(true);
-        // Review finding ("Risk-profile updates/resume can race with safety state" -- P0, full
-        // context in RiskProfileService.doUpsert's own comment): realistic defaults for the new
-        // targeted-update path -- an unstubbed updateFirst() would NPE (mongoTemplate itself is
-        // fine as a mock, but its own unstubbed method call returning null would NPE on
-        // .getModifiedCount()), and an unstubbed findById() would return Optional.empty()
-        // (Mockito's own real default), silently losing every field this pass's own targeted
-        // update just wrote in every assertion downstream.
+        // Realistic defaults for the targeted-update path -- an unstubbed updateFirst() would
+        // NPE (mongoTemplate itself is fine as a mock, but its own unstubbed method call
+        // returning null would NPE on .getModifiedCount()), and an unstubbed findById() would
+        // return Optional.empty() (Mockito's own real default), silently losing every field this
+        // pass's own targeted update just wrote in every assertion downstream.
         when(mongoTemplate.updateFirst(any(), any(org.springframework.data.mongodb.core.query.Update.class), eq(RiskProfile.class)))
             .thenReturn(com.mongodb.client.result.UpdateResult.acknowledged(1, 1L, null));
         when(riskProfileRepo.findById("profile1")).thenReturn(Optional.of(profile));
@@ -123,23 +109,22 @@ class RiskProfileServiceTest {
         when(credentialService.adapterForCredential(liveCredential)).thenReturn(adapter);
         when(credentialService.decrypt(eq(liveCredential), eq(true))).thenReturn("api-key");
         when(credentialService.decrypt(eq(liveCredential), eq(false))).thenReturn("api-secret");
-        // P1-10: authorizeLiveAutoTrade now also re-verifies the key's real, key-level
-        // apiRestrictions via credentialService.validateLiveKeyRestrictions -- default it to a
-        // safe response so only the tests that specifically care about it need to override it.
+        // authorizeLiveAutoTrade also re-verifies the key's real, key-level apiRestrictions via
+        // credentialService.validateLiveKeyRestrictions -- default it to a safe response so only
+        // the tests that specifically care about it need to override it.
         // (Mocked on credentialService, not adapter directly, since validateLiveKeyRestrictions
         // itself lives on BrokerCredentialService and internally calls adapter.getApiKeyRestrictions --
         // stubbing it here avoids every existing test needing to know that internal detail.)
         doNothing().when(credentialService).validateLiveKeyRestrictions(any(), any(), any(), any(), any(), any(), any());
-        // Audit item P0-1 ("Nothing gates autonomous LIVE trading on a real, successful live
-        // order ever having been placed" -- full context in LiveCanaryRecord's own class
-        // javadoc): a healthy default (a passing canary already on record) so every existing
-        // LIVE-authorization test in this file, none of which are about this specific new gate,
-        // is unaffected by it -- see the dedicated noRecentPassingLiveCanary_* test below for
-        // the gate itself.
+        // Autonomous LIVE trading is gated on a real, successful live order ever having been
+        // placed -- a healthy default (a passing canary already on record) so every existing
+        // LIVE-authorization test in this file, none of which are about this specific gate, is
+        // unaffected by it -- see the dedicated noRecentPassingLiveCanary_* test below for the
+        // gate itself.
         when(liveCanaryService.hasRecentPassingCanary(any())).thenReturn(true);
-        // Audit item P1-5: a healthy default (step-up OTP verifies cleanly) so every existing
-        // LIVE-authorization test in this file, none of which are about this specific new gate,
-        // is unaffected by it -- see the dedicated stepUpOtp_* tests below for the gate itself.
+        // A healthy default (step-up OTP verifies cleanly) so every existing LIVE-authorization
+        // test in this file, none of which are about this specific gate, is unaffected by it --
+        // see the dedicated stepUpOtp_* tests below for the gate itself.
         doNothing().when(authService).verifyStepUpOtp(any(), any(), any());
     }
 
@@ -155,15 +140,15 @@ class RiskProfileServiceTest {
     }
 
     /**
-     * P1-10: the withdrawal re-check here no longer relies on the account-level
+     * The withdrawal re-check here does not rely on the account-level
      * getAccountPermissions().canWithdraw() flag (see ApiKeyRestrictions' own class javadoc for
-     * why that flag is the wrong signal) -- it now goes through
+     * why that flag is the wrong signal) -- it goes through
      * credentialService.validateLiveKeyRestrictions, the same real, key-level apiRestrictions
      * check used at connect/rotation time. This test simulates that check finding a now-unsafe
      * key the same way the broker itself would report it.
      */
     @Test
-    @DisplayName("authorizeLiveAutoTrade: key-level restrictions now unsafe on the broker (changed since connection) — refuses and raises an incident, exactly the P1 #6/#10 scenario")
+    @DisplayName("authorizeLiveAutoTrade: key-level restrictions now unsafe on the broker (changed since connection) — refuses and raises an incident")
     void keyRestrictionsNowUnsafe_refusesAndRaisesIncident() {
         when(adapter.getAccountPermissions("api-key", "api-secret", BrokerMode.LIVE))
             .thenReturn(new AccountPermissions(true, false, true));
@@ -205,9 +190,7 @@ class RiskProfileServiceTest {
     }
 
     /**
-     * Review finding ("Mongo standalone deployment still weakens the plan/profile execution
-     * atomicity guarantee" -- external review, twenty-fourth pass, P1, full context in
-     * authorizeLiveAutoTrade's own updated check): the actual test proving the new refusal.
+     * Proves the refusal when this deployment's own MongoDB doesn't support transactions.
      */
     @Test
     @DisplayName("authorizeLiveAutoTrade: MongoDB does not support transactions (confirmed at startup) -- refuses outright for LIVE, never even reaches the broker permission check")
@@ -224,11 +207,10 @@ class RiskProfileServiceTest {
     }
 
     /**
-     * Audit item P0-1 ("Nothing gates autonomous LIVE trading on a real, successful live order
-     * ever having been placed" -- full context in LiveCanaryRecord's own class javadoc): the
-     * actual test proving the new refusal, same pattern as the Mongo-transactions test above --
-     * refused before ever reaching the broker permission check, since there is no point
-     * re-verifying permissions for a credential that hasn't even cleared this gate yet.
+     * Proves the refusal when no passing live canary is on record, same pattern as the
+     * Mongo-transactions test above -- refused before ever reaching the broker permission check,
+     * since there is no point re-verifying permissions for a credential that hasn't even
+     * cleared this gate yet.
      */
     @Test
     @DisplayName("authorizeLiveAutoTrade: no PASSED live canary on record for this credential -- refuses outright for LIVE, never even reaches the broker permission check")
@@ -245,7 +227,7 @@ class RiskProfileServiceTest {
     }
 
     @Test
-    @DisplayName("authorizeLiveAutoTrade: TESTNET credential — no broker re-validation attempted at all (the review's concern is specifically about LIVE)")
+    @DisplayName("authorizeLiveAutoTrade: TESTNET credential — no broker re-validation attempted at all (this concern is specifically about LIVE)")
     void testnetCredential_skipsRevalidation() {
         liveCredential.setMode(BrokerMode.TESTNET);
 
@@ -265,7 +247,7 @@ class RiskProfileServiceTest {
         verify(credentialService, never()).ownedCredential(any(), any());
     }
 
-    // ── Audit item P1-5: step-up OTP required before LIVE auto-trade is authorized ───────
+    // ── step-up OTP required before LIVE auto-trade is authorized ───────
 
     @Test
     @DisplayName("authorizeLiveAutoTrade: step-up OTP rejected (expired/wrong/not requested) — refuses before ever touching the broker, " +
@@ -315,7 +297,7 @@ class RiskProfileServiceTest {
             .hasMessageContaining("No verified email or mobile");
     }
 
-    // ── P0-6: LIVE risk-limit enforcement ─────────────────────────────────
+    // ── LIVE risk-limit enforcement ─────────────────────────────────
 
     @Test
     @DisplayName("authorizeLiveAutoTrade: LIVE credential with an incomplete risk profile (still at 0/disabled defaults) is refused before ever reaching the broker permission check")
@@ -368,8 +350,7 @@ class RiskProfileServiceTest {
         assertThat(result.isLiveAutoTradeAuthorized()).isTrue();
     }
 
-    // ── halt/resume (review finding "Risk-profile updates/resume can race with safety state" --
-    // P0, full context in RiskProfileService.doUpsert's own comment) ────────────────
+    // ── halt/resume (atomic updates, to avoid racing with safety state) ────────────────
 
     @Test
     @DisplayName("halt: the atomic update targets ONLY tradingHalted/haltReason/updatedAt -- never a full-document save that could silently overwrite a concurrent write to any other field")
@@ -400,7 +381,7 @@ class RiskProfileServiceTest {
     }
 
     @Test
-    @DisplayName("resume: targets exactly the fields it actually changes (tradingHalted/haltReason/autoTradeHalted/autoTradeHaltReason, and since P3-9, consecutiveOrderFailures -- see this file's own updated test name) via a real conditional update, never a full-document save")
+    @DisplayName("resume: targets exactly the fields it actually changes (tradingHalted/haltReason/autoTradeHalted/autoTradeHaltReason/consecutiveOrderFailures) via a real conditional update, never a full-document save")
     void resume_targetsOnlyTheFieldsItActuallyChanges() {
         when(positionRepo.findByUserIdAndCredentialIdAndStatus("user1", "cred1", "OPEN")).thenReturn(List.of());
 
@@ -410,14 +391,10 @@ class RiskProfileServiceTest {
             ArgumentCaptor.forClass(org.springframework.data.mongodb.core.query.Update.class);
         verify(mongoTemplate).updateFirst(any(), updateCaptor.capture(), eq(RiskProfile.class));
         var updateDoc = updateCaptor.getValue().getUpdateObject().get("$set", org.bson.Document.class);
-        // Review finding ("autoTradeHalted is still never reset" -- external review, third
-        // pass): autoTradeHalted/autoTradeHaltReason added to this file's own existing
-        // assertion, not a new, separate test -- this IS the same "which fields does resume
-        // actually touch" question this test has always asked, just with a now-larger correct
-        // answer.
-        // P3-9 fix ("resume doesn't reset consecutiveOrderFailures; next single failure
-        // re-trips breaker"): consecutiveOrderFailures added to this same assertion for the
-        // same reason -- it's the identical "which fields does resume actually touch" question.
+        // autoTradeHalted/autoTradeHaltReason/consecutiveOrderFailures are all included in this
+        // assertion -- this is the same "which fields does resume actually touch" question this
+        // test has always asked, just with a now-larger correct answer: resume must also reset
+        // consecutiveOrderFailures, otherwise the very next single failure re-trips the breaker.
         assertThat(updateDoc.keySet()).containsExactlyInAnyOrder(
             "tradingHalted", "haltReason", "autoTradeHalted", "autoTradeHaltReason",
             "consecutiveOrderFailures", "updatedAt");
@@ -428,7 +405,7 @@ class RiskProfileServiceTest {
     }
 
     @Test
-    @DisplayName("resume: resets consecutiveOrderFailures to 0 even when the circuit breaker previously tripped it well above the threshold -- P3-9 fix, the actual bug (a stuck-at-threshold counter re-trips the breaker on the very next order failure)")
+    @DisplayName("resume: resets consecutiveOrderFailures to 0 even when the circuit breaker previously tripped it well above the threshold -- a stuck-at-threshold counter must not re-trip the breaker on the very next order failure")
     void resume_resetsConsecutiveOrderFailures_evenWhenWellAboveThreshold() {
         when(positionRepo.findByUserIdAndCredentialIdAndStatus("user1", "cred1", "OPEN")).thenReturn(List.of());
 
@@ -455,7 +432,7 @@ class RiskProfileServiceTest {
     }
 
     @Test
-    @DisplayName("resume: an OPEN position with an incomplete fill-ledger record blocks resume -- the actual review fix (\"Resume does not prove existing positions are protected\")")
+    @DisplayName("resume: an OPEN position with an incomplete fill-ledger record blocks resume -- resume must prove existing positions are protected")
     void resume_incompleteLedgerPosition_blocksResume() {
         Position incomplete = new Position();
         incomplete.setSymbol("ETHUSDT");
@@ -470,7 +447,7 @@ class RiskProfileServiceTest {
     }
 
     @Test
-    @DisplayName("resume: an unresolved UNKNOWN order for this credential blocks resume -- the actual review fix, checking the OMS's own first-class \"genuinely don't know what happened\" state")
+    @DisplayName("resume: an unresolved UNKNOWN order for this credential blocks resume -- checking the OMS's own first-class \"genuinely don't know what happened\" state")
     void resume_unresolvedUnknownOrder_blocksResume() {
         when(positionRepo.findByUserIdAndCredentialIdAndStatus("user1", "cred1", "OPEN")).thenReturn(List.of());
         com.tradevision.model.Order unknownOrder = new com.tradevision.model.Order();
@@ -485,7 +462,7 @@ class RiskProfileServiceTest {
     }
 
     @Test
-    @DisplayName("resume: an unresolved CRITICAL incident for this credential blocks resume, but a WARNING-severity incident does NOT -- the actual review fix, scoped to critical severity specifically")
+    @DisplayName("resume: an unresolved CRITICAL incident for this credential blocks resume, but a WARNING-severity incident does NOT -- scoped to critical severity specifically")
     void resume_unresolvedCriticalIncident_blocksResume_butWarningDoesNot() {
         when(positionRepo.findByUserIdAndCredentialIdAndStatus("user1", "cred1", "OPEN")).thenReturn(List.of());
         com.tradevision.model.TradingIncident warning = new com.tradevision.model.TradingIncident();
@@ -513,7 +490,7 @@ class RiskProfileServiceTest {
     }
 
     @Test
-    @DisplayName("resume: the real exchange balance for an OPEN position's base asset is LESS than this application believes it holds -- blocks resume, the actual review fix (\"actual exchange position/balance\" re-verification)")
+    @DisplayName("resume: the real exchange balance for an OPEN position's base asset is LESS than this application believes it holds -- blocks resume")
     void resume_realBalanceLessThanBelieved_blocksResume() {
         Position open = new Position();
         open.setSymbol("BTCUSDT");
@@ -555,7 +532,7 @@ class RiskProfileServiceTest {
     }
 
     @Test
-    @DisplayName("resume: a lost safetyStateVersion race (something changed the safety state DURING this resume's own checks) throws rather than silently clearing the new state -- the actual review fix (\"resume() can still race with a new halt\")")
+    @DisplayName("resume: a lost safetyStateVersion race (something changed the safety state DURING this resume's own checks) throws rather than silently clearing the new state")
     void resume_lostSafetyVersionRace_throwsRatherThanSilentlyOverwriting() {
         when(positionRepo.findByUserIdAndCredentialIdAndStatus("user1", "cred1", "OPEN")).thenReturn(List.of());
         // Simulates a concurrent halt/drawdown event bumping the version during this resume's
@@ -585,11 +562,10 @@ class RiskProfileServiceTest {
         verify(mongoTemplate, never()).updateFirst(any(), any(org.springframework.data.mongodb.core.query.Update.class), eq(RiskProfile.class));
     }
 
-    // ── quote-asset enforcement (review finding "Risk exposure assumes every quote asset is
-    // the same currency" -- full context in doUpsert's own comment) ────────────────
+    // ── quote-asset enforcement ────────────────
 
     @Test
-    @DisplayName("upsert: a non-USDT-quoted symbol is rejected outright -- the actual review fix (\"Risk exposure assumes every quote asset is the same currency\"), since mixing quote assets would make exposure/equity/drawdown silently sum different currencies as if they were the same number")
+    @DisplayName("upsert: a non-USDT-quoted symbol is rejected outright, since mixing quote assets would make exposure/equity/drawdown silently sum different currencies as if they were the same number")
     void upsert_nonUsdtSymbol_rejected() {
         var req = new com.tradevision.dto.RiskProfileRequest();
         req.setCredentialId("cred1");
@@ -619,15 +595,13 @@ class RiskProfileServiceTest {
         assertThat(result.getEnabledSymbols()).containsExactlyInAnyOrder("BTCUSDT", "ETHUSDT");
     }
 
-    // ── P1-5 follow-up ("Require a step-up OTP for risk-limit edits") ─────────────────
+    // ── step-up OTP required for risk-limit edits ─────────────────
 
     /**
-     * Audit fix (P1-5 follow-up -- external review, second pass: "Require a step-up OTP for
-     * risk-limit edits" -- full context in RiskProfileService.RISK_PROFILE_STEPUP_PURPOSE's own
-     * javadoc). "cred1" is a LIVE credential in this file's own shared setup(), and this test
-     * overrides the healthy default authService.verifyStepUpOtp stub to actually exercise the
-     * refusal path -- every other upsert test in this file implicitly proves the happy path
-     * already (they'd all fail here too if the gate were simply always throwing).
+     * "cred1" is a LIVE credential in this file's own shared setup(), and this test overrides
+     * the healthy default authService.verifyStepUpOtp stub to actually exercise the refusal path
+     * -- every other upsert test in this file implicitly proves the happy path already (they'd
+     * all fail here too if the gate were simply always throwing).
      */
     @Test
     @DisplayName("upsert: a LIVE credential's risk profile requires a valid step-up OTP -- refuses and never saves on a bad/missing one")
@@ -675,9 +649,8 @@ class RiskProfileServiceTest {
         verify(authService, never()).verifyStepUpOtp(any(), any(), any());
     }
 
-    // ── P3-5 ("ExposureReservationService group/symbol field paths -- user-supplied group names
-    // used as Mongo field paths ('.'/'$') -- validate names" -- full context in upsert's own new
-    // validation comment) ────────────────────────────────────────────────────────
+    // ── correlation group name validation (user-supplied group names used as Mongo field
+    // paths, so '.' and '$' must be rejected) ────────────────────────────────────────────────────────
 
     @Test
     @DisplayName("upsert: a correlation group name containing '.' is rejected -- it would target a nested Mongo path (reservedGroupExposure.<name>) instead of the flat field this codebase's own exposure tracking assumes")
@@ -730,7 +703,7 @@ class RiskProfileServiceTest {
     }
 
     @Test
-    @DisplayName("haltAll: uses the same targeted atomic update as halt(), not a full-document save -- the actual review fix (\"Global kill switch still uses full-document save()\")")
+    @DisplayName("haltAll: uses the same targeted atomic update as halt(), not a full-document save")
     void haltAll_usesAtomicUpdateNotFullSave() {
         RiskProfile p1 = new RiskProfile(); p1.setId("profile1"); p1.setCredentialId("cred1");
         RiskProfile p2 = new RiskProfile(); p2.setId("profile2"); p2.setCredentialId("cred2");
@@ -746,9 +719,8 @@ class RiskProfileServiceTest {
     }
 
     /**
-     * Review finding ("The execution authorization still has an unavoidable exchange-boundary
-     * race" -- external review, twenty-first pass, P0, full context in haltAll's own updated
-     * javadoc): the actual test proving the new immediate post-halt reconciliation.
+     * Proves the immediate post-halt reconciliation, closing the discovery gap at the
+     * exchange-boundary race between halt and an in-flight execution.
      */
     @Test
     @DisplayName("haltAll: immediately triggers a real reconciliation pass for every halted credential -- closing the discovery gap for any execution that may have already reached the exchange before the halt took effect")
@@ -783,9 +755,7 @@ class RiskProfileServiceTest {
     }
 
     /**
-     * Review finding ("Secrets / encryption key rotation and credential revocation story
-     * incomplete" -- external review, nineteenth pass, P1, full context in
-     * emergencyRevokeAll's own javadoc): the actual tests proving all three real actions happen.
+     * Proves all three real actions happen on emergency revocation.
      */
     @Test
     @DisplayName("emergencyRevokeAll: halts trading, deactivates every credential, AND forces re-authentication by bumping tokenVersion and clearing the refresh token")
@@ -812,10 +782,9 @@ class RiskProfileServiceTest {
     }
 
     /**
-     * Review finding ("Emergency credential revocation can intentionally disable the very
-     * monitoring needed by existing positions" -- external review, twenty-fourth pass, P1, full
-     * context in emergencyRevokeAll's own updated javadoc): the actual test proving the returned
-     * count matches the real number of open positions this action is about to stop monitoring.
+     * Proves the returned count matches the real number of open positions this action is about
+     * to stop monitoring, since emergency revocation also disables the monitoring those
+     * positions depend on.
      */
     @Test
     @DisplayName("emergencyRevokeAll: returns the real count of open positions affected, computed BEFORE deactivation")
@@ -830,7 +799,7 @@ class RiskProfileServiceTest {
     }
 
     @Test
-    @DisplayName("claimExecutionAuthorization: a granted claim returns a real, populated ExecutionClaim (claim id and generation), not just true -- the actual review fix (\"claimExecutionAuthorization() is still an authorization claim, not a lease\")")
+    @DisplayName("claimExecutionAuthorization: a granted claim returns a real, populated ExecutionClaim (claim id and generation), not just true")
     void claimExecutionAuthorization_granted_returnsRealClaimIdentity() {
         RiskProfile updated = new RiskProfile();
         updated.setSafetyStateVersion(7L);
@@ -856,7 +825,7 @@ class RiskProfileServiceTest {
     }
 
     @Test
-    @DisplayName("markExecutionStarted: the query includes ALL the same conditions claimExecutionAuthorization itself checks -- credentialId, claim id, autoTradeEnabled, tradingHalted, autoTradeHalted -- the actual review fix (\"There is still a tiny gap between final authorization and markExecutionStarted()\"), now performing the full final-re-verification atomically as part of the same operation that registers the execution in flight")
+    @DisplayName("markExecutionStarted: the query includes ALL the same conditions claimExecutionAuthorization itself checks -- credentialId, claim id, autoTradeEnabled, tradingHalted, autoTradeHalted -- performing the full final re-verification atomically as part of the same operation that registers the execution in flight")
     void markExecutionStarted_queryIncludesFullConditionSet() {
         ArgumentCaptor<org.springframework.data.mongodb.core.query.Query> queryCaptor =
             ArgumentCaptor.forClass(org.springframework.data.mongodb.core.query.Query.class);
@@ -873,7 +842,7 @@ class RiskProfileServiceTest {
     }
 
     @Test
-    @DisplayName("markExecutionStarted: the query also requires lastExecutionClaimAt to be within CLAIM_MAX_AGE of now -- the actual review fix (\"The claim itself has no expiry\"), so a capability ages out on its own rather than remaining valid indefinitely as long as nothing else ever supersedes it")
+    @DisplayName("markExecutionStarted: the query also requires lastExecutionClaimAt to be within CLAIM_MAX_AGE of now, so a capability ages out on its own rather than remaining valid indefinitely as long as nothing else ever supersedes it")
     void markExecutionStarted_queryIncludesClaimExpiryCheck() {
         ArgumentCaptor<org.springframework.data.mongodb.core.query.Query> queryCaptor =
             ArgumentCaptor.forClass(org.springframework.data.mongodb.core.query.Query.class);
@@ -887,7 +856,7 @@ class RiskProfileServiceTest {
     }
 
     @Test
-    @DisplayName("markExecutionStarted: for a LIVE credential, the query ALSO includes liveAutoTradeAuthorized -- the actual review fix, closing the specific gap named (a LIVE authorization revocation between the claim and this final check would NOT have invalidated an already-issued claim)")
+    @DisplayName("markExecutionStarted: for a LIVE credential, the query ALSO includes liveAutoTradeAuthorized, so a LIVE authorization revocation between the claim and this final check invalidates an already-issued claim")
     void markExecutionStarted_live_queryIncludesLiveAuthorizationCheck() {
         ArgumentCaptor<org.springframework.data.mongodb.core.query.Query> queryCaptor =
             ArgumentCaptor.forClass(org.springframework.data.mongodb.core.query.Query.class);
@@ -913,7 +882,7 @@ class RiskProfileServiceTest {
     }
 
     @Test
-    @DisplayName("markExecutionStarted: the query matches nothing (autoTradeEnabled was switched to false since the claim, or any other condition no longer holds, or a concurrent kill switch landed in the gap between the original claim and this call) -- returns false, the caller must not proceed to the exchange. This IS the actual review fix (\\\"There is still a tiny gap between final authorization and markExecutionStarted()\\\") -- the exact scenario the review's own required tests target")
+    @DisplayName("markExecutionStarted: the query matches nothing (autoTradeEnabled was switched to false since the claim, or any other condition no longer holds, or a concurrent kill switch landed in the gap between the original claim and this call) -- returns false, the caller must not proceed to the exchange")
     void markExecutionStarted_queryMatchesNothing_false() {
         when(mongoTemplate.findAndModify(any(), any(org.springframework.data.mongodb.core.query.Update.class),
             any(org.springframework.data.mongodb.core.FindAndModifyOptions.class), eq(RiskProfile.class))).thenReturn(null);
@@ -922,7 +891,7 @@ class RiskProfileServiceTest {
     }
 
     @Test
-    @DisplayName("halt: when an execution is genuinely in flight the moment this kill switch engages, audits that fact explicitly -- the actual review fix (\"The claim → Binance network call still has an unavoidable TOCTOU window\"), whose own stated acceptable bar for the unavoidable remainder is that an already-in-flight request finishing after halt \"should be explicitly displayed/audited\"")
+    @DisplayName("halt: when an execution is genuinely in flight the moment this kill switch engages, audits that fact explicitly -- an already-in-flight request finishing after halt is an unavoidable TOCTOU window, so it must be explicitly displayed/audited")
     void halt_executionInFlight_auditsExplicitly() {
         // The shared `profile` fixture is what riskProfileRepo.findById("profile1") already
         // returns by default (see this class's own @BeforeEach) -- halt() re-reads via exactly
@@ -948,14 +917,12 @@ class RiskProfileServiceTest {
     }
 
     /**
-     * Review finding ("Narrow but real race: Strategy Plan disable / version change vs final
-     * execution" -- external review, eighteenth pass, P0, full context in
-     * claimExecutionAtomicWithPlan's own javadoc): the actual tests proving this new method's
-     * two real, cleanly-testable behaviors -- the null-planId fast path, and the graceful
-     * fallback when this deployment's own MongoDB doesn't support transactions at all. Full
-     * session/transaction mechanics against a REAL replica set are integration-test territory
-     * (this codebase's own established pattern -- see the other *IntegrationTest classes, all of
-     * which honestly disclose no Docker/MongoDB available in this sandbox to actually run them).
+     * Proves claimExecutionAtomicWithPlan's two cleanly-testable behaviors: the null-planId fast
+     * path, and the graceful fallback when this deployment's own MongoDB doesn't support
+     * transactions at all. Full session/transaction mechanics against a REAL replica set are
+     * integration-test territory (this codebase's own established pattern -- see the other
+     * *IntegrationTest classes, all of which honestly disclose no Docker/MongoDB available in
+     * this sandbox to actually run them).
      */
     @Test
     @DisplayName("claimExecutionAtomicWithPlan: a null planId delegates directly to markExecutionStarted -- no plan to coordinate with, so the existing single-document claim is already fully atomic and sufficient")

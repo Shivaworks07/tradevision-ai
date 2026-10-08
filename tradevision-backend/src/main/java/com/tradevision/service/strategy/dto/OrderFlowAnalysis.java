@@ -3,22 +3,14 @@ package com.tradevision.service.strategy.dto;
 import java.util.List;
 
 /**
- * Review finding ("Client-Side Signal Generation" / "Move this to Angular to Java"): a verified
- * port — see OrderFlowService's own javadoc for the full verification methodology and its honest
- * scope (computation logic verified, live HTTP fetching NOT verified — Binance is network-blocked
- * from this sandbox).
+ * Order-flow analysis derived from funding rate, open interest, and cumulative volume delta
+ * (CVD), combined into an overall directional bias and score. See OrderFlowService for how
+ * each component is fetched and computed.
  *
- * Review finding ("double still exists throughout strategy calculations" -- external review,
- * twenty-sixth pass, P2): investigated directly -- same reasoning as SMCAnalysis's and
- * VolumeProfile's own updated class javadocs. Confirmed by reading OrderFlowService directly:
- * calculateBias(funding, oi, cvd) re-reads fields off the already-built FundingData/
- * OpenInterestData/CVDData records to compute the overall bias score, and buildSummary does the
- * same for the summary text -- these values are re-read for further internal computation within
- * the same verified algorithm, not written once as a final output. Also, unlike a raw price,
- * most of these fields (fundingRate, oiChange, cvd) are themselves rates/deltas/percentages
- * rather than money amounts a real order would be sized from -- genuinely closer to the
- * review's own "indicator" carve-out than to its "prices, quantities, SL, TP" concern. Left as
- * double deliberately.
+ * Fields here are intentionally {@code double} rather than BigDecimal: funding rate, OI change
+ * and CVD are rates/deltas/percentages rather than money amounts an order would be sized from,
+ * and calculateBias/buildSummary in OrderFlowService re-read them for further internal
+ * computation within the same bias calculation rather than treating them as a final output.
  */
 public record OrderFlowAnalysis(
     FundingData funding, OpenInterestData openInterest, CVDData cvd,

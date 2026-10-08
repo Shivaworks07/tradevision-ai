@@ -9,26 +9,19 @@ import org.springframework.data.mongodb.core.mapping.Document;
 import java.time.Instant;
 
 /**
- * Review finding ("Position slot reservations still don't have ownership IDs" -- external
- * review, twenty-eighth pass, P0, confirmed real by direct inspection before this fix:
- * PositionSlotReservationService's own reserve()/release() operated purely on a fungible
- * reservedCount counter, with no identity distinguishing one execution's own reserved slot from
- * another's. The review's own reasoning: "the safety of the system depends on every release()
- * being executed exactly once... a future duplicate close/recovery path can do: A release, A
- * release again, and consume B's slot" -- less severe than the exposure-counter bug this same
- * pass already fixed, since periodic reconciliation self-heals drift, but the review's own
- * explicit ask is the same architecture, not a different severity of patch): mirrors
- * ExposureReservationRecord's own mechanism exactly -- every successful slot reservation gets
- * its own durable record, release(reservationId) is atomic and genuinely idempotent (a record
- * can only ever be released once), and a PENDING record created before the counter is ever
- * touched means a crash between claiming the counter and marking this record ACTIVE leaves
- * something durable for reconciliation to find, not silent drift with nothing to explain it.
+ * A durable record of one specific slot reservation (rather than a fungible counter alone),
+ * so release(reservationId) is atomic and genuinely idempotent — a record can only ever be
+ * released once, which guards against a duplicate close/recovery path double-releasing the
+ * same slot or consuming another execution's slot. Mirrors ExposureReservationRecord's own
+ * mechanism: a PENDING record is created before the counter itself is touched, so a crash
+ * between claiming the counter and marking this record ACTIVE leaves something durable for
+ * reconciliation to find rather than silent drift.
  *
- * `key` matches whatever PositionSlotReservationService's own reserve()/release() callers
- * already pass as `credentialId` -- a real credential id for the per-credential slot cap, or the
- * existing "plan:"+planId convention for the separate per-plan slot cap (see AutoTradeService's
- * own call sites) -- this record doesn't need to know or care which; it just needs to durably
- * track whichever key its own reserve() call actually claimed against.
+ * `key` matches whatever PositionSlotReservationService's own reserve()/release() callers pass
+ * as `credentialId` -- a real credential id for the per-credential slot cap, or the "plan:" +
+ * planId convention for the separate per-plan slot cap (see AutoTradeService's own call sites)
+ * -- this record doesn't need to know or care which; it just durably tracks whichever key its
+ * own reserve() call actually claimed against.
  */
 @Data @NoArgsConstructor
 @Document(collection = "position_slot_reservation_records")
@@ -44,17 +37,20 @@ public class PositionSlotReservationRecord {
     private String status = "ACTIVE";
 
     /**
-     * Review finding ("reservation reconciliation is still fundamentally cache-based" --
-     * external review, twenty-ninth pass, P1, full context in ExposureReservationRecord's own
-     * identical field javadoc): the same fix, applied to slot reservations.
+     * Set once this reservation's own position is actually created and saved — before that,
+     * null means "this ACTIVE reservation exists but hasn't been linked to a real position
+     * document yet," which reconciliation checks for directly rather than inferring from
+     * timing alone. Same mechanism as ExposureReservationRecord.positionId.
      */
     private String positionId;
 
     /**
-     * Review finding ("v183 still has a dangerous 'PENDING reservation cleanup' window" --
-     * external review, thirty-fifth/thirty-seventh passes, P0, full context in
-     * ExposureReservationRecord.executionId's own identical field javadoc): the same fix,
-     * applied to slot reservations.
+     * The id of the execution attempt that created this reservation, recorded at PENDING-
+     * creation time so a stale-PENDING cleanup pass can look up that execution's own real,
+     * durable progress before deciding whether deleting this record is safe — an execution
+     * that never reached the exchange can be cleaned up safely, one that may already have
+     * reached it must not be silently deleted. Same mechanism as
+     * ExposureReservationRecord.executionId.
      */
     private String executionId;
 

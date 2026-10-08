@@ -21,9 +21,8 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 /**
- * Review finding ("#9 — Execution Latency", agreed sequencing 4 -> 6 -> 5 -> 9 -> 7): verifies
- * the actual percentile math and the "don't count what didn't happen" rule described in
- * LatencyMetricsService's own javadoc.
+ * Verifies the percentile math and the rule that a stage without a timestamp is excluded from
+ * that stage's stats rather than counted as zero latency.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -256,7 +255,7 @@ class LatencyMetricsServiceTest {
     }
 
     @Test
-    @DisplayName("reportByStrategyVersion: orders correctly grouped by their own distinct strategyVersion string, each with its own full ExecutionLatencyReport -- the actual review fix (\"Strategy/risk-profile/feature versioning fields exist but are unused/null\")")
+    @DisplayName("reportByStrategyVersion: orders are grouped by their own distinct strategyVersion string, each with its own full ExecutionLatencyReport")
     void reportByStrategyVersion_groupsByVersion() {
         LocalDateTime now = LocalDateTime.now();
         Order v1 = orderWithTimestamps("BTCUSDT", now, now.plusSeconds(1), now.plusSeconds(2), now.plusSeconds(3), now.plusSeconds(4), now.plusSeconds(5));

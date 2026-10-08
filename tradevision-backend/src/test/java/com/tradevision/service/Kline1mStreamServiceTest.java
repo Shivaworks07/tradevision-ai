@@ -22,13 +22,11 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 /**
- * Review finding ("1m trading still isn't truly event-driven" -- external review, twentieth
- * pass, P1, full context in Kline1mStreamService's own class javadoc): tests the actual message-
- * handling logic that turns a real closed-1m-candle event into a scanOneSymbol trigger.
- * handleMessage() is private and this service's own real network connection can't be exercised
- * in this sandbox (same, already-disclosed limitation as BinanceUserDataStreamServiceTest), so
- * this is accessed via reflection with the routingBySymbol field populated directly, exactly
- * what reconcileSubscriptions() would have built from a real compute1mScanTargets() call.
+ * Covers the message-handling logic that turns a closed-1m-candle event into a scanOneSymbol
+ * trigger. handleMessage() is private and this service's real network connection can't be
+ * exercised in a test (same limitation as BinanceUserDataStreamServiceTest), so it is accessed
+ * via reflection with the routingBySymbol field populated directly, exactly what
+ * reconcileSubscriptions() would have built from a real compute1mScanTargets() call.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)

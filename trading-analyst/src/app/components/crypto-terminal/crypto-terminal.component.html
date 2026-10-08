@@ -276,14 +276,10 @@
         <span class="p1-loading" *ngIf="loadingPhase1">⟳ Loading…</span>
         <span class="p1-badge neut" *ngIf="!ofAnalysis?.isLoaded && !loadingPhase1">N/A (spot)</span>
       </div>
-      <!-- Review finding ("Spot-only/long-only isn't made explicit against a codebase that still
-           models SHORT/futures/funding/OI concepts" -- P1): confirmed real and fixed. Funding
-           rate, open interest, and CVD below are all sourced from Binance FUTURES data (this
-           panel's own funding-rate row, open-interest row, etc.) -- context, not a signal of what
-           this application can actually trade. The autonomous engine is spot, long-only,
-           BUY-then-SELL-to-close, full stop (AutoTradeService's own "not supported (spot,
-           long-only)" skip for any SHORT signal, enforced server-side regardless of what this
-           panel displays). -->
+      <!-- Funding rate, open interest and CVD below are sourced from Binance futures data
+           and shown as market context only — the autonomous engine itself only trades
+           spot, long-only (BUY-then-SELL-to-close), enforced server-side regardless of
+           what this panel displays. -->
       <div class="p1-scope-note" *ngIf="ofAnalysis?.isLoaded">
         Futures-derived market context (funding, open interest, CVD) — shown for analysis only. Execution is spot, long-only.
       </div>
@@ -409,12 +405,9 @@
   <!-- Risk Engine Panel -->
   <div class="risk-panel" *ngIf="tradeRisk && tradeCall?.direction !== 'WAIT'">
     <div class="rp-header">
-      <!-- P3-4 fix ("client 'risk engine' unrelated to server limits" -- external review, full
-           context in crypto-terminal.component.ts's own onAccountSizeChange javadoc): the title
-           and tooltip make explicit what this panel always actually was -- a manual what-if
-           sizing calculator, never the account's real, server-enforced auto-trade risk limits
-           (those live entirely server-side in RiskProfile/RiskEngineService.java and are
-           configured under Bot Connection). -->
+      <!-- This is a manual what-if sizing calculator only; the account's real,
+           server-enforced auto-trade risk limits live in RiskProfile/RiskEngineService.java
+           and are configured separately under Bot Connection. -->
       <span class="rp-title" title="Manual position-sizing estimate only — does not reflect or affect your real auto-trade risk limits, which are configured separately under Bot Connection.">💰 Risk Calculator (estimate)</span>
       <span class="rp-rating" [style.color]="tradeRisk.riskColor">{{tradeRisk.riskRating}}</span>
       <span class="rp-account">

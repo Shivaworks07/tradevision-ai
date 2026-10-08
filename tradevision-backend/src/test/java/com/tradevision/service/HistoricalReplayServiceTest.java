@@ -17,10 +17,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 /**
- * Review finding ("historical replay engine" -- external review, P3, full context in
- * HistoricalReplayService's own class javadoc): the actual tests for the window-sliding and
- * WAIT-filtering logic. Uses a mocked ServerSignalEngine to control exactly what each step
- * returns, testing this service's own logic in isolation from the real strategy decisions.
+ * Covers the window-sliding and WAIT-filtering logic in HistoricalReplayService. Uses a mocked
+ * ServerSignalEngine to control exactly what each step returns, testing this service's own logic
+ * in isolation from the real strategy decisions.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)

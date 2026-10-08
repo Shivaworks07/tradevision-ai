@@ -10,33 +10,21 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 /**
- * Audit item P0-1 ("Nothing gates autonomous LIVE trading on a real, successful live order ever
- * having been placed" -- confirmed real by direct inspection of RiskProfileService.
- * authorizeLiveAutoTrade before this fix: every one of its existing LIVE-only checks --
- * confirmation phrase, risk-limit completeness, Mongo transaction support, re-verified
- * canTrade()/key-restriction permissions -- is about whether this credential is ALLOWED to
- * trade LIVE, none of them ever actually sends one real order to Binance's live endpoint and
- * confirms the whole pipeline -- adapter auth, order placement, OMS transitions, the
- * reconciliation pass that turns a fill into a Position, and real OCO protection -- genuinely
- * works end to end for this exact credential before autonomous trading is allowed to start
- * sending LIVE orders unsupervised for the first time).
- *
- * The user's own explicit choice (via this session's AskUserQuestion) was "build it, minimum
- * notional, admin-confirmed" -- a real LIVE order, sized at this symbol's own exchange-reported
- * minimum notional (never a user-supplied quantity -- see LiveCanaryService.startCanary's own
- * javadoc for why), gated behind the same explicit-confirmation-phrase pattern already
- * established for authorizeLiveAutoTrade itself, rather than the lighter-weight "just check a
- * precondition, don't place a real order" alternative that was also offered. This record is the
- * durable, queryable result of exactly one such attempt.
+ * The durable, queryable result of a LIVE canary trade attempt — a real order, sized at this
+ * symbol's own exchange-reported minimum notional (never a user-supplied quantity, see
+ * LiveCanaryService.startCanary's own javadoc for why), placed to prove end to end that the
+ * whole live pipeline — adapter auth, order placement, OMS transitions, the reconciliation
+ * pass that turns a fill into a Position, and real OCO protection — genuinely works for this
+ * exact credential before autonomous trading is allowed to start sending LIVE orders
+ * unsupervised.
  *
  * Deliberately a separate collection/service from Position/PositionMonitorService, not a new
- * Position "type" flag: a canary attempt follows a narrower, purpose-built lifecycle (PENDING ->
- * PASSED/FAILED, nothing else) and this application's authoritative OMS/Position machinery
- * (OrderService, PositionMonitorService's reconciliation, PositionSafetyService) is reused
- * as-is, unmodified, to actually perform and verify the canary order -- this record exists only
- * to track the attempt itself and let authorizeLiveAutoTrade ask "has this credential proven
- * itself with a real order recently?" without needing to re-derive that from Position/Order
- * history every time.
+ * Position "type" flag: a canary attempt follows a narrower, purpose-built lifecycle (PENDING
+ * -> PASSED/FAILED, nothing else), reusing this application's authoritative OMS/Position
+ * machinery (OrderService, PositionMonitorService's reconciliation, PositionSafetyService)
+ * unmodified to actually perform and verify the canary order. This record exists only to track
+ * the attempt itself, letting authorizeLiveAutoTrade ask "has this credential proven itself
+ * with a real order recently?" without re-deriving that from Position/Order history each time.
  */
 @Data @NoArgsConstructor
 @Document(collection = "live_canary_records")

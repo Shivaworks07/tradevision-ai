@@ -18,10 +18,10 @@ export interface FearGreedData {
   // Chart data
   history:        { value: number; classification: string; timestamp: number }[];
   /**
-   * Review item #13: false means the real data source failed or returned nothing — every other
-   * field here is a placeholder, NOT a real reading. A trading-facing UI must not render this as
-   * if it were a genuine "Neutral 50" sentiment reading; consumers must check this before
-   * displaying or using any of the other fields.
+   * false means the real data source failed or returned nothing — every other field here is a
+   * placeholder, NOT a real reading. A trading-facing UI must not render this as if it were a
+   * genuine "Neutral 50" sentiment reading; consumers must check this before displaying or
+   * using any of the other fields.
    */
   available:      boolean;
 }
@@ -123,10 +123,10 @@ export class FearGreedService {
   }
 
   /**
-   * Review item #13 (fixed): this used to be called "mockData" and silently returned a fabricated
-   * "Neutral 50" reading whenever the real API failed — indistinguishable from genuine neutral
-   * sentiment to any consumer that didn't specifically check signalReason's text. Renamed and
-   * marked explicitly unavailable: fail closed, don't invent market data.
+   * Returned whenever the real API fails, explicitly marked unavailable rather than a
+   * fabricated "Neutral 50" reading that would be indistinguishable from genuine neutral
+   * sentiment to a consumer that didn't check signalReason's text. Fails closed instead of
+   * inventing market data.
    */
   private unavailableData(): FearGreedData {
     return { value:0, classification:'Unavailable', timestamp:Date.now(), yesterday:0, lastWeek:0, lastMonth:0,

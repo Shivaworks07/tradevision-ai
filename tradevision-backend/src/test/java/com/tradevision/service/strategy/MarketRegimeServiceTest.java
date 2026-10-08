@@ -11,11 +11,11 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding ("Client-Side Signal Generation" — "Port the entire TA engine... to Java"):
- * tests the actual verified port — see MarketRegimeService's own javadoc for the full
- * verification methodology (3 seeded scenarios chosen to hit different classifyRegime branches,
- * each compared field-by-field against the real TypeScript's own reference output) and the real
- * infinite-recursion bug this port deliberately does NOT replicate.
+ * Tests the Java port of the TA engine's regime classification against its TypeScript source --
+ * see MarketRegimeService's own javadoc for the full verification methodology (3 seeded
+ * scenarios chosen to hit different classifyRegime branches, each compared field-by-field
+ * against the real TypeScript's own reference output). This port deliberately does not
+ * replicate the TypeScript source's infinite-recursion behavior.
  */
 class MarketRegimeServiceTest {
 
@@ -90,7 +90,7 @@ class MarketRegimeServiceTest {
     }
 
     @Test
-    @DisplayName("detect: fewer than 50 candles returns a genuine static default (RANGING) — the actual fix for a real infinite-recursion bug found in the original TypeScript, confirmed by running it and catching the stack overflow, not by inspection")
+    @DisplayName("detect: fewer than 50 candles returns a genuine static default (RANGING), rather than the infinite recursion the original TypeScript exhibits in this case")
     void detect_fewerThan50Candles_returnsStaticDefaultWithoutCrashing() {
         RegimeState result = service.detect(seededCandles(10, 1, 0), "TESTUSDT");
 

@@ -13,26 +13,21 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Review finding ("#9 — Execution Latency", agreed sequencing 4 -> 6 -> 5 -> 9 -> 7 — "Once those
- * timestamps exist naturally in OMS/Fills/protection, measure... Signal -> Risk -> Order Created
- * -> Submit -> Broker ACK -> First Fill -> Final Fill -> Protection... Then build: average, P50,
- * P95, P99, max, by broker, by symbol, by strategy, by time of day"): this is that calculation
- * — genuinely close to free now, exactly as the review predicted, because Order (#4) already
- * carries every timestamp this needs, and OrderService.recordProtectionPlaced (added alongside
- * this) closes the one gap that didn't already exist.
+ * Computes execution latency statistics across the stages of the order lifecycle:
+ * signal to risk acceptance, risk acceptance to submit, submit to broker ack, broker ack
+ * to first fill, and first fill to protection placed. Order already carries every
+ * timestamp this needs, so the per-stage durations fall out directly from its fields.
  *
- * HONEST SCOPE:
- * - "By broker" is NOT implemented — Order doesn't carry a broker field (it's reachable via
- *   credentialId, but this pass doesn't join that in). "By strategy" IS now implemented
- *   (reportByStrategyVersion below) — Order.strategyVersion is genuinely populated now, closing
- *   the gap this comment used to name.
- *   "By symbol" is directly supported; "by time of day" is derivable from createdAt by any
- *   caller of this service, not built as a pre-aggregated bucket here.
- * - Only orders reaching each pair of timestamps contribute to that stage's statistics — an
- *   order stuck in SUBMITTING with no brokerAckAt yet simply doesn't contribute a submitToAck
- *   sample, rather than being counted as zero or excluded from every other stage too.
- * - This measures the entry-order path only, matching everywhere else OMS is wired in this
- *   session — OCO/exit-side latency isn't part of what Order tracks.
+ * SCOPE:
+ * - Breakdown by broker is not supported (Order has no broker field directly; it's only
+ *   reachable via credentialId, which this service doesn't join against).
+ * - Breakdown by strategy version is supported via reportByStrategyVersion below.
+ * - Breakdown by symbol is supported directly; breakdown by time of day is left to callers,
+ *   who can derive it from createdAt rather than have it pre-aggregated here.
+ * - Only orders that reached both timestamps of a given stage contribute a sample for that
+ *   stage — an order still in SUBMITTING with no brokerAckAt yet simply contributes no
+ *   submitToAck sample, rather than counting as zero or being dropped from every stage.
+ * - This covers the entry-order path only; OCO/exit-side latency isn't tracked on Order.
  */
 @Service
 @RequiredArgsConstructor
@@ -59,9 +54,8 @@ public class LatencyMetricsService {
     /** Computes the full report over FILLED orders created within the given lookback window. */
     public ExecutionLatencyReport reportForSymbol(String symbol, int lookbackDays) {
         LocalDateTime cutoff = LocalDateTime.now().minusDays(lookbackDays);
-        // Review finding (unbounded metrics queries -- P2, confirmed real): pushes the cutoff
-        // this method already computes into the database query itself, rather than fetching
-        // every FILLED order ever placed (across every user) and filtering after.
+        // Apply the lookback cutoff at the query level so we only ever pull the orders this
+        // report actually needs, rather than fetching every FILLED order in the database.
         List<Order> orders = orderRepo.findByStatusAndCreatedAtAfter(com.tradevision.model.OrderStatus.FILLED, cutoff).stream()
             .filter(o -> symbol == null || symbol.equalsIgnoreCase(o.getSymbol()))
             .toList();
@@ -69,17 +63,13 @@ public class LatencyMetricsService {
     }
 
     /**
-     * Review finding ("Strategy/risk-profile/feature versioning fields exist but are
-     * unused/null" -- P1, full context in OrderService.create's own STRATEGY_VERSION comment):
-     * confirmed real and fixed -- Order.strategyVersion is now genuinely populated, closing the
-     * gap this class's own "HONEST SCOPE" javadoc used to name explicitly ("by strategy" was not
-     * implemented). Grouped by whatever distinct version strings actually appear in the data,
-     * same reasoning as SlippageMetricsService's own identical addition.
+     * Same report as {@link #reportForSymbol}, grouped by strategy version so latency can be
+     * compared across distinct strategy iterations. Orders with no strategy version recorded
+     * are excluded, since they can't be attributed to a group.
      */
     public java.util.Map<String, ExecutionLatencyReport> reportByStrategyVersion(String symbol, int lookbackDays) {
         LocalDateTime cutoff = LocalDateTime.now().minusDays(lookbackDays);
-        // Review finding (unbounded metrics queries -- P2, full context in reportForSymbol's
-        // own identical fix above): same fix, same reasoning.
+        // Cutoff applied at the query level, same as reportForSymbol above.
         List<Order> orders = orderRepo.findByStatusAndCreatedAtAfter(com.tradevision.model.OrderStatus.FILLED, cutoff).stream()
             .filter(o -> symbol == null || symbol.equalsIgnoreCase(o.getSymbol()))
             .filter(o -> o.getStrategyVersion() != null)
@@ -102,26 +92,20 @@ public class LatencyMetricsService {
     }
 
     /**
-     * Review finding ("Execution" — "exit latency, OCO latency, cancel latency, emergency
-     * flatten latency"): a genuine, but deliberately COARSE metric — position lifetime
-     * (openedAt -> closedAt), not the granular per-stage breakdown Order provides for entries.
-     * HONEST SCOPE: this is the one exit-side metric actually cleanly measurable without further
-     * OMS integration on the exit path — see OrderService's own javadoc for why OCO/resize/
-     * emergency-flatten remain outside OMS in this pass. It does NOT separately break out OCO
-     * acknowledgment, cancel latency, or emergency-flatten latency — those would need new
-     * timestamp fields threaded through PositionMonitorService/PositionSafetyService's exit
-     * paths beyond what this pass adds, the same scope this session has repeatedly declined to
-     * touch blind.
+     * A deliberately coarse exit-side metric: how long a position stays open, end to end
+     * (openedAt to closedAt), rather than a granular per-stage breakdown like Order gets on
+     * entry. This is the exit-side latency that's cleanly measurable without further OMS
+     * integration on the exit path; it does not separately break out OCO acknowledgment,
+     * cancel latency, or emergency-flatten latency, since those would need additional
+     * timestamp fields threaded through the position monitor/safety exit paths.
      *
-     * UPDATE ("Execution latency still entry-focused" review): entry-to-first-protection latency
-     * IS now tracked — see entryToProtectionReport below, backed by Position.ocoPlacedAt (that
-     * field's own javadoc has the full reasoning for why it's bounded to first-placement only).
+     * Entry-to-first-protection latency is tracked separately — see entryToProtectionReport
+     * below.
      */
     public LatencyStats positionLifetimeReport(String symbol, int lookbackDays) {
         LocalDateTime cutoff = LocalDateTime.now().minusDays(lookbackDays);
-        // Review finding (unbounded metrics queries -- P2): same fix as the two orderRepo sites
-        // above -- pushes the cutoff into the database query rather than fetching every closed
-        // position ever and filtering after.
+        // Cutoff applied at the query level so this only loads positions closed within the
+        // requested window, rather than every closed position ever recorded.
         List<Position> closed = positionRepo.findByStatusAndClosedAtAfter("CLOSED", cutoff).stream()
             .filter(p -> symbol == null || symbol.equalsIgnoreCase(p.getSymbol()))
             .toList();
@@ -135,19 +119,16 @@ public class LatencyMetricsService {
     }
 
     /**
-     * Review finding ("Execution latency still entry-focused" — "OCO submit/ack... timeline are
-     * not a complete lifecycle analytics model"): the bounded piece of that gap this pass closes
-     * — entry (Position.openedAt) to first protection placed (Position.ocoPlacedAt), covering
-     * both OMS-tracked and non-OMS-tracked positions alike, unlike LatencyMetricsService's own
-     * entry-order-only reportForSymbol above. Not scoped to CLOSED positions only (unlike
-     * positionLifetimeReport above) — an open position with protection already placed is a
-     * complete, real sample for this specific metric even though the position itself isn't done.
+     * Measures entry (Position.openedAt) to first protection placed (Position.ocoPlacedAt),
+     * covering both OMS-tracked and non-OMS-tracked positions alike, unlike the entry-order-only
+     * reportForSymbol above. Unlike positionLifetimeReport, this isn't scoped to CLOSED
+     * positions only — a still-open position that already has protection placed is a complete
+     * sample for this metric even though the position itself hasn't closed yet.
      */
     public LatencyStats entryToProtectionReport(String symbol, int lookbackDays) {
         LocalDateTime cutoff = LocalDateTime.now().minusDays(lookbackDays);
-        // Review finding (unbounded metrics queries -- P2): confirmed the most severe of the 4
-        // sites in this file -- findAll() with no filter at all, literally every position ever
-        // recorded in the entire database, before this fix. Now bounded at the database level.
+        // Bounded at the database level to the lookback window, rather than loading every
+        // position ever recorded.
         List<Position> candidates = positionRepo.findByOpenedAtAfter(cutoff).stream()
             .filter(p -> symbol == null || symbol.equalsIgnoreCase(p.getSymbol()))
             .filter(p -> p.getOcoPlacedAt() != null) // never fabricate — only positions that genuinely got protection contribute
@@ -184,12 +165,11 @@ public class LatencyMetricsService {
 
     private long percentile(List<Long> sortedAscending, int p) {
         int n = sortedAscending.size();
-        // Review finding (caught while writing this method's own tests, not after): p/100.0*n
-        // computed via floating-point division-then-multiplication can land a hair above an
-        // exact integer boundary (e.g. 95.00000000000001 instead of 95.0) due to how IEEE 754
-        // represents fractions like 0.95 — Math.ceil would then round UP to the wrong index.
-        // Subtracting a tiny epsilon before ceiling absorbs exactly that class of error without
-        // meaningfully affecting any genuinely non-boundary percentile.
+        // p/100.0*n computed via floating-point division-then-multiplication can land a hair
+        // above an exact integer boundary (e.g. 95.00000000000001 instead of 95.0) due to how
+        // IEEE 754 represents fractions like 0.95, which would make Math.ceil round up to the
+        // wrong index. Subtracting a tiny epsilon before ceiling absorbs that class of error
+        // without meaningfully affecting any genuinely non-boundary percentile.
         int index = (int) Math.ceil(p / 100.0 * n - 1e-9) - 1;
         index = Math.max(0, Math.min(index, n - 1));
         return sortedAscending.get(index);

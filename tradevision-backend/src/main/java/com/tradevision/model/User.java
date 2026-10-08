@@ -17,14 +17,12 @@ public class User {
     private String lastName;
     @Indexed(unique = true, sparse = true) private String email;   // primary login
     /**
-     * Review finding ("Alerting hooks" — "Email/SMS/webhook on halt, unprotected position,
-     * consecutive failures... not end-to-end ops"): confirmed the incident-raising side already
-     * existed (IncidentService) with real email delivery already wired — this is the genuinely
-     * missing piece, a generic outbound webhook URL an account holder can point at Slack,
-     * Telegram, PagerDuty, or any other service that accepts an incoming webhook, without this
-     * codebase needing its own provider-specific integration and credentials for each one.
-     * Optional — null/blank means webhook delivery is simply skipped for that user, same
-     * "best-effort, never blocks the real safety action" pattern as email alerts.
+     * A generic outbound webhook URL an account holder can point at Slack, Telegram, PagerDuty,
+     * or any other service that accepts an incoming webhook, so incidents (see
+     * IncidentService) can reach their own alerting tool without this codebase needing a
+     * separate provider-specific integration and credentials for each one. Optional —
+     * null/blank means webhook delivery is simply skipped for that user, best-effort and never
+     * blocking the underlying safety action, same as email alerts.
      */
     private String alertWebhookUrl;
     @Indexed(unique = true, sparse = true) private String mobile;  // optional
@@ -41,13 +39,11 @@ public class User {
     private long   tokenVersion    = 1L;
     /** Hashed refresh token stored server-side for rotation */
     private String refreshTokenHash;
-    // Review finding ("Authentication still has a few architecture weaknesses" -- P1, full
-    // context in AuthService.refreshToken's own updated comment): the previously-valid hash,
-    // kept for exactly one rotation cycle specifically to detect reuse -- if THIS hash (not the
-    // current one) is ever presented again, it means whoever's presenting it has an
-    // already-rotated-away token, which a legitimate client would never do (it would have
-    // received and be using the newly-rotated token instead). That's the actual signal of a
-    // stolen refresh token being used after the legitimate client already rotated past it.
+    // The previously-valid refresh token hash, kept for exactly one rotation cycle to detect
+    // reuse -- if THIS hash (not the current one) is ever presented again, it means whoever
+    // presented it holds an already-rotated-away token, which a legitimate client would never
+    // do (it would be using the newly-rotated token instead). That is the signal of a stolen
+    // refresh token being replayed after the legitimate client already rotated past it.
     private String previousRefreshTokenHash;
     /** When refresh token expires */
     private LocalDateTime refreshTokenExpiry;

@@ -22,11 +22,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Review finding ("Public proxy endpoints remain abuseable" -- P1, full context in
- * DistributedRateLimitService's own javadoc): confirms the actual new behavior -- rate limiting
- * is now enforced via the shared, MongoDB-backed DistributedRateLimitService, not a JVM-local
- * ConcurrentHashMap. This file did not exist before this fix; ProxyController had zero test
- * coverage previously.
+ * Confirms rate limiting on the public proxy endpoints is enforced via the shared,
+ * MongoDB-backed DistributedRateLimitService, not a JVM-local ConcurrentHashMap.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -63,9 +60,7 @@ class ProxyControllerTest {
     }
 
     /**
-     * Review finding ("Proxy is still publicly accessible" -- external review, twenty-sixth
-     * pass, P2, full context in ProxyController's own updated header javadoc): the actual
-     * tests for the new authentication gate.
+     * Tests for the authentication gate on the proxy endpoints.
      */
     @Test
     @DisplayName("binanceSpot: an unauthenticated request (null principal) is refused with 401, never reaching the rate limiter or the upstream forward call")
@@ -89,10 +84,9 @@ class ProxyControllerTest {
         assertThat(response.getStatusCode().value()).isEqualTo(429);
     }
 
-    // P2 fix ("size-check-after-full-download"): ProxyController's own HTTP client changed from
-    // RestTemplate to java.net.http.HttpClient (streaming size cap, see ProxyController's own
-    // updated forward()/SizeCappedBodySubscriber javadoc) -- this reflection helper and the mock
-    // type below changed to match. The field name ("http") is unchanged.
+    // ProxyController's own HTTP client is java.net.http.HttpClient (streaming size cap, see
+    // ProxyController's own forward()/SizeCappedBodySubscriber javadoc) -- this reflection
+    // helper and the mock type below target that. The field name ("http") is unchanged.
     private void injectMockHttpClient(ProxyController target, java.net.http.HttpClient mockHttp) throws Exception {
         java.lang.reflect.Field httpField = ProxyController.class.getDeclaredField("http");
         httpField.setAccessible(true);
@@ -108,12 +102,9 @@ class ProxyControllerTest {
     }
 
     /**
-     * P3-2 fix ("ProxyController.fngApi -- unauthenticated relay -- require auth or cache
-     * server-side" -- external review, full context in ProxyController's own updated fngApi
-     * comment): the actual new caching behavior -- a second anonymous request for the same
-     * path+query within the cache TTL must be served from cache, never trigger a second real
-     * upstream call. This is the substance of the fix: it's what makes an anonymous caller
-     * unable to force unlimited fresh upstream fetches through this server.
+     * A second anonymous request for the same path+query within the cache TTL must be served
+     * from cache, never trigger a second real upstream call -- this is what prevents an
+     * anonymous caller from forcing unlimited fresh upstream fetches through this server.
      */
     @Test
     @DisplayName("fngApi: two requests for the same path within the cache TTL hit the real upstream exactly once, the second is served from cache")
@@ -160,16 +151,14 @@ class ProxyControllerTest {
     }
 
     // ---------------------------------------------------------------------------------------
-    // Audit item P2 ("ProxyController size-check-after-full-download"): external review,
-    // confirmed real by direct inspection -- forward()'s own MAX_RESPONSE_BYTES check used to
-    // run AFTER RestTemplate had already fully downloaded and buffered the entire upstream
-    // body, so an oversized response still cost this server the full download before being
-    // rejected. The fix streams the response through a custom BodySubscriber
-    // (SizeCappedBodySubscriber) that counts bytes as they arrive and cancels the subscription
-    // the instant the cap is exceeded -- this test proves the ABORT behavior itself: a
-    // BodyHandler that simulates exactly what SizeCappedBodySubscriber does (feed it chunks one
-    // at a time, same as the real HttpClient would) must cancel the subscription as soon as the
-    // running total crosses the cap, and must never accumulate a chunk that would push it over.
+    // forward()'s own MAX_RESPONSE_BYTES check streams the response through a custom
+    // BodySubscriber (SizeCappedBodySubscriber) that counts bytes as they arrive and cancels
+    // the subscription the instant the cap is exceeded, so an oversized response never costs
+    // this server a full download before being rejected. This test proves the ABORT behavior
+    // itself: a BodyHandler that simulates exactly what SizeCappedBodySubscriber does (feed it
+    // chunks one at a time, same as the real HttpClient would) must cancel the subscription as
+    // soon as the running total crosses the cap, and must never accumulate a chunk that would
+    // push it over.
     // ---------------------------------------------------------------------------------------
 
     @Test

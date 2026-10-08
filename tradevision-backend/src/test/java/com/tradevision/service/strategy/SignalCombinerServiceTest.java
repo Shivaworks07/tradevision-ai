@@ -12,14 +12,11 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding ("Client-Side Signal Generation" -- "Port the entire TA engine... to Java"):
- * tests the actual verified port -- see SignalCombinerService's own javadoc for the full
- * verification methodology, INCLUDING a real correction made mid-build after discovering an
- * earlier version had been verified against a hand-retyped (and silently simplified) copy of
- * the real TypeScript rather than the actual file. This test file's expected values are the
- * SAME real reference output confirmed after that correction, re-verified with the actual
- * emoji/punctuation codepoints checked directly (not just displayed), not just the direction/
- * confidence numbers.
+ * Tests the Java port of the TA engine's signal combination logic against its TypeScript
+ * source -- see SignalCombinerService's own javadoc for the full verification methodology.
+ * This test file's expected values are verified against the real TypeScript reference output,
+ * with the actual emoji/punctuation codepoints checked directly (not just displayed), not just
+ * the direction/confidence numbers.
  */
 class SignalCombinerServiceTest {
 
@@ -89,9 +86,8 @@ class SignalCombinerServiceTest {
         assertThat(result.direction()).isEqualTo("WAIT");
         assertThat(result.signal()).isEqualTo("NEUTRAL");
         assertThat(result.confidence()).isEqualTo(35.0);
-        // Review finding's own correction, verified again here: the real red-circle (U+1F534),
-        // warning (U+26A0), and middle-dot (U+00B7) codepoints must genuinely be present, not
-        // an earlier version's silently-simplified ASCII stand-in.
+        // The real red-circle (U+1F534), warning (U+26A0), and middle-dot (U+00B7) codepoints
+        // must genuinely be present, not an ASCII stand-in.
         assertThat(result.summary().codePoints().anyMatch(cp -> cp == 0x1F534)).isTrue();
         assertThat(result.summary().codePoints().anyMatch(cp -> cp == 0x26A0)).isTrue();
         assertThat(result.summary().codePoints().anyMatch(cp -> cp == 0x00B7)).isTrue();

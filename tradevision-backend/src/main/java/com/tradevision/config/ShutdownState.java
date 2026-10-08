@@ -6,43 +6,31 @@ import org.springframework.context.SmartLifecycle;
 import org.springframework.stereotype.Component;
 
 /**
- * Review finding (P1 #29 — "Shutdown is improved but still not a true trading shutdown"):
- * server.shutdown=graceful (already configured) stops Tomcat accepting NEW HTTP requests, and
- * the autoTradeExecutor already waits for in-flight async tasks to finish. Neither of those
- * stops the @Scheduled reconciliation loop from starting a NEW cycle, or a signal evaluation
- * that's about to begin (not yet submitted to the executor) from actually starting — this is
- * the missing explicit "stop initiating new work" signal, checked at the two points that matter:
- * AutoTradeService.evaluateSignal (before evaluating any new incoming signal) and
- * PositionMonitorService's scheduled reconciliation (before starting a new cycle).
+ * Signals application shutdown so that scheduled and asynchronous trading work stops starting
+ * new cycles while letting work already in progress finish. server.shutdown=graceful stops
+ * Tomcat from accepting new HTTP requests, and autoTradeExecutor waits for in-flight async tasks
+ * to finish, but neither of those prevents the @Scheduled reconciliation loop from starting a new
+ * cycle, or a signal evaluation not yet submitted to the executor from beginning. This class is
+ * the explicit "stop initiating new work" signal, checked at AutoTradeService.evaluateSignal
+ * before evaluating any new incoming signal, and at PositionMonitorService's scheduled
+ * reconciliation before starting a new cycle.
  *
- * Honest scope: this does NOT interrupt work already in progress — an evaluation or
- * reconciliation cycle that has already started runs to completion (the SAME safe behavior
- * server.shutdown=graceful already provides for in-flight HTTP requests). It only prevents NEW
- * work from starting once shutdown has begun. Closing the WebSocket listener itself on shutdown
- * is further scope not addressed here — BinanceUserDataStreamService's own lifecycle isn't
- * touched by this change.
+ * This does not interrupt work already in progress — an evaluation or reconciliation cycle
+ * already running finishes normally, mirroring the behavior server.shutdown=graceful provides
+ * for in-flight HTTP requests. It only prevents new work from starting once shutdown has begun.
+ * Closing the WebSocket listener itself on shutdown is a separate concern, owned by
+ * BinanceUserDataStreamService's own lifecycle.
  *
- * P3-6 fix ("ShutdownState via @PreDestroy -- flag flips late in shutdown -- SmartLifecycle
- * stopping schedulers first" -- external review, confirmed real: @PreDestroy methods run during
- * AbstractApplicationContext#destroyBeans(), which Spring's own documented shutdown sequence
- * (AbstractApplicationContext#doClose()) calls ONLY AFTER getLifecycleProcessor().onClose() has
- * already run every Lifecycle/SmartLifecycle bean's stop() -- meaning the OLD @PreDestroy-based
- * flag flip happened strictly LATER than this application's own @Scheduled task infrastructure
- * (SchedulingConfig's ThreadPoolTaskScheduler beans, which are themselves Lifecycle-managed) had
- * already begun its own shutdown, not before. A new scheduled cycle could still be dispatched and
- * pass this class's own isShuttingDown() check (still false) in that window, exactly defeating
- * the "stop initiating new work" guarantee this class exists to provide. The actual fix:
- * implementing SmartLifecycle instead moves the flag flip into stop(), which the lifecycle
- * processor invokes BEFORE any @PreDestroy method runs, and getPhase() returns Integer.MAX_VALUE
- * -- SmartLifecycle's own documented stop ordering runs the HIGHEST phase FIRST, so this flips
- * before any other Lifecycle bean at the (much more common) default phase 0, including the
- * scheduler infrastructure itself. HONEST SCOPE: this deployment's test suite has no live Spring
- * ApplicationContext integration test exercising a real container shutdown (every existing test
- * here mocks this class directly), so the exact relative phase of SchedulingConfig's own
- * ThreadPoolTaskScheduler beans was not independently confirmed against a running context --
- * Integer.MAX_VALUE is nonetheless a strict, verifiable improvement over @PreDestroy regardless
- * of that scheduler's own phase, since SmartLifecycle.stop() is unconditionally guaranteed to run
- * before ANY @PreDestroy callback fires at all, per Spring's own documented shutdown contract.
+ * Implemented as a SmartLifecycle rather than a @PreDestroy method, and deliberately: @PreDestroy
+ * callbacks run during AbstractApplicationContext#destroyBeans(), which Spring's shutdown
+ * sequence invokes only after every Lifecycle/SmartLifecycle bean's stop() has already run. A
+ * @PreDestroy-based flag flip would therefore happen strictly later than the scheduler
+ * infrastructure's own shutdown (SchedulingConfig's ThreadPoolTaskScheduler beans, themselves
+ * Lifecycle-managed), leaving a window where a new scheduled cycle could still be dispatched and
+ * see a stale "not shutting down" flag. Implementing SmartLifecycle moves the flag flip into
+ * stop(), which the lifecycle processor invokes before any @PreDestroy method runs, and
+ * getPhase() returns Integer.MAX_VALUE so this flips before any other Lifecycle bean at the
+ * default phase 0 — SmartLifecycle's documented stop ordering runs the highest phase first.
  */
 @Component
 public class ShutdownState implements SmartLifecycle {
@@ -80,10 +68,10 @@ public class ShutdownState implements SmartLifecycle {
 
     @Override
     public int getPhase() {
-        // Highest phase stops FIRST (SmartLifecycle's own documented contract) -- this flag must
-        // flip before the scheduler infrastructure (or anything else at the default phase 0)
-        // gets its own stop() called, so a scheduled method's isShuttingDown() check is never
-        // reading a stale "false" during the shutdown window this class exists to close.
+        // Highest phase stops first under SmartLifecycle's contract, so this flag flips before
+        // the scheduler infrastructure (or anything else at the default phase 0) has its own
+        // stop() called — a scheduled method's isShuttingDown() check never reads a stale
+        // "false" during shutdown.
         return Integer.MAX_VALUE;
     }
 }

@@ -8,12 +8,9 @@ import java.math.BigDecimal;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding ("Position P&L architecture is still scattered" -- full context in
- * RealizedPnlService's own javadoc): verifies the actual consolidated formula against the exact
- * behavior of all three original sites it replaces (PositionSafetyService's full-close path,
- * its own separate recordPartialFlattenPnl path, and PositionMonitorService's OCO/TP/SL path) --
- * confirmed via a standalone harness before this file was written, reproduced here as permanent
- * test coverage none of the three original, scattered implementations ever had.
+ * Verifies the consolidated realized-P&L formula covers full closes, partial closes,
+ * and the fee-handling edge cases used across position-closing paths (full-close,
+ * partial flatten, and OCO/TP/SL exits).
  */
 class RealizedPnlServiceTest {
 
@@ -26,7 +23,7 @@ class RealizedPnlServiceTest {
     private static final BigDecimal EXIT_FEE = new BigDecimal("5.1");
 
     @Test
-    @DisplayName("calculate: a full close (exitQty == currentQuantity) matches PositionSafetyService's original full-close formula exactly -- (51000-50000)*1.0 - 5.0 - 5.1 = 989.9")
+    @DisplayName("calculate: a full close (exitQty == currentQuantity) computes (51000-50000)*1.0 - 5.0 - 5.1 = 989.9")
     void fullClose_matchesOriginalFullCloseFormula() {
         var result = service.calculate(ENTRY_PRICE, EXIT_PRICE, FULL_QTY, FULL_QTY, ENTRY_FEE, EXIT_FEE);
 
@@ -35,7 +32,7 @@ class RealizedPnlServiceTest {
     }
 
     @Test
-    @DisplayName("calculate: a partial close (0.4 of 1.0) matches both PositionSafetyService's and PositionMonitorService's original partial-close formulas exactly -- confirmed identical between the two original sites, not just internally consistent")
+    @DisplayName("calculate: a partial close (0.4 of 1.0) prorates the entry fee by the closed fraction and deducts the full exit fee")
     void partialClose_matchesBothOriginalPartialCloseFormulas() {
         var result = service.calculate(ENTRY_PRICE, EXIT_PRICE, new BigDecimal("0.4"), FULL_QTY, ENTRY_FEE, EXIT_FEE);
 

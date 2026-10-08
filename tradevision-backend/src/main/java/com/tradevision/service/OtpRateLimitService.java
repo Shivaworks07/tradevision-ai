@@ -14,11 +14,11 @@ import java.time.LocalDateTime;
 import static org.springframework.data.mongodb.core.query.Criteria.where;
 
 /**
- * Review finding (this doc, "BLOCKER #7"): applies a cooldown between consecutive sends and a
- * cap on sends within a rolling window, per identifier+purpose — regardless of whether the
- * identifier belongs to an existing user. Uses the same atomic-findAndModify pattern as
- * PositionSlotReservationService for the same reason: a plain read-then-write here has the same
- * race a determined abuser could exploit by firing concurrent requests.
+ * Enforces a cooldown between consecutive OTP sends and a cap on sends within a rolling
+ * window, keyed by identifier+purpose — regardless of whether the identifier belongs to an
+ * existing user. Uses the same atomic-findAndModify pattern as PositionSlotReservationService:
+ * a plain read-then-write here would leave a window for concurrent requests to race past the
+ * cooldown/cap checks, so every state transition is conditioned on the state actually read.
  */
 @Service
 @RequiredArgsConstructor
@@ -40,12 +40,11 @@ public class OtpRateLimitService {
         return checkAndRecord(identifier, purpose, 0);
     }
 
-    // Review finding (this doc, "#18" / "#6 concurrency bug"): the first-request race used to
-    // resolve a DuplicateKeyException by unconditionally allowing the second request too — two
-    // concurrent first-time requests could both get an OTP sent. Fixed by retrying against the
-    // document that actually won the race, instead of assuming the losing request is fine.
-    // Same fix applied to the window-reset path, which had the identical read-then-write race.
-    // Bounded retry depth so a pathological repeated-collision case fails safe instead of
+    // On a DuplicateKeyException for the first-insert path, re-check against whichever document
+    // actually won the insert race rather than assuming the losing request is fine — two
+    // concurrent first-time requests must not both be allowed through. The window-reset path
+    // below applies the same conditioned-retry approach for its own read-then-write step.
+    // Retry depth is bounded so a pathological repeated-collision case fails safe instead of
     // recursing forever.
     private RateLimitResult checkAndRecord(String identifier, String purpose, int attempt) {
         if (attempt > 3) {

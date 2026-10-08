@@ -1,7 +1,5 @@
-// Review finding ("UI has no real Position/Execution dashboard"): deliberately reuses the exact
-// design tokens already established in broker-settings.component.scss — same background, card,
-// border, and accent colors, same font — rather than inventing a new visual language for one
-// more internal dashboard page in an app that already has a consistent one.
+// Reuses the same design tokens as broker-settings.component.scss (background, card,
+// border and accent colors, font) to keep a consistent visual language across dashboards.
 
 .bs-wrap {
   background: #080C18;

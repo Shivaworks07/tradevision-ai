@@ -8,21 +8,18 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Review finding ("historical replay engine" -- external review, P3, confirmed real by direct
- * inspection before this fix: ServerSignalEngine.analyze(List&lt;Candle&gt;) is a genuinely pure,
- * stateless function -- no database reads, no side effects -- meaning it can be replayed against
- * any sequence of candles directly, without needing a new, separate data-storage subsystem to
- * build first): the actual replay engine.
+ * Replays the strategy logic's own decision-making against a given candle sequence, sliding a
+ * fixed-size window across it and recording what signal (if any) would have fired at each step.
+ * This works because {@code ServerSignalEngine.analyze(List<Candle>)} is a pure, stateless
+ * function -- no database reads, no side effects -- so it can be replayed against any candle
+ * sequence directly without a separate data-storage subsystem.
  *
- * HONEST SCOPE, stated plainly: this replays the STRATEGY LOGIC's own decision-making against a
- * given candle sequence, sliding a fixed-size window across it and recording what signal (if
- * any) would have fired at each step. It does NOT replay real order-book depth, real slippage,
- * or real fill behavior -- PaperBrokerAdapter's own simulator (see its own class javadoc) is
- * the closer analogue for that, and even that is an approximation, not a recorded real market.
- * This also does not fetch or store historical candle data itself -- the caller supplies the
- * candle sequence, from wherever they already have it (a BrokerAdapter's own recent-candle
- * fetch, or a caller-provided historical set) -- building a genuine historical-candle archive is
- * a separate, larger concern this fix does not attempt.
+ * <p>Scope: this replays the strategy's decisions only, not real order-book depth, slippage, or
+ * fill behavior -- {@code PaperBrokerAdapter}'s simulator (see its own class javadoc) is the
+ * closer analogue for that, and even that is an approximation rather than a recorded real market.
+ * This also does not fetch or store historical candle data itself; the caller supplies the candle
+ * sequence, from wherever they already have it (a {@code BrokerAdapter}'s recent-candle fetch, or
+ * a caller-provided historical set).
  */
 @Service
 @RequiredArgsConstructor
@@ -56,11 +53,9 @@ public class HistoricalReplayService {
                 // step doesn't poison the whole run" principle a real backtest needs.
                 continue;
             }
-            // Review finding, same context as this method's own javadoc: analyze() never
-            // actually returns null -- confirmed directly by inspection, not assumed -- "WAIT"
-            // is its own real convention for "no genuine signal at this step" (see its own
-            // NEUTRAL/WAIT branches). Filtering on that instead of a null check that would
-            // never have actually filtered anything.
+            // analyze() never returns null; "WAIT" is its convention for "no genuine signal at
+            // this step" (see its NEUTRAL/WAIT branches), so filtering on that rather than a
+            // null check is what actually excludes no-signal steps.
             if (signal != null && !"WAIT".equals(signal.direction())) {
                 results.add(new ReplayResult(window.get(window.size() - 1).time(), signal));
             }

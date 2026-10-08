@@ -11,11 +11,10 @@ import org.springframework.stereotype.Service;
 import java.util.List;
 
 /**
- * Review item #17 — this is explicitly NOT the ML pipeline. It's the one honest, bounded piece
- * of it that's actually buildable today: turning resolved TradeCallRecord history into a clean,
- * labeled export. No model is trained here, no probability is predicted, nothing is validated.
- * That work needs enough real resolved trades to exist first (which review item #16's TTL fix
- * is a prerequisite for) and then a real training/validation pipeline outside this codebase.
+ * Exports resolved TradeCallRecord history as a clean, labeled dataset for downstream
+ * ML training. This service only shapes and exports the data — it does not train any
+ * model, predict any probability, or validate anything; that happens in a separate
+ * training/validation pipeline outside this codebase, once enough resolved trades exist.
  */
 @Service
 @RequiredArgsConstructor
@@ -36,12 +35,9 @@ public class MLDatasetExportService {
         var outcome = c.getOutcome();
 
         return new MLDatasetRow(
-            // Review finding ("Financial values still mix double and BigDecimal" -- external
-            // review, twenty-fourth pass, P2, full context in TradeCallRecord's own updated
-            // field comment): these 5 fields are BigDecimal now on the source record --
-            // .doubleValue() converts at this specific export boundary, since MLDatasetRow
-            // deliberately stays double (an external export format, same reasoning as
-            // TradeCallRequest staying double at the JSON input boundary).
+            // These fields are BigDecimal on the source record; MLDatasetRow deliberately
+            // stays double since it's an external export format, so we convert here at the
+            // export boundary rather than propagating BigDecimal outward.
             c.getId(), c.getSymbol(), c.getMarket(), c.getTimeframe(),
             c.getDirection(), c.getConfidence(), c.getEntryPrice().doubleValue(), c.getStopLoss().doubleValue(),
             c.getTarget1().doubleValue(), c.getRrRatio().doubleValue(), c.getAtr().doubleValue(),

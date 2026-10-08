@@ -124,14 +124,12 @@ export interface TradeCall {
 export class TaEngineService {
 
   // ── ML Memory Store (localStorage-backed) ─────────────────
-  // Review finding (P1 #27 — "Frontend local ML memory should not influence production
-  // execution"): verified true, not just assumed — traced every execution-relevant path this
-  // session (server signal computation, sizing, the SL/ATR validation gate, the min-confidence
-  // check) and confirmed each one uses ServerSignalEngine's own independent Java computation,
-  // never anything from this store. This mlStore only affects what gets DISPLAYED to the user
-  // and what gets SUBMITTED as the client's claimed signal — which the backend already treats as
-  // advisory, not authoritative, for every actual money-moving decision. Keep it that way: this
-  // store must never become an input to anything the backend trusts for real execution.
+  // This store only affects what gets displayed to the user and what gets submitted as the
+  // client's claimed signal, which the backend treats as advisory, not authoritative. Every
+  // execution-relevant decision (server signal computation, sizing, the SL/ATR validation
+  // gate, the min-confidence check) uses ServerSignalEngine's own independent Java computation
+  // instead — this store must never become an input to anything the backend trusts for
+  // real execution.
   private mlStore: Map<string, MLMemory> = new Map();
 
   constructor() { this.loadMLMemory(); }

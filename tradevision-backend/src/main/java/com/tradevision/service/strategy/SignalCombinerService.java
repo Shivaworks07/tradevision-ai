@@ -10,52 +10,22 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Review finding ("Client-Side Signal Generation = Trusting the Browser with Money" -- "Port the
- * entire TA engine... to Java on the server"): a genuinely verified port of
- * TaEngineService.analyzeWithMTF (its combination logic) AND its own buildMTFContext helper --
- * the pieces that take the base signal (already ported and verified as ServerSignalEngine -- see
- * that class's own javadoc) and fold in multi-timeframe alignment, market regime, SMC,
- * order-flow, and volume-profile data to produce the final trade call. This is the last of the
- * five pieces this porting effort covers.
+ * Combines a base technical-analysis signal with multi-timeframe (MTF) alignment, market
+ * regime, Smart Money Concepts bias, order-flow bias, and volume-profile context to produce the
+ * final trade call and a human-readable summary of the reasoning behind it.
  *
- * A REAL CORRECTION MADE MID-BUILD, STATED PLAINLY: an earlier version of this class was
- * verified against a hand-retyped copy of the real TypeScript, not the real file itself -- and
- * that retyping had silently simplified things without noticing: the real file's emoji
- * (warning/circle/checkmark symbols throughout), its middle-dot separator between MTF
- * descriptions, its em-dashes, and -- more seriously -- most of the real return object's own
- * fields (regime*, mtfContext, smcBias/smcSetup/smcBiasStrength, ofBias/ofScore/ofReasons,
- * vpLocation/vpPoc/vpVah/vpVal, mlAdjusted) were missing entirely from that first version. This
- * was caught by re-reading the actual file directly rather than trusting the earlier
- * "verification," which had in fact only verified a simplified stand-in against itself. This
- * version instead extracts the real method text programmatically (Python string extraction with
- * brace-matching, not manual retyping) to build its own reference harness, removing the exact
- * failure mode that caused the first version's inaccuracy.
+ * MTF alignment is computed first from up to two higher timeframes (via buildMTFContext), and
+ * adjusts confidence based on how strongly those timeframes agree or disagree with the base
+ * signal's direction; a strong enough conflict can flip the call to WAIT regardless of the base
+ * signal's own confidence. Market regime, SMC, order flow, and volume profile are then each
+ * applied as independent confidence adjustments and summary notes, since they capture different,
+ * largely orthogonal aspects of market structure (volatility regime, institutional order-block
+ * positioning, derivatives-market sentiment, and traded-volume distribution respectively).
  *
- * HOW "VERIFIED" IS DEFINED HERE NOW: the real analyzeWithMTF and buildMTFContext method bodies
- * were extracted programmatically from the actual ta-engine.service.ts file, assembled into a
- * standalone harness (with analyze() and getMLMemory() stubbed -- analyze() because the base
- * signal is separately verified as ServerSignalEngine, getMLMemory() because it's the deliberate,
- * disclosed scope boundary explained below), compiled with this project's own tsc, and run
- * against 4 scenarios: full alignment, MTF strongly against (flips to WAIT), a SHORT signal with
- * conflicting SMC and a RANGING-regime downgrade, and no higher-timeframe data at all (returns
- * base unmodified). This Java class was run against the identical inputs (including the exact
- * same seeded higher-timeframe candle sequences, so buildMTFContext's own real EMA/RSI/MACD
- * output is part of what's compared, not just the combination logic on top of it) and every
- * field -- direction, signal, confidence, every regime-prefixed/mtf-prefixed/smc-prefixed/
- * of-prefixed/vp-prefixed field, and the full,
- * exact summary text including its real emoji and punctuation -- matched exactly.
- *
- * HONEST SCOPE, STATED PLAINLY: the real frontend's ML-memory-based confidence adjustment
- * (win-rate learned from historical outcomes, stored in the browser's own localStorage) is
- * DELIBERATELY NOT REPLICATED here. Checked before deciding this, not assumed: the frontend's
- * own syncMLFromHistory() confirms the real source of truth for that data is already server-side
- * call-outcome history (localStorage is a client-side cache of it, not the origin) -- so a
- * server-side equivalent is possible in principle. But the actual weight-LEARNING subsystem
- * (updateMLFromOutcome -- a learning-rate-based nudge to per-indicator weights based on which
- * ones predicted correctly) is a separate, substantial piece of work beyond porting this
- * combination logic itself, and was not attempted here. Every one of the verification scenarios
- * above used the ml==null case, so the verified behavior here IS the server's honest current
- * behavior, not a divergence from what was tested.
+ * Confidence-based win-rate learning from historical trade outcomes (per-indicator weight
+ * adjustment based on which indicators predicted correctly) is out of scope for this class —
+ * mtfWeight is always the fixed default here rather than a learned value, and mlAdjusted is
+ * always false. That learning subsystem is a separate concern from this combination logic.
  */
 @Service
 public class SignalCombinerService {
@@ -96,9 +66,8 @@ public class SignalCombinerService {
         }
 
         double newConf = base.confidence();
-        // Review finding's own honest-scope note above: mtfWeight is always the 1.5 default here
-        // -- the real frontend's ml?.weights.mtfAlignment (a learned value) has no server-side
-        // equivalent in this pass, matching the ml==null case every verification scenario used.
+        // Fixed default weight for MTF alignment's influence on confidence; a learned,
+        // per-indicator weight (adjusted from historical win-rate) is out of scope here.
         double mtfWeight = 1.5;
 
         if (alignScore > 0) newConf = Math.min(96, base.confidence() + Math.round(alignScore * 0.4 * mtfWeight));
@@ -118,7 +87,7 @@ public class SignalCombinerService {
             newConf = Math.max(35, newConf);
         }
 
-        // ML win-rate adjustment: deliberately absent -- see this class's own javadoc.
+        // Win-rate-based ML confidence adjustment is out of scope for this combination logic.
         boolean mlAdjusted = false;
 
         StringBuilder regimeNote = new StringBuilder();
@@ -196,10 +165,9 @@ public class SignalCombinerService {
     }
 
     /**
-     * Review finding ("Client-Side Signal Generation" -- full context in this class's own
-     * javadoc): the real buildMTFContext, verified the same way -- programmatically extracted
-     * from the real file, run against seeded higher-timeframe candles, compared field-by-field
-     * (including RSI to full double precision) against this Java port. Exact match.
+     * Derives a higher-timeframe trend/momentum reading from a candle series: EMA20/50/200
+     * positioning, Wilder RSI, and full MACD histogram, combined into a single alignment score
+     * and coarse trend label used by the MTF alignment logic above.
      */
     private MTFContext buildMTFContext(List<Candle> candles, String tf) {
         double[] closes = candles.stream().mapToDouble(Candle::close).toArray();

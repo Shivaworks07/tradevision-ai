@@ -22,15 +22,10 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 /**
- * Review finding ("#6 — Fill Ledger", agreed sequencing 4 -> 6 -> 5 -> 9 -> 7): verifies the
- * actual per-fill persistence and the honest "don't fabricate" rules FillRecord's own javadoc
- * describes — quoteCommission only when genuinely known, isAggregate only when genuinely
- * synthesized, never as a stand-in for missing per-trade data.
- *
- * UPDATE ("Fill Ledger" review — "IDs are inconsistent" / "lacks proper idempotency" /
- * "FillRecord needs positionId"): every call below updated to the new 10-arg signature
- * (positionId added as the second parameter), and new tests added for fillIdentity computation
- * and duplicate-key handling — see FillLedgerService's own javadoc for the full design.
+ * Verifies per-fill persistence and the "don't fabricate" rules FillRecord's javadoc
+ * describes -- quoteCommission only when genuinely known, isAggregate only when genuinely
+ * synthesized, never as a stand-in for missing per-trade data. Also covers fillIdentity
+ * computation and duplicate-key handling -- see FillLedgerService's javadoc for the full design.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -39,9 +34,8 @@ class FillLedgerServiceTest {
     @Mock FillRecordRepository fillRecordRepo;
     @Mock org.springframework.data.mongodb.core.MongoTemplate mongoTemplate;
     @Mock com.tradevision.service.broker.BrokerAdapter adapter;
-    // Review finding ("Fill-identity WEAK path needs more conservative reconciliation handling"
-    // -- P1, full context in FillLedgerService.saveOne's own updated javadoc): needed now that a
-    // WEAK-identity duplicate-key collision raises a real incident.
+    // Needed because a WEAK-identity duplicate-key collision raises a real incident (see
+    // FillLedgerService.saveOne's javadoc).
     @Mock IncidentService incidentService;
     @InjectMocks FillLedgerService service;
 
@@ -133,7 +127,7 @@ class FillLedgerServiceTest {
         assertThat(result).isEmpty(); // nothing succeeded, but no exception escaped either
     }
 
-    // ── Idempotency ("Fill Ledger also lacks proper idempotency") ────────────────
+    // ── Idempotency ────────────────────────────────────────────────────────────
 
     @Test
     @DisplayName("recordFills: fillIdentity for a genuine per-trade fill with a broker trade id is credentialId+brokerTradeId")
@@ -229,11 +223,11 @@ class FillLedgerServiceTest {
         List<FillRecord> second = service.recordFills("order1", "pos1", "user1", "cred1", "BTCUSDT", "BUY", "USDT", fills, null, null);
 
         assertThat(first).hasSize(1);
-        assertThat(second).isEmpty(); // the review's own named scenario: no double-counted fill
+        assertThat(second).isEmpty(); // no double-counted fill
     }
 
     @Test
-    @DisplayName("recordFills: a WEAK-identity duplicate-key collision (no real broker trade id -- price/qty/commission/timestamp fallback) raises a CRITICAL incident rather than a routine, quiet log line -- the actual review fix (\"Fill-identity WEAK path needs more conservative reconciliation handling\"), since this collision might be a real second fill silently dropped, not a confirmed duplicate")
+    @DisplayName("recordFills: a WEAK-identity duplicate-key collision (no real broker trade id -- price/qty/commission/timestamp fallback) raises a CRITICAL incident rather than a routine, quiet log line, since this collision might be a real second fill silently dropped, not a confirmed duplicate")
     void weakIdentityCollision_raisesCriticalIncident() {
         // No tradeId -- this Fill's own identityConfidence resolves to WEAK.
         List<Fill> fills = List.of(new Fill(BigDecimal.valueOf(100), BigDecimal.valueOf(0.5), BigDecimal.valueOf(0.05), "USDT", null, LocalDateTime.now()));
@@ -257,7 +251,7 @@ class FillLedgerServiceTest {
     }
 
     @Test
-    @DisplayName("recordFills (overload with brokerOrderId): the resulting FillRecord carries both orderId (unchanged from the caller) AND the new brokerOrderId -- the actual review fix (\"FillRecord.orderId is still inconsistent across paths\"), verified for the specific caller (AutoTradeService's entry path) that has a genuine broker-side id to add alongside its existing OMS orderId")
+    @DisplayName("recordFills (overload with brokerOrderId): the resulting FillRecord carries both orderId (unchanged from the caller) and the new brokerOrderId, verified for the specific caller (AutoTradeService's entry path) that has a genuine broker-side id to add alongside its existing OMS orderId")
     void recordFillsOverload_populatesBothOrderIdAndBrokerOrderId() {
         List<Fill> fills = List.of(new Fill(BigDecimal.valueOf(100), BigDecimal.valueOf(0.5), BigDecimal.valueOf(0.05), "USDT", "111", LocalDateTime.now()));
         when(fillRecordRepo.save(any())).thenAnswer(i -> i.getArgument(0));
@@ -270,7 +264,7 @@ class FillLedgerServiceTest {
     }
 
     @Test
-    @DisplayName("backfillHistoricalCommissionConversion: a commission in a non-quote asset (BNB on a BTCUSDT trade) is converted using the REAL historical price at the fill's own timestamp -- the actual review fix (\"Using current BNB price for historical BNB commission can distort realized P&L\")")
+    @DisplayName("backfillHistoricalCommissionConversion: a commission in a non-quote asset (BNB on a BTCUSDT trade) is converted using the real historical price at the fill's own timestamp, not the current price")
     void backfillHistoricalCommissionConversion_nonQuoteAssetCommission_convertsUsingHistoricalPrice() {
         var executedAt = java.time.LocalDateTime.of(2026, 1, 1, 12, 0, 0);
         var record = new com.tradevision.model.FillRecord(
@@ -297,10 +291,10 @@ class FillLedgerServiceTest {
         assertThat(((java.math.BigDecimal) setDoc.get("quoteCommission")).compareTo(BigDecimal.valueOf(0.6))).isEqualTo(0);
     }
 
-    // ── P2-20: the backfill must also correct the LINKED POSITION, not just the FillRecord ──
+    // ── The backfill must also correct the linked Position, not just the FillRecord ──
 
     @Test
-    @DisplayName("P2-20 fix: backfilling a BNB commission for an already-CLOSED position's exit fill corrects that position's realizedPnlQuote by the newly-discovered fee, atomically")
+    @DisplayName("backfillHistoricalCommissionConversion: backfilling a BNB commission for an already-CLOSED position's exit fill corrects that position's realizedPnlQuote by the newly-discovered fee, atomically")
     void backfillHistoricalCommissionConversion_closedPositionExitFill_correctsRealizedPnl() {
         var executedAt = java.time.LocalDateTime.of(2026, 1, 1, 12, 0, 0);
         var record = new com.tradevision.model.FillRecord(
@@ -329,7 +323,7 @@ class FillLedgerServiceTest {
     }
 
     @Test
-    @DisplayName("P2-20 fix: backfilling a BNB commission for a STILL-OPEN position's entry fill only updates entryFeeQuote -- realizedPnlQuote is untouched since close-time calculation will pick up the corrected fee itself")
+    @DisplayName("backfillHistoricalCommissionConversion: backfilling a BNB commission for a STILL-OPEN position's entry fill only updates entryFeeQuote -- realizedPnlQuote is untouched since close-time calculation will pick up the corrected fee itself")
     void backfillHistoricalCommissionConversion_openPositionEntryFill_onlyUpdatesFeeField() {
         var executedAt = java.time.LocalDateTime.of(2026, 1, 1, 12, 0, 0);
         var record = new com.tradevision.model.FillRecord(
@@ -356,7 +350,7 @@ class FillLedgerServiceTest {
     }
 
     @Test
-    @DisplayName("P2-20 fix: losing the race on the FillRecord's own conditional update (a concurrent backfill already won) never double-applies the position adjustment")
+    @DisplayName("backfillHistoricalCommissionConversion: losing the race on the FillRecord's own conditional update (a concurrent backfill already won) never double-applies the position adjustment")
     void backfillHistoricalCommissionConversion_lostRaceOnFillRecordUpdate_neverTouchesPosition() {
         var executedAt = java.time.LocalDateTime.of(2026, 1, 1, 12, 0, 0);
         var record = new com.tradevision.model.FillRecord(

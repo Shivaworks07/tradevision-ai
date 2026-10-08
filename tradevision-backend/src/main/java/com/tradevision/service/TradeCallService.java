@@ -20,26 +20,18 @@ public class TradeCallService {
 
     private final TradeCallRepository callRepo;
     private final AutoTradeService autoTradeService;
-    // Review finding ("OMS/ExecutedOrder full unification" -- P1, full context in
-    // OrderRepository.findBySignalIdIn's own javadoc): confirmed genuinely unused after this
-    // pass's own migration -- both real usages (findBySignalIdIn, existsBySignalId) moved to
-    // the real Order (OMS) repository below. Removed rather than left as dead weight.
+    // Looks up whether/how a signal resulted in a real order, via the unified Order (OMS) model
+    // (findBySignalIdIn, existsBySignalId) rather than any legacy executed-order representation.
     private final com.tradevision.repository.OrderRepository orderRepo;
     private final org.springframework.data.mongodb.core.MongoTemplate mongoTemplate;
 
     // ── Save call ─────────────────────────────────────────────
     /**
-     * Review finding ("'Save Call' can trigger real auto-trading" -- external review,
-     * seventeenth pass, P0, confirmed real by direct inspection before any fix was attempted:
-     * this method unconditionally called autoTradeService.evaluateSignal() after saving, with
-     * zero distinction between a user manually clicking "Save Call" on their own analysis (who
-     * reasonably expects "save this to my history," per the review's own framing) and
-     * AutonomousScannerService's own autonomous dispatch, which genuinely needs this call --
-     * confirmed both are the ONLY two callers of this method by direct search): the actual fix.
-     * dispatchToAutoTrade defaults to false for the ordinary saveCall(userId, req) overload,
-     * which is what TradeCallController's own user-facing "Save Call" endpoint calls -- a manual
-     * save is now genuinely just a save. AutonomousScannerService calls the explicit true
-     * overload below, the only caller that should ever trigger real evaluation from this path.
+     * Saves a signal without dispatching it to auto-trade evaluation. This is what
+     * TradeCallController's user-facing "Save Call" endpoint calls — a user manually saving
+     * their own analysis expects "save this to my history," not a real order being evaluated
+     * off the back of it. AutonomousScannerService calls the explicit dispatchToAutoTrade=true
+     * overload below instead, since its own autonomous dispatch genuinely needs that evaluation.
      */
     public ApiResponse<?> saveCall(String userId, TradeCallRequest req) {
         return saveCall(userId, req, false);
@@ -56,10 +48,9 @@ public class TradeCallService {
         r.setDirection(req.getDirection());
         r.setSignal(req.getSignal());
         r.setConfidence(req.getConfidence());
-        // Review finding ("Financial values still mix double and BigDecimal" -- external
-        // review, twenty-fourth pass, P2, full context in TradeCallRecord's own updated field
-        // comment): the actual double-to-BigDecimal boundary crossing -- req (the wire-format
-        // input DTO) deliberately stays double, r (the persisted record) is BigDecimal now.
+        // The double-to-BigDecimal boundary crossing: req (the wire-format input DTO)
+        // deliberately stays double, r (the persisted record) is BigDecimal — see
+        // TradeCallRecord's own field comment for why.
         r.setEntryPrice(java.math.BigDecimal.valueOf(req.getEntryPrice()));
         r.setStopLoss(java.math.BigDecimal.valueOf(req.getStopLoss()));
         r.setTarget1(java.math.BigDecimal.valueOf(req.getTarget1()));
@@ -193,20 +184,16 @@ public class TradeCallService {
         r.setExpiresAt(LocalDateTime.now().plusDays(90));
         callRepo.save(r);
 
-        // Never let auto-trade evaluation break signal saving for the caller.
-        //
-        // Audit item P1-7 ("AsyncConfig's autoTradeExecutor has no explicit rejection policy,
-        // and this call site assumed it couldn't fail" -- external review, confirmed real by
-        // direct inspection: autoTradeExecutor never calls setRejectedExecutionHandler, so its
-        // real default is ThreadPoolExecutor.AbortPolicy -- under real queue saturation (core 4
-        // / max 16 / queue 200 all exhausted), Spring's @Async proxy throws
-        // RejectedExecutionException SYNCHRONOUSLY, on THIS thread, right out of the call below
-        // -- not asynchronously, and not silently. That directly broke the invariant this
-        // comment already promised. The signal itself is safe either way -- it was already
-        // saved above, unconditionally, before this call -- and AutoTradeRecoveryService's own
-        // recoverStuckSignals() sweep (every 2 minutes) will pick up and re-dispatch any
-        // PENDING signal whose evaluation never actually started, so catching and logging here
-        // rather than reinventing a retry is the correct, minimal fix.
+        // Never let auto-trade evaluation break signal saving for the caller. AsyncConfig's
+        // autoTradeExecutor has no explicit rejection policy, so its default is
+        // ThreadPoolExecutor.AbortPolicy -- under real queue saturation (core 4 / max 16 /
+        // queue 200 all exhausted), Spring's @Async proxy throws RejectedExecutionException
+        // synchronously, on this thread, right out of the call below, not asynchronously and not
+        // silently. The signal itself is safe either way -- it was already saved above,
+        // unconditionally, before this call -- and AutoTradeRecoveryService's own
+        // recoverStuckSignals() sweep (every 2 minutes) picks up and re-dispatches any PENDING
+        // signal whose evaluation never actually started, so catching and logging here rather
+        // than reinventing a retry is the minimal correct handling.
         if (dispatchToAutoTrade) {
             try {
                 autoTradeService.evaluateSignal(userId, r);
@@ -232,13 +219,11 @@ public class TradeCallService {
     }
 
     /**
-     * Review finding ("Signal lifecycle is still partial" — "EXPIRED, CANCELLED are still
-     * unused"): this is what actually gives CANCELLED a real meaning — a user explicitly
-     * stopping a signal that hasn't been acted on yet. Only legal from GENERATED or VALIDATING
-     * (the only genuinely "still pending, not yet decided" states) — a signal already
-     * APPROVED/ORDER_PENDING/EXECUTED/RISK_REJECTED/EVALUATION_FAILED/EXPIRED is refused, not
-     * silently overwritten; those are already-decided outcomes, not something a cancel request
-     * arriving late should be able to override.
+     * Lets a user explicitly stop a signal that hasn't been acted on yet. Only legal from
+     * GENERATED or VALIDATING (the only genuinely "still pending, not yet decided" states) — a
+     * signal already APPROVED/ORDER_PENDING/EXECUTED/RISK_REJECTED/EVALUATION_FAILED/EXPIRED is
+     * refused, not silently overwritten; those are already-decided outcomes, not something a
+     * cancel request arriving late should be able to override.
      */
     public ApiResponse<?> cancelSignal(String userId, String callId) {
         var signalOpt = callRepo.findById(callId);
@@ -268,11 +253,11 @@ public class TradeCallService {
 
     // ── Update result ─────────────────────────────────────────
     public ApiResponse<?> updateResult(String userId, TradeCallResultRequest req) {
-        // Review items #20 / #2 (this doc's numbering): a call that was actually auto-traded has
-        // its outcome owned by PositionMonitorService's real broker reconciliation now — the
-        // client must not be able to overwrite real P&L with a claimed "HIT_T3". This only blocks
-        // calls linked to a real Order (OMS record); theoretical/paper calls the user never
-        // auto-traded can still be self-scored, since there's no real fill to contradict.
+        // A call that was actually auto-traded has its outcome owned by PositionMonitorService's
+        // real broker reconciliation — the client must not be able to overwrite real P&L with a
+        // claimed "HIT_T3". This only blocks calls linked to a real Order (OMS record);
+        // theoretical/paper calls the user never auto-traded can still be self-scored, since
+        // there's no real fill to contradict.
         if (orderRepo.existsBySignalId(req.getId())) {
             return ApiResponse.error("This call was auto-traded — its outcome is determined by actual broker "
                 + "fills and reconciliation, not by client-submitted results.");
@@ -290,16 +275,12 @@ public class TradeCallService {
                 o.setDurationMinutes(minutes);
                 o.setDurationLabel(formatDuration(minutes));
             }
-            // Review finding ("Financial values still mix double and BigDecimal" -- external
-            // review, twenty-fourth pass, P2, full context in TradeCallRecord's own updated
-            // field comment): r.getEntryPrice()/getStopLoss() are BigDecimal now --
-            // .doubleValue() converts at this specific comparison/PnlCalculator boundary,
-            // deliberately not cascading into the shared PnlCalculator utility itself.
+            // r.getEntryPrice()/getStopLoss() are BigDecimal; .doubleValue() converts at this
+            // specific comparison/PnlCalculator boundary, deliberately not cascading into the
+            // shared PnlCalculator utility itself.
             if (r.getEntryPrice().doubleValue() > 0 && req.getExitPrice() != null) {
                 boolean isLong = "LONG".equals(r.getDirection());
-                // Review finding ("Financial model still mixes double and BigDecimal" --
-                // external review, sixteenth pass, P2, full context in PnlCalculator's own
-                // class javadoc): same shared formula as CallResultUpdater now uses.
+                // Same shared formula CallResultUpdater uses.
                 var pnl = com.tradevision.util.PnlCalculator.compute(r.getEntryPrice().doubleValue(), req.getExitPrice(), r.getStopLoss().doubleValue(), isLong);
                 o.setPnlPct(pnl.pnlPct());
                 o.setPnlR(pnl.pnlR());
@@ -311,19 +292,16 @@ public class TradeCallService {
     }
 
     // ── Stats ─────────────────────────────────────────────────
-    // Review finding (P1 #25 — "Analytics are still partly 'paper analytics'"): confirmed real —
-    // this used to blend every call (auto-executed via broker, or purely theoretical/never
-    // traded) into one win rate. The review's own example is the exact risk: presenting "83% win
-    // rate" without saying whether that's 37 theoretical calls or 124 actual broker executions.
-    // Segmented by whether each signal actually resulted in a real order, and in which mode.
+    // Segmented by whether each signal actually resulted in a real order, and in which mode —
+    // blending every call (auto-executed via broker, or purely theoretical/never traded) into
+    // one win rate would hide whether an "83% win rate" means 37 theoretical calls or 124 actual
+    // broker executions.
     public ApiResponse<?> getStats(String userId) {
         var all = callRepo.findByUserIdOrderByCalledAtDesc(userId, PageRequest.of(0, 500));
 
         List<String> signalIds = all.stream().map(com.tradevision.model.TradeCallRecord::getId).filter(java.util.Objects::nonNull).toList();
-        // Review finding ("OMS/ExecutedOrder full unification" -- P1, full context in
-        // OrderRepository.findBySignalIdIn's own javadoc): migrated off
-        // executedOrderRepo.findBySignalIdIn to the real Order (OMS) repository's own
-        // equivalent method.
+        // Looks up execution mode via the unified Order (OMS) repository's own
+        // findBySignalIdIn, rather than any legacy executed-order representation.
         Map<String, String> executionModeBySignalId = signalIds.isEmpty() ? java.util.Collections.emptyMap()
             : orderRepo.findBySignalIdIn(signalIds).stream()
                 .collect(java.util.stream.Collectors.toMap(
@@ -343,7 +321,7 @@ public class TradeCallService {
 
         // Overall blended figures kept for backward compatibility with existing callers, but the
         // segmented breakdown above is what a caller should actually surface — a blended win
-        // rate is exactly the number the review warned against presenting without qualification.
+        // rate alone can't distinguish real broker performance from purely theoretical calls.
         long wins = all.stream().filter(c -> c.getOutcome()!=null && c.getOutcome().getResult()!=null && c.getOutcome().getResult().startsWith("HIT_T")).count();
         long losses = all.stream().filter(c -> "HIT_SL".equals(c.getOutcome()!=null?c.getOutcome().getResult():"")).count();
         long pending = all.stream().filter(c -> "PENDING".equals(c.getOutcome()!=null?c.getOutcome().getResult():"")).count();
@@ -434,17 +412,14 @@ public class TradeCallService {
     }
 
     /**
-     * Review finding ("Some analytics are deliberately bounded rather than truly paginated" --
-     * external review, thirty-sixth pass, P2, full context in
-     * TradeCallRepository.findAllByUserIdOrderByCalledAtDesc's own updated javadoc): the actual
-     * fix -- a real, page-aware export. Deliberately NOT applied to the analytics methods above
-     * this one (getStrategyAnalytics, getConfidenceCalibration, getWalkForward) -- those compute
-     * aggregate statistics (win rate by confidence bucket, walk-forward train/test splits) that
-     * genuinely need the FULL relevant dataset at once; paginating them page-by-page would
-     * silently change what they compute, not just how much of it is shown at a time. A CSV
-     * export is a different kind of request -- "give me all my own data" -- where true,
-     * page-by-page pagination is the correct fix, not a mismatch the way it would be for the
-     * analytics above.
+     * A real, page-aware CSV export (see TradeCallRepository.findAllByUserIdOrderByCalledAtDesc
+     * for the query). Deliberately not the pattern used by the analytics methods above this one
+     * (getStrategyAnalytics, getConfidenceCalibration, getWalkForward) — those compute aggregate
+     * statistics (win rate by confidence bucket, walk-forward train/test splits) that genuinely
+     * need the full relevant dataset at once, where paginating page-by-page would silently
+     * change what they compute, not just how much is shown at a time. A CSV export is a
+     * different kind of request — "give me all my own data" — where true, page-by-page
+     * pagination is the right fit.
      */
     public CsvPage exportCSVPage(String userId, int page, int pageSize) {
         var resultPage = callRepo.findAllByUserIdOrderByCalledAtDesc(userId, PageRequest.of(page, pageSize));
@@ -481,11 +456,9 @@ public class TradeCallService {
             sb.append(csv(f.getVpLocation())).append(",").append(f.getPocDistancePct()).append(",").append(csv(f.getOfBias())).append(",").append(f.getOfScore()).append(",");
             sb.append(f.getFundingRate()).append(",").append(csv(f.getOiSignal())).append(",").append(csv(f.getCvdTrend())).append(",");
             sb.append(csv(f.getRegime())).append(",").append(f.getFearGreedValue()!=null?f.getFearGreedValue():"").append(",").append(csv(f.getMtfAlignment())).append(",");
-            // Review finding ("Financial values still mix double and BigDecimal" -- external
-            // review, twenty-fourth pass, P2, full context in TradeCallRecord's own updated
-            // field comment): .toPlainString() here, not the bare BigDecimal -- BigDecimal's own
-            // default toString() can use scientific notation for extreme scale values, which
-            // .toPlainString() never does, avoiding a subtle CSV-format regression.
+            // .toPlainString() here, not the bare BigDecimal -- BigDecimal's default toString()
+            // can use scientific notation for extreme scale values, which .toPlainString() never
+            // does, avoiding a subtle CSV-format bug.
             sb.append(r.getEntryPrice().toPlainString()).append(",").append(r.getStopLoss().toPlainString()).append(",").append(r.getTarget1().toPlainString()).append(",").append(r.getTarget2().toPlainString()).append(",").append(r.getAtr().toPlainString()).append(",").append(csv(r.getRisk())).append(",");
             sb.append(csv(o.getResult()!=null?o.getResult():"PENDING")).append(",");
             sb.append(o.getPnlPct()!=null?o.getPnlPct():"").append(",").append(o.getPnlR()!=null?o.getPnlR():"").append(",");
@@ -700,9 +673,8 @@ public class TradeCallService {
             sb.append("\"direction\":\"").append(j(r.getDirection())).append("\",");
             sb.append("\"signal\":\"").append(j(r.getSignal())).append("\",");
             sb.append("\"confidence\":").append(r.getConfidence()).append(",");
-            // Review finding ("Financial values still mix double and BigDecimal" -- external
-            // review, twenty-fourth pass, P2, same reasoning as this class's own CSV export
-            // fix above): .toPlainString() avoids scientific notation in the exported JSON.
+            // .toPlainString() avoids scientific notation in the exported JSON, same reasoning
+            // as this class's own CSV export above.
             sb.append("\"entry\":").append(r.getEntryPrice().toPlainString()).append(",");
             sb.append("\"stopLoss\":").append(r.getStopLoss().toPlainString()).append(",");
             sb.append("\"target1\":").append(r.getTarget1().toPlainString()).append(",");

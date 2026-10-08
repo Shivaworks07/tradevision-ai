@@ -17,11 +17,11 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
- * P1-16 fix ("Committed secrets + 'local' as default profile" -- second, independent layer of
- * defense; full context in DevSecretStartupGuard's own class javadoc). @Value fields aren't
- * populated by @InjectMocks (that's a Spring container concern, not a Mockito one) -- set
- * directly via ReflectionTestUtils in each test instead, mirroring exactly what a real
- * application.properties/application-local.properties resolution would have produced.
+ * Verifies DevSecretStartupGuard, an independent layer of defense against committed secrets
+ * being active in a deployed environment. @Value fields aren't populated by @InjectMocks
+ * (that's a Spring container concern, not a Mockito one) -- set directly via
+ * ReflectionTestUtils in each test instead, mirroring what a real
+ * application.properties/application-local.properties resolution would produce.
  */
 @ExtendWith(MockitoExtension.class)
 class DevSecretStartupGuardTest {
@@ -93,7 +93,7 @@ class DevSecretStartupGuardTest {
     }
 
     @Test
-    @DisplayName("audit fix: a known dev secret is active under the \"prod\" profile -- REFUSES TO START immediately, without ever checking for a LIVE credential")
+    @DisplayName("a known dev secret is active under the \"prod\" profile -- REFUSES TO START immediately, without ever checking for a LIVE credential")
     void knownDevSecret_prodProfileActive_refusesToStart_regardlessOfLiveCredentials() {
         ReflectionTestUtils.setField(guard, "jwtSecret", KNOWN_DEV_JWT_SECRET);
         when(environment.getActiveProfiles()).thenReturn(new String[]{"prod"});
@@ -103,13 +103,13 @@ class DevSecretStartupGuardTest {
             .hasMessageContaining("REFUSING TO START")
             .hasMessageContaining("prod");
 
-        // The whole point of the fix: this must not depend on (or even check) LIVE-credential
-        // state when the profile itself is "prod".
+        // This must not depend on (or even check) LIVE-credential state when the profile
+        // itself is "prod".
         verify(credentialRepo, never()).countByMode(any());
     }
 
     @Test
-    @DisplayName("audit fix: the \"prod\" profile check never even runs when no known dev secret is active at all -- real secrets short-circuit before the profile is ever consulted")
+    @DisplayName("the \"prod\" profile check never even runs when no known dev secret is active at all -- real secrets short-circuit before the profile is ever consulted")
     void realSecrets_prodProfileActive_doesNotThrow() {
         guard.checkForDevSecretsAgainstLiveCredentials();
 

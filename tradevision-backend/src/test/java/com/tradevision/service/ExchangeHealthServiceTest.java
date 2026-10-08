@@ -24,23 +24,20 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 
 /**
- * Review finding ("Broker health still incomplete" — "You don't track: REQUEST_WEIGHT, ORDERS,
- * RAW_REQUESTS... WebSocket health... Per-symbol rejection rate: Missing"): verifies the actual
- * new tracking this class gained, plus the pre-existing REST-outcome logic that had zero test
- * coverage before this pass despite being safety-relevant (this check() result gates whether the
- * scanner treats a credential's broker connectivity as trustworthy).
+ * Verifies REQUEST_WEIGHT/ORDERS/RAW_REQUESTS tracking, WebSocket health, per-symbol rejection
+ * rate, and the REST-outcome logic (this check() result gates whether the scanner treats a
+ * credential's broker connectivity as trustworthy).
  *
- * UPDATE ("Exchange health is primarily an in-memory metric" -- P1, full context in
- * ExchangeHealthService's own updated header javadoc): now backed by MongoDB rather than plain
- * in-memory fields, so this file's own service field is @Mock'd rather than newed up directly.
- * Real Mongo behavior (upsert merges fields into a document rather than replacing it wholesale,
- * findOne returns null for a document that's never existed) is simulated with a small, real,
- * in-memory backing map keyed by collection+id, wired via thenAnswer -- deliberately NOT a bare
- * Mockito stub returning a fixed value per test, since this class's own methods call findOne
- * then upsert then findOne again within a single record()/check() pair, and a stateless stub
- * can't represent that. This keeps nearly every existing test body below unchanged -- they still
- * just call service.record()/check() repeatedly and assert on the result -- while the mock
- * underneath now genuinely behaves like a real, stateful, if in-memory, database.
+ * Exchange health is backed by MongoDB rather than plain in-memory fields, so this file's own
+ * service field is @Mock'd rather than newed up directly. Real Mongo behavior (upsert merges
+ * fields into a document rather than replacing it wholesale, findOne returns null for a
+ * document that's never existed) is simulated with a small, real, in-memory backing map keyed
+ * by collection+id, wired via thenAnswer -- deliberately NOT a bare Mockito stub returning a
+ * fixed value per test, since this class's own methods call findOne then upsert then findOne
+ * again within a single record()/check() pair, and a stateless stub can't represent that. This
+ * keeps nearly every existing test body below unchanged -- they still just call
+ * service.record()/check() repeatedly and assert on the result -- while the mock underneath
+ * genuinely behaves like a real, stateful, if in-memory, database.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -188,12 +185,11 @@ class ExchangeHealthServiceTest {
         assertThat(service.check("good-key").healthy()).isTrue();
     }
 
-    // ── P3-7 ("ExchangeHealthService.record -- 2-3 Mongo writes per exchange call in the hot
-    // path -- in-memory rolling window + periodic flush" -- full context in record's own updated
-    // javadoc) ──────────────────────────────────────────────────────────────────
+    // ── record() uses an in-memory rolling window + periodic flush, so the hot broker-call
+    // path never pays a Mongo round trip ──────────────────────────────────────────────
 
     @Test
-    @DisplayName("record: touches MongoDB zero times -- the whole point of this fix is that the hot broker-call path no longer pays any Mongo round trip")
+    @DisplayName("record: touches MongoDB zero times -- the hot broker-call path must never pay any Mongo round trip")
     void record_neverTouchesMongoDirectly() {
         service.record("key-hot-path", true, 42);
         service.record("key-hot-path", false, 99);
@@ -315,13 +311,7 @@ class ExchangeHealthServiceTest {
     @Test
     @DisplayName("checkRequestBudget: usage below 90% of the limit is healthy")
     void checkRequestBudget_belowThreshold_healthy() {
-        // Review finding ("Scanner has no complete Binance request-budget model" -- external
-        // review, twenty-second pass, P1, full context in ExchangeHealthService's own updated
-        // DEFAULT_SPOT_WEIGHT_LIMIT_PER_MINUTE javadoc): this test's own recorded value was a
-        // percentage of the OLD, wrong 6000 limit (3000 = 50% of 6000) -- against the corrected,
-        // real 1200 limit, 3000 would actually be 250% (unhealthy), which would have made this
-        // "below threshold, healthy" test itself fail once the constant was corrected. Updated
-        // to the same 50% intent, now genuinely computed against the real limit.
+        // 600 is 50% of the real 1200 request-weight limit.
         service.recordUsedWeight(600); // 50% of 1200
 
         var status = service.checkRequestBudget();
@@ -333,8 +323,7 @@ class ExchangeHealthServiceTest {
     @Test
     @DisplayName("checkRequestBudget: usage at or above 90% of the limit is unhealthy")
     void checkRequestBudget_aboveThreshold_unhealthy() {
-        // Review finding, same context as checkRequestBudget_belowThreshold_healthy's own
-        // comment above: same fix, same reasoning -- 5500 was ~91.7% of the OLD 6000 limit.
+        // 1100 is ~91.7% of the real 1200 request-weight limit.
         service.recordUsedWeight(1100); // ~91.7% of 1200
 
         var status = service.checkRequestBudget();

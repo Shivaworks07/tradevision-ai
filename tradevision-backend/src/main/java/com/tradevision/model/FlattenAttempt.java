@@ -10,20 +10,13 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 /**
- * Review finding ("Emergency flatten still allows an exchange sell without durable
- * pre-submission intent" -- external review, twenty-sixth pass, P1, confirmed real by direct
- * inspection before this fix: when the full OMS Order setup (orderService.create) fails for an
- * emergency flatten, the existing code deliberately proceeds to the real market SELL anyway --
- * correct, since a naked position left unflattened is more dangerous than an unrecorded
- * emergency sell -- but that means if the JVM then crashes between the sell succeeding and any
- * local result being recorded, recoverStuckFlattening has no Order document to look up by the
- * exact flattenClientOrderId, and falls back to the weaker account-balance heuristic (see
- * PositionMonitorService.recoverStuckFlattening's own P1-2 finding for why that's weaker)):
- * a minimal, durable, deliberately dependency-light record of flatten intent, written directly
- * via mongoTemplate.insert BEFORE the real sell, independent of whether the full OMS Order setup
- * succeeds or fails. Its only job is to durably record "this specific clientOrderId was about to
- * be submitted for this position" -- recovery can query Binance directly by this exact id even
- * when the OMS Order record itself never got created.
+ * A minimal, durable, deliberately dependency-light record of flatten intent, written directly
+ * via mongoTemplate.insert BEFORE the real market sell is submitted — independent of whether
+ * the full OMS Order setup succeeds or fails, since an emergency flatten must proceed with the
+ * real sell even if OMS Order creation fails (a naked position left unflattened is more
+ * dangerous than an unrecorded emergency sell). Its only job is to durably record "this
+ * specific clientOrderId was about to be submitted for this position" — recovery can query the
+ * broker directly by this exact id even when the OMS Order record itself was never created.
  */
 @Data @NoArgsConstructor
 @Document(collection = "flatten_attempts")

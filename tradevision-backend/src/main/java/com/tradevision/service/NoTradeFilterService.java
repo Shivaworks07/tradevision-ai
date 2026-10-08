@@ -16,37 +16,33 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Review item #23: a real trading system spends most of its time saying NO TRADE. Checked
- * before RiskEngineService (which handles caps/limits) — this asks "is the signal itself even
- * trustworthy enough to act on", not "do we have budget for it".
+ * Decides whether an incoming trade signal is trustworthy enough to act on at all, independent
+ * of whether there's risk budget for it (that's RiskEngineService's job, checked separately).
+ * A real trading system spends most of its time declining to trade, and this is where that
+ * happens.
  *
- * Gates, in order: exchange health (#24), spread (#23, partial "liquidity" proxy — top-of-book
- * only, not full depth), signal payload sanity (data quality / R:R / entry+SL present), a full
- * independent server-side signal computation via ServerSignalEngine that a claimed LONG must
- * agree with, server-side indicator recomputation vs. the signal's claims (RSI/ATR divergence,
- * SL/ATR ratio), then duplicate-position check.
+ * Gates, in order: exchange health, spread (a top-of-book liquidity proxy, not full depth),
+ * signal payload sanity (data quality / R:R / entry+SL present), a full independent server-side
+ * signal computation via ServerSignalEngine that a claimed LONG must agree with, server-side
+ * indicator recomputation against the signal's claims (RSI/ATR divergence, SL/ATR ratio), and
+ * finally a duplicate-position check.
  *
- * ServerSignalEngine is a genuinely verified port of the frontend's real analyze() decision
- * engine (cross-checked bit-for-bit against the actual TypeScript source — see its class
- * javadoc), not a rough approximation. This is real progress on "the backend doesn't
- * independently calculate the trading decision" — the server now has a complete opinion, not
- * just one indicator's opinion, and requires agreement.
+ * ServerSignalEngine is a verified port of the frontend's analyze() decision engine (see its
+ * own class javadoc), so this check reflects the server's complete independent trading opinion,
+ * not just a single indicator.
  *
- * HONEST TRADEOFF, stated plainly rather than discovered the hard way: this is strict.
- * ServerSignalEngine must independently reach LONG too — WAIT or SHORT from the server both
- * refuse the trade — using its own candle fetch, which won't always exactly match whatever
- * candles the frontend had at signal-generation time (timing, count, minor data differences).
- * That means some signals the frontend considers genuinely good will get refused here purely on
- * timing/data-window mismatch, not because anything is wrong. That's an intentional
- * safety-over-throughput choice for now, not an oversight — loosening it (e.g. requiring
- * "not SHORT" instead of "must be LONG", or a confidence-band tolerance) is a real, legitimate
- * option to revisit once there's live testnet data on how often this actually disagrees.
+ * This is deliberately strict: ServerSignalEngine must independently reach LONG too — a WAIT or
+ * SHORT from the server refuses the trade — using its own candle fetch, which won't always
+ * exactly match whatever candles the frontend had at signal-generation time (timing, count,
+ * minor data differences). That means some signals the frontend considers good can still get
+ * refused here purely on timing/data-window mismatch rather than a genuine disagreement. This
+ * is an intentional safety-over-throughput choice, and the strictness (e.g. requiring "not
+ * SHORT" instead of "must be LONG", or a confidence-band tolerance) can be loosened later once
+ * there's live data on how often the two sides actually disagree.
  *
- * Honest scope note, unchanged: still no order-book depth check (only top-of-book spread), and
- * ServerSignalEngine itself doesn't port SMC structure, order flow, volume profile, multi-
- * timeframe context, or the frontend's adaptive ML weight learning — see its own class javadoc.
- * That remains the fuller signal-generation port; this closes a real, verified, substantial part
- * of the gap without pretending to close all of it.
+ * This still has no order-book depth check (only top-of-book spread), and ServerSignalEngine
+ * itself doesn't cover SMC structure, order flow, volume profile, multi-timeframe context, or
+ * adaptive ML weight learning — see its own class javadoc for what it does cover.
  */
 @Service
 @RequiredArgsConstructor
@@ -71,21 +67,16 @@ public class NoTradeFilterService {
     private final PositionRepository positionRepo;
     private final ExchangeHealthService exchangeHealth;
     private final ServerSignalEngine serverSignalEngine;
-    // Review finding ("Strategy engine is not the complete strategy actually represented by the
-    // frontend" -- P1, full context in AutonomousScannerService's own identical addition): this
-    // gate's own independent re-computation should score against the SAME weights the actual
-    // autonomous scanner uses -- verifying a claimed signal against fixed weights while the real
-    // scanner scores with adaptive ones would mean comparing against two different versions of
-    // the same decision logic, a real source of spurious disagreement.
+    // This gate's own independent re-computation scores against the same weights the
+    // autonomous scanner uses, so a claimed signal is verified against the live, adaptive
+    // weights rather than fixed ones — comparing against a different version of the scoring
+    // logic than what actually produced the signal would be a source of spurious disagreement.
     private final MLWeightService mlWeightService;
-    // Review finding ("Client-Side Signal Generation" — continuing the TA-engine port into the
-    // one place that actually gates real execution, not just observability, as the 5-service
-    // scanner wiring earlier this session deliberately stopped short of): deliberately scoped
-    // the same conservative way as that earlier pass — regime/SMC/volume-profile only (zero new
-    // network-call TYPE, since these compute from candles already fetched here plus one more
-    // same-kind spot-candle fetch for a higher timeframe), order-flow and its live Binance
-    // futures call excluded from this critical gate path specifically to avoid adding a new
-    // external dependency's latency/failure surface to the decision of whether real money moves.
+    // Scoped conservatively: only regime/SMC/volume-profile context is folded in here, computed
+    // from candles already fetched for this gate plus one more spot-candle fetch for a higher
+    // timeframe. Order-flow (and its live Binance futures call) is excluded from this critical
+    // execution-gating path specifically to avoid adding a new external dependency's
+    // latency/failure surface to the decision of whether real money moves.
     private final com.tradevision.service.strategy.MarketRegimeService marketRegimeService;
     private final com.tradevision.service.strategy.SmcEngineService smcEngineService;
     private final com.tradevision.service.strategy.VolumeProfileService volumeProfileService;
@@ -101,8 +92,8 @@ public class NoTradeFilterService {
     }
 
     public FilterResult check(String userId, String credentialId, TradeCallRecord signal, BrokerAdapter adapter, String apiKey, BrokerMode mode) {
-        // Review item #18 (fixed): now checks THIS credential's own connection health, not a
-        // shared global window one bad user could poison for everyone.
+        // Checks this credential's own connection health specifically, so one unhealthy
+        // credential can't affect the health verdict for any other user's credential.
         ExchangeHealthService.HealthStatus health = exchangeHealth.check(apiKey);
         if (!health.healthy()) {
             return FilterResult.noTrade("Exchange connection unhealthy: " + health.reason());
@@ -132,17 +123,10 @@ public class NoTradeFilterService {
         FilterResult indicatorResult = checkIndicatorDivergence(signal, adapter, mode);
         if (!indicatorResult.tradeable()) return indicatorResult;
 
-        // P2-2 fix ("R:R >=1.5 checked on client-claimed rrRatio, not on server SL/T1" --
-        // external review, confirmed real by direct inspection: the check this replaced ran
-        // BEFORE checkIndicatorDivergence even executed, on signal.getRrRatio() -- a value this
-        // application never independently recomputes, taken entirely on the client's word. A
-        // client (or a bug/compromise in whatever produced the signal) could claim any R:R at
-        // all here; nothing before this fix ever verified it against the numbers this
-        // application actually executes with. Moved to run AFTER checkIndicatorDivergence, and
-        // now computed from serverSignal's own entry/stopLoss/target1 -- the exact values
-        // AutoTradeService sizes and executes the trade with (per item #11's own established
-        // "server signal is authoritative for execution" fix) -- so a signal can no longer claim
-        // a healthy R:R while the numbers actually driving execution imply something worse.
+        // The R:R check runs after checkIndicatorDivergence and is computed from serverSignal's
+        // own entry/stopLoss/target1 — the exact values AutoTradeService sizes and executes the
+        // trade with — rather than from the client-claimed rrRatio, so a signal can't claim a
+        // healthy R:R while the numbers actually driving execution imply something worse.
         ServerSignalEngine.Signal serverSignal = indicatorResult.serverSignal();
         if (serverSignal != null && serverSignal.entry() > 0 && serverSignal.stopLoss() > 0 && serverSignal.target1() > 0) {
             double riskDistance = "LONG".equals(serverSignal.direction())
@@ -167,9 +151,9 @@ public class NoTradeFilterService {
             return FilterResult.noTrade("A position on " + signal.getSymbol() + " is already open for this credential.");
         }
 
-        // Review finding (this doc, "#11"): propagate the server-computed signal all the way
-        // out — this is what AutoTradeService now actually sizes and executes the trade with,
-        // not the client's claimed entry/SL/TP.
+        // The server-computed signal is propagated all the way out — this is what
+        // AutoTradeService actually sizes and executes the trade with, not the client's
+        // claimed entry/SL/TP.
         return FilterResult.ok(serverSignal);
     }
 
@@ -182,9 +166,8 @@ public class NoTradeFilterService {
             }
             return FilterResult.ok(null);
         } catch (Exception e) {
-            // Review finding (this doc, "spread check fails open"): previously returned ok() here
-            // — "can't verify liquidity" silently became "trade allowed". For an autonomous
-            // system, an unverifiable safety check should block, not pass by default.
+            // Fails closed: for an autonomous system, an unverifiable safety check should block
+            // the trade rather than silently pass by default.
             log.warn("Could not fetch spread for {} — refusing to trade without a liquidity read: {}", signal.getSymbol(), e.getMessage());
             return FilterResult.noTrade("Could not verify spread/liquidity for " + signal.getSymbol() + " — refusing to trade blind: " + e.getMessage());
         }
@@ -193,54 +176,39 @@ public class NoTradeFilterService {
     private FilterResult checkIndicatorDivergence(TradeCallRecord signal, BrokerAdapter adapter, BrokerMode mode) {
         String interval = TIMEFRAME_TO_INTERVAL.get(signal.getTimeframe());
         if (interval == null) {
-            // Review finding (this doc, "#11" — server signal must become authoritative for
-            // execution): without a server-computed signal, there's nothing to size the trade
-            // off other than the client's numbers — which defeats the whole point of this pass.
-            // This used to skip verification and fall through to trusting the client; now it
-            // fails closed like every other "can't verify" path in this method.
+            // Without a server-computed signal, there's nothing to size the trade off other
+            // than the client's numbers, which defeats the point of independent verification —
+            // so this fails closed, like every other "can't verify" path in this method.
             log.info("No interval mapping for timeframe '{}' on {} — cannot compute a server signal, refusing to trade.", signal.getTimeframe(), signal.getSymbol());
             return FilterResult.noTrade("No server-side interval mapping for timeframe '" + signal.getTimeframe()
                 + "' — cannot independently compute or execute this signal.");
         }
         double claimedRsi = signal.getFeatures() != null ? signal.getFeatures().getRsi() : 0;
-        // Review finding ("Financial values still mix double and BigDecimal" -- external
-        // review, twenty-fourth pass, P2, full context in TradeCallRecord's own updated field
-        // comment): signal.getAtr() is BigDecimal now -- .doubleValue() converts here.
+        // Signal.getAtr() is BigDecimal; converted to double here for the arithmetic below.
         double claimedAtr = signal.getAtr().doubleValue();
 
         List<Candle> candles;
         try {
-            // Review finding (this doc, "candle window mismatch"): 100 candles gave ServerSignalEngine's
-            // EMA200 an effective period of ~99, not a genuine 200-period EMA — not equivalent to
-            // whatever window the frontend actually used. 220 gives EMA200 real headroom plus the
-            // engine's own lookback needs (divergence/S-R use the trailing ~20).
+            // 220 candles gives ServerSignalEngine's EMA200 real headroom (100 would give it an
+            // effective period of only ~99) plus the engine's own lookback needs (divergence/S-R
+            // use the trailing ~20).
             candles = adapter.getRecentCandles(signal.getSymbol(), interval, 220, mode);
         } catch (Exception e) {
-            // Review finding (this doc, "indicator-fetch failure still fails open"): this isn't
-            // just skipping the RSI/ATR divergence check — ServerSignalEngine's independent
-            // direction-agreement check (the main defense from this pass) also runs on these
-            // same candles, further down this method. Failing open here silently skips BOTH.
-            // Matches the spread check's fail-closed philosophy: can't verify, don't trade.
+            // Fails closed: skipping this would also skip ServerSignalEngine's independent
+            // direction-agreement check further down, which runs on these same candles. Matches
+            // the spread check's fail-closed philosophy — can't verify, don't trade.
             log.warn("Could not fetch candles for {} — refusing to trade without server-side verification: {}", signal.getSymbol(), e.getMessage());
             return FilterResult.noTrade("Could not fetch candles to independently verify this signal for " + signal.getSymbol() + ": " + e.getMessage());
         }
-        // P2-1 fix ("Repainting — execution-time server signal computed on candles including the
-        // unclosed bar" -- external review, confirmed real by direct inspection: every indicator
-        // computation in this method (ATR/RSI/ServerSignalEngine/SMC/regime/volume-profile) used
-        // the raw `candles` list as fetched, whose LAST element is always the still-forming,
-        // in-progress candle for the current interval -- adapter.getRecentCandles' own documented
-        // behavior, and the exact same fact AutonomousScannerService's own scanOneSymbol already
-        // has to account for, see its closedCandles field comment for the full reasoning). Because
-        // this method runs at EXECUTION time (moments after the scanner already made its own
-        // decision on the last CLOSED candle), the in-progress candle here has almost certainly
-        // moved further since the scan -- sometimes enough to flip RSI/ATR/the server's own
-        // direction call entirely, so a signal the scanner correctly generated off closed data
-        // could be rejected (or worse, silently re-decided differently) by this gate purely
-        // because of intra-candle noise, not a genuine disagreement about the same market state.
-        // The fix: drop the last (unclosed) candle here too, before ANY indicator computation --
-        // matching the scanner's own closed-candle-only policy exactly, so scan-time and
-        // execution-time decisions are being computed from the literal same closed data whenever
-        // they're for the same candle.
+        // adapter.getRecentCandles' last element is always the still-forming, in-progress
+        // candle for the current interval. This method runs at execution time, moments after
+        // the scanner already made its own decision on the last CLOSED candle, so the
+        // in-progress candle here has likely moved further since the scan — sometimes enough to
+        // flip RSI/ATR/the server's own direction call, which would reject (or re-decide) a
+        // signal the scanner correctly generated off closed data, purely from intra-candle
+        // noise rather than a genuine disagreement. Dropping the last candle here, before any
+        // indicator computation, keeps scan-time and execution-time decisions computed from the
+        // same closed data whenever they're for the same candle.
         if (candles.size() < 21) {
             return FilterResult.noTrade("Only " + candles.size() + " candles available for " + signal.getSymbol()
                 + " — too little CLOSED history to independently verify this signal.");
@@ -249,21 +217,16 @@ public class NoTradeFilterService {
 
         double actualAtr = IndicatorMath.atr(closedCandles, 14);
 
-        // Review finding, this doc: "the backend doesn't independently calculate the trading
-        // decision." This used to be a narrow EMA50-only trend check — now the full engine.
-        // ServerSignalEngine.analyze() is a verified port of the frontend's real analyze()
-        // decision function (see its class javadoc for the cross-verification method), computing
-        // its own independent direction/confidence/entry/SL/TP from these same real candles. A
-        // claimed direction the server's own full computation flatly contradicts (server says
-        // WAIT or the opposite direction) is refused — not because one indicator disagrees, but
-        // because the server's complete independent analysis does.
+        // ServerSignalEngine.analyze() is a verified port of the frontend's analyze() decision
+        // function (see its class javadoc), computing its own independent
+        // direction/confidence/entry/SL/TP from these same real candles. A claimed direction the
+        // server's own full computation contradicts (server says WAIT or the opposite direction)
+        // is refused, since the server's complete independent analysis disagrees, not just one
+        // indicator.
         ServerSignalEngine.Signal serverSignal;
-        // Review finding ("Strategy engine is not the complete strategy actually represented by
-        // the frontend" -- P1, full context in this class's own new field comment): same
-        // graceful-degradation reasoning as AutonomousScannerService's own identical addition --
-        // this lookup is purely additive to scoring, not essential to whether this gate can run
-        // at all. A transient MongoDB hiccup falls back to fixed-weight scoring, the same
-        // behavior this gate has always had, rather than blocking every signal evaluation.
+        // The ML weight lookup is purely additive to scoring, not essential to whether this
+        // gate can run: a transient MongoDB hiccup falls back to fixed-weight scoring rather
+        // than blocking every signal evaluation.
         try {
             var mlWeights = mlWeightService.getWeights(signal.getMarket(), signal.getSymbol());
             serverSignal = serverSignalEngine.analyze(closedCandles, mlWeights);
@@ -280,29 +243,25 @@ public class NoTradeFilterService {
                 + "server's own complete computation disagrees with.");
         }
 
-        // Review finding ("Client-Side Signal Generation" -- full context in this class's own
-        // field comments): the enrichment that was, until now, observability-only in the
-        // scanner now genuinely gates execution here too. serverSignal is REPLACED with the
-        // combined result for everything from this point forward -- entry/stopLoss/target1-3/
-        // atrPercent are untouched by design (SignalCombinerService itself never modifies them,
-        // confirmed by its own verification), so every check below that uses those specific
-        // fields behaves identically either way; only confidence/direction/signalLabel can
-        // differ, and a direction that gets flipped to WAIT by conflicting regime/SMC/MTF
-        // signals is refused the same as any other direction disagreement above.
+        // serverSignal is replaced with the combined result for everything from this point
+        // forward. SignalCombinerService never modifies entry/stopLoss/target1-3/atrPercent, so
+        // every check below that uses those fields behaves identically either way; only
+        // confidence/direction/signalLabel can differ, and a direction flipped to WAIT by
+        // conflicting regime/SMC/MTF signals is refused the same as any other direction
+        // disagreement above.
         //
-        // Additive, non-fatal, matching this whole codebase's own established contract: a bug
-        // in this enrichment falls back to the ALREADY-VERIFIED base signal unchanged -- exactly
-        // today's pre-enrichment behavior -- never blocks a trade the rest of this method would
-        // otherwise accept, and never silently substitutes a worse signal for a working one.
+        // This enrichment is additive and non-fatal: a failure here falls back to the
+        // already-verified base signal unchanged, so it never blocks a trade the rest of this
+        // method would otherwise accept, and never substitutes a worse signal for a working one.
         try {
             var smc = smcEngineService.analyze(closedCandles, signal.getSymbol());
             var regimeState = marketRegimeService.detect(closedCandles, signal.getSymbol());
             var vp = volumeProfileService.analyze(closedCandles, 50);
             String higherTf = NEXT_HIGHER_TF.getOrDefault(interval, "4h");
-            // P2-1 fix (full context above): this higher-timeframe fetch is its own separate call
-            // to adapter.getRecentCandles, with its own unclosed final candle -- must be dropped
-            // here too, or the MTF context folded into `combined` below would reintroduce the
-            // exact same repainting this fix closes, just on the higher timeframe instead.
+            // This higher-timeframe fetch is a separate call to adapter.getRecentCandles with
+            // its own unclosed final candle, which must be dropped here too — otherwise the MTF
+            // context folded into `combined` below would reintroduce the same repainting issue
+            // on the higher timeframe.
             List<Candle> higherTfCandlesRaw = adapter.getRecentCandles(signal.getSymbol(), higherTf, 220, mode);
             List<Candle> higherTfCandles = higherTfCandlesRaw.size() > 1
                 ? higherTfCandlesRaw.subList(0, higherTfCandlesRaw.size() - 1) : higherTfCandlesRaw;
@@ -311,7 +270,7 @@ public class NoTradeFilterService {
                 serverSignal.entry(), serverSignal.stopLoss(), serverSignal.target1(), serverSignal.target2(), serverSignal.target3(),
                 serverSignal.bullScore(), serverSignal.bearScore(), serverSignal.net(), serverSignal.atrPercent());
         } catch (Exception e) {
-            log.debug("Enrichment (SMC/regime/volume-profile/MTF) failed for {} -- falling back to the unenriched server signal, unchanged from today's pre-enrichment behavior: {}", signal.getSymbol(), e.getMessage());
+            log.debug("Enrichment (SMC/regime/volume-profile/MTF) failed for {} -- falling back to the unenriched server signal: {}", signal.getSymbol(), e.getMessage());
         }
 
         if ("LONG".equalsIgnoreCase(claimedDirection) && !"LONG".equals(serverSignal.direction())) {
@@ -339,17 +298,12 @@ public class NoTradeFilterService {
             }
         }
 
-        // Review finding (P1 #9 — "SL validation is still partly based on the CLIENT signal"):
-        // confirmed real, and fixed. This used to validate signal.getEntryPrice()/getStopLoss()
-        // (client-supplied, untrusted) against the server-recomputed ATR — but execution uses
-        // serverSignal.entry()/serverSignal.stopLoss() (per items #1/#11's earlier fix), which
-        // are not necessarily the same values. Validating the client's numbers while executing
-        // the server's meant this gate could pass a client SL that looked fine while the actual
-        // execution SL — computed independently by ServerSignalEngine — was the one that could
-        // still turn into an enormous position via the sizing formula. Now validates the values
-        // that actually drive execution; the client's own numbers are no longer checked here at
-        // all, since a mismatch between client and server SL is exactly what "P0 #1" (server
-        // signal being authoritative) already treats as expected and correct, not suspicious.
+        // Validates the SL distance that actually drives execution (serverSignal's own
+        // entry/stopLoss) against the server-recomputed ATR, rather than the client-supplied
+        // entry/stopLoss — since execution always uses the server's values, validating the
+        // client's numbers instead could let an implausible execution SL through even though the
+        // client's own SL looked fine. A mismatch between client and server SL is expected,
+        // since the server signal is authoritative for execution.
         if (actualAtr > 0 && serverSignal.entry() > 0 && serverSignal.stopLoss() > 0) {
             double slDistance = Math.abs(serverSignal.entry() - serverSignal.stopLoss());
             double slToAtrRatio = slDistance / actualAtr;

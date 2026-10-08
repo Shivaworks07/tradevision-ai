@@ -20,18 +20,14 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 /**
- * Review finding ("Single-instance assumption for autonomous trading/reconciliation -- no
- * distributed lock, unsafe to scale replicas" -- P0, full context in this class's own javadoc):
- * verifies the actual fix. No test file existed for this before, given the class itself is new.
+ * Verifies the distributed reconciliation lock, which allows autonomous trading/reconciliation
+ * to safely scale across multiple instances.
  *
- * HONEST LIMITATION, stated rather than left implicit: Query/Criteria construction is exercised
- * here (the actual filter this class builds), but MongoTemplate itself is a mock, so the real
- * atomic-insert-collision behavior of a genuine MongoDB unique index is not exercised end-to-end
- * -- that's the same category of gap already disclosed for AdminControllerTest's own
- * ResponseCookie stand-in and IndexInitializerTest's own Index assertions, for the same reason
- * (Maven Central is blocked in this sandbox, so no real spring-data-mongodb jar is available).
- * DuplicateKeyException is simulated directly rather than produced by a genuine unique-index
- * collision.
+ * LIMITATION: Query/Criteria construction is exercised here (the actual filter this class
+ * builds), but MongoTemplate itself is a mock, so the real atomic-insert-collision behavior of
+ * a genuine MongoDB unique index is not exercised end-to-end (Maven Central is blocked in this
+ * sandbox, so no real spring-data-mongodb jar is available). DuplicateKeyException is simulated
+ * directly rather than produced by a genuine unique-index collision.
  */
 @ExtendWith(MockitoExtension.class)
 @org.mockito.junit.jupiter.MockitoSettings(strictness = org.mockito.quality.Strictness.LENIENT)
@@ -43,15 +39,12 @@ class DistributedLockServiceTest {
 
     @org.junit.jupiter.api.BeforeEach
     void setup() {
-        // Review finding ("ReconciliationLock.generation() is not actually a monotonic
-        // generation" -- external review, third pass, full context in
-        // LockGenerationCounter's own javadoc): needed now that every tryAcquireWithDiagnosis
-        // call unconditionally calls nextGeneration() BEFORE attempting the actual insert --
-        // an unstubbed findAndModify() would otherwise return null (Mockito's own real default
-        // for an unstubbed object-returning method), and this class's own code immediately
-        // calls .getValue() on the result, which would NPE. A realistic "counter incremented to
-        // 1" default -- a test that specifically cares about the exact generation value
-        // overrides this explicitly.
+        // Every tryAcquireWithDiagnosis call unconditionally calls nextGeneration() BEFORE
+        // attempting the actual insert -- an unstubbed findAndModify() would otherwise return
+        // null (Mockito's own real default for an unstubbed object-returning method), and this
+        // class's own code immediately calls .getValue() on the result, which would NPE. A
+        // realistic "counter incremented to 1" default -- a test that specifically cares about
+        // the exact generation value overrides this explicitly.
         when(mongoTemplate.findAndModify(any(), any(org.springframework.data.mongodb.core.query.Update.class),
             any(org.springframework.data.mongodb.core.FindAndModifyOptions.class), eq(com.tradevision.model.LockGenerationCounter.class)))
             .thenAnswer(inv -> { var c = new com.tradevision.model.LockGenerationCounter(); c.setId("cred1"); c.setValue(1L); return c; });
@@ -114,8 +107,7 @@ class DistributedLockServiceTest {
         service.release("cred1", "instance-a");
     }
 
-    // ── renew (review finding "Distributed reconciliation lock has a fixed 90-second lease
-    // with no renewal" -- P1, full context in the method's own javadoc) ────────────────
+    // ── renew: extends a held lock's lease without a fixed 90-second cap ────────────────
 
     @Test
     @DisplayName("renew: a successful update (still owned by this instance) returns true")
@@ -130,8 +122,8 @@ class DistributedLockServiceTest {
 
     @Test
     @DisplayName("renew: matchedCount=0 (lock no longer owned by this instance -- expired and possibly reacquired by someone else) returns false, not an exception -- the caller should treat this the same as never having held the lock. " +
-        "Fixed from an earlier version of this test that asserted on modifiedCount=0 instead -- that field is ALSO 0 on a same-millisecond renewal where the expiry value doesn't actually change, which was a real false-negative bug " +
-        "(a genuinely-held lock's renewal reading as 'lost' and aborting an in-progress reconciliation pass). matchedCount is what actually reflects whether this instance's own lock document was found and updated.")
+        "matchedCount, not modifiedCount, is what actually reflects whether this instance's own lock document was found and updated -- modifiedCount is ALSO 0 on a same-millisecond renewal where the expiry value doesn't actually change, " +
+        "which would otherwise read a genuinely-held lock's renewal as 'lost' and abort an in-progress reconciliation pass.")
     void renew_noLongerOwned_returnsFalse() {
         when(mongoTemplate.updateFirst(any(Query.class), any(org.springframework.data.mongodb.core.query.Update.class), eq(ReconciliationLock.class)))
             .thenReturn(com.mongodb.client.result.UpdateResult.acknowledged(0, 0L, null));
@@ -176,7 +168,7 @@ class DistributedLockServiceTest {
     }
 
     @Test
-    @DisplayName("renew: the query also requires expiresAt to still be in the future -- the actual review fix (\"Distributed lock renewal can resurrect an expired lock\"), preventing an instance whose own lock already expired from silently extending it back into existence without ever proving continuous ownership through the gap")
+    @DisplayName("renew: the query also requires expiresAt to still be in the future, preventing an instance whose own lock already expired from silently extending it back into existence without ever proving continuous ownership through the gap")
     void renew_requiresLockStillUnexpired() {
         ArgumentCaptor<Query> queryCaptor = ArgumentCaptor.forClass(Query.class);
         when(mongoTemplate.updateFirst(queryCaptor.capture(), any(org.springframework.data.mongodb.core.query.Update.class), eq(ReconciliationLock.class)))
@@ -188,7 +180,7 @@ class DistributedLockServiceTest {
     }
 
     @Test
-    @DisplayName("currentGeneration: returns the real, persisted generation (a genuine, DB-generated atomic counter value, not derived from any wall-clock timestamp) when a lock document exists for this credential -- the actual review fix (\"ReconciliationLock.generation() is not actually a monotonic generation\")")
+    @DisplayName("currentGeneration: returns the real, persisted generation (a genuine, DB-generated atomic counter value, not derived from any wall-clock timestamp) when a lock document exists for this credential")
     void currentGeneration_lockExists_returnsRealGeneration() {
         var lock = new ReconciliationLock("cred1", "instance-a", Instant.now().plusSeconds(60), 42L);
         when(mongoTemplate.findById("cred1", ReconciliationLock.class)).thenReturn(lock);
@@ -207,7 +199,7 @@ class DistributedLockServiceTest {
     }
 
     @Test
-    @DisplayName("renew (generation-aware overload): the query requires the real, persisted generation field to still match the caller's own captured value, on top of instanceId and the un-expired check -- the actual review fix, a real fencing token rather than instanceId alone")
+    @DisplayName("renew (generation-aware overload): the query requires the real, persisted generation field to still match the caller's own captured value, on top of instanceId and the un-expired check -- a real fencing token rather than instanceId alone")
     void renew_generationAware_requiresMatchingGeneration() {
         ArgumentCaptor<Query> queryCaptor = ArgumentCaptor.forClass(Query.class);
         when(mongoTemplate.updateFirst(queryCaptor.capture(), any(org.springframework.data.mongodb.core.query.Update.class), eq(ReconciliationLock.class)))
@@ -230,7 +222,7 @@ class DistributedLockServiceTest {
     }
 
     @Test
-    @DisplayName("tryAcquireWithDiagnosis: a successful acquisition obtains its generation from a genuine, DB-generated atomic counter (LockGenerationCounter's own $inc) -- immune to wall-clock behavior entirely, unlike the previous timestamp-derived value -- the actual review fix")
+    @DisplayName("tryAcquireWithDiagnosis: a successful acquisition obtains its generation from a genuine, DB-generated atomic counter (LockGenerationCounter's own $inc) -- immune to wall-clock behavior entirely, unlike a timestamp-derived value")
     void tryAcquire_generationComesFromAtomicCounterNotWallClock() {
         when(mongoTemplate.findAndModify(any(), any(org.springframework.data.mongodb.core.query.Update.class),
             any(org.springframework.data.mongodb.core.FindAndModifyOptions.class), eq(com.tradevision.model.LockGenerationCounter.class)))
@@ -244,10 +236,8 @@ class DistributedLockServiceTest {
     }
 
     /**
-     * Review finding ("DistributedLockService has a subtle generation race" -- external review,
-     * twenty-ninth pass, P1, full context in DistributedLockService.LockLease's own javadoc):
-     * the actual test proving the fix -- the RETURN VALUE itself carries the exact generation
-     * just inserted, with no separate query involved at all.
+     * Proves the RETURN VALUE itself carries the exact generation just inserted, with no
+     * separate query involved at all, closing a subtle generation race.
      */
     @Test
     @DisplayName("tryAcquireWithDiagnosis: the returned LockLease carries the exact generation this call's own insert just wrote -- no separate currentGeneration() query needed or involved")

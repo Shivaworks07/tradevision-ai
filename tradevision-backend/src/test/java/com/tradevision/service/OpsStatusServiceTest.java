@@ -29,9 +29,8 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.when;
 
 /**
- * Review finding ("Ops / monitoring surface" — "Operators need one clear place to see 'is the
- * bot alive and allowed to trade?'"): verifies the actual aggregation, including the honest
- * "credential with no risk profile yet" case, rather than silently defaulting or skipping it.
+ * Verifies OpsStatusService's aggregation of operational state, including the "credential with
+ * no risk profile yet" case, rather than silently defaulting or skipping it.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -152,7 +151,7 @@ class OpsStatusServiceTest {
         assertThat(ids).containsExactlyInAnyOrder("cred1", "cred2");
     }
 
-    // ── Composite broker health ("Broker health improved but not unified") ───────────────────
+    // ── Composite broker health ───────────────────────────────────────────────────────
 
     @Test
     @DisplayName("getStatus: brokerHealth is populated for every credential, even one with no risk profile — broker connectivity is a fact about the credential, not about auto-trade configuration")

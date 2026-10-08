@@ -11,34 +11,16 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * Review finding ("Client-Side Signal Generation = Trusting the Browser with Money" — "Port the
- * entire TA engine... to Java on the server"): a genuinely verified port of
- * MarketRegimeService.detect() from trading-analyst/src/app/services/market-regime.service.ts.
+ * Classifies the current market regime (trending, ranging, volatile, breakout, etc.) from a
+ * candle series using ADX, Bollinger Band width, ATR%, a composite EMA-based trend score, and
+ * volume ratio, then maps the resulting regime to a recommended strategy, per-indicator weight
+ * adjustments, a confidence estimate, and any relevant warnings.
  *
- * HOW "VERIFIED" IS DEFINED HERE: the real TypeScript's logic copied into a standalone harness,
- * compiled with this project's own tsc, run against 3 deliberately different seeded scenarios
- * (a mixed/random market, a strong uptrend bias, a strong downtrend bias) chosen specifically to
- * exercise different branches of the classifyRegime decision tree — not just the default path.
- * That produced real reference output for all fields (regime, confidence, adx, bbWidth, atrPct,
- * trendScore, volumeRatio, strategy, weightAdjustments, warnings). This Java class was then run
- * against the identical seeded candle sequences and compared field-by-field. Every value
- * matched exactly across all 3 scenarios, including the ADX calculation (the most algorithmically
- * involved piece here — nested nested slicing and averaging) and the confidence formulas.
- *
- * A REAL BUG WAS FOUND IN THE ORIGINAL TYPESCRIPT WHILE BUILDING THIS VERIFICATION, AND IS
- * DELIBERATELY NOT REPLICATED HERE: the original's defaultRegime() (the fallback for fewer than
- * 50 candles) calls detect() again with a single synthetic candle — and since one candle is
- * also fewer than 50, this recurses into itself infinitely. Confirmed by actually running it,
- * not by inspection: it throws "Maximum call stack size exceeded". This Java port's
- * defaultRegime() below returns a genuine static default instead — a RANGING classification
- * (the original code's own fallback/default classification when nothing else matches), which is
- * what the original's intent clearly was.
- *
- * HONEST SCOPE: verified against 3 seeded datasets covering the ordinary, well-populated case
- * (100 candles) across bull/bear/ranging conditions. Not separately verified against every edge
- * case this method's own branches touch (e.g. the exact HIGH_VOLATILITY or LOW_VOLATILITY_RANGE
- * thresholds) — those branches were read and ported faithfully but not each individually
- * cross-checked against real reference output the way the 3 main scenarios were.
+ * Needs at least 50 candles to classify reliably; below that, {@link #defaultRegime()} returns
+ * a static RANGING classification rather than attempting detection on insufficient data — this
+ * mirrors RANGING's role as the natural fallback when none of the other regime conditions in
+ * {@link #classifyRegime} are met, just computed directly rather than by re-running detection on
+ * too little data.
  */
 @Service
 public class MarketRegimeService {
@@ -305,13 +287,10 @@ public class MarketRegimeService {
     }
 
     /**
-     * Review finding ("real bug found in the original TypeScript" -- see this class's own
-     * javadoc): a genuine static default, NOT a recursive call into detect() with a synthetic
-     * candle the way the original does (which crashes with a stack overflow). RANGING is the
-     * original code's own default/fallback classification (classifyRegime's own final `return
-     * 'RANGING'` when nothing else matches), so this reuses the SAME strategy/weight data that
-     * classification would produce -- consistent with the original's intent, just not built by
-     * calling back into the buggy path that intent was expressed through.
+     * Returns a static RANGING classification for when there isn't enough candle history to
+     * classify the regime properly. Uses the same strategy/weight data that classifyRegime's own
+     * RANGING branch would produce, so callers get a consistent, safe default rather than a
+     * regime built from insufficient data.
      */
     private RegimeState defaultRegime() {
         String regime = "RANGING";

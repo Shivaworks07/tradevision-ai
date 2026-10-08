@@ -21,8 +21,8 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 /**
- * Review finding ("#9 — Slippage"): verifies the actual basis-points math, the sign convention
- * (positive = worse fill), and the "exclude, don't zero" rule for orders with no requestedPrice.
+ * Verifies the basis-points math, the sign convention (positive = worse fill), and the
+ * "exclude, don't zero" rule for orders with no requestedPrice.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -119,7 +119,7 @@ class SlippageMetricsServiceTest {
         assertThat(stats.avgBps()).isEqualTo(0);
     }
 
-    // ── Volatility bucketing ("Execution" — "slippage by volatility") ────────────
+    // ── Volatility bucketing ────────────────────────────────────────────────────
 
     private Order orderWithVolatility(double requestedPrice, double fillPrice, Double volatilityAtEntry) {
         Order o = order(requestedPrice, fillPrice);
@@ -185,7 +185,7 @@ class SlippageMetricsServiceTest {
     }
 
     @Test
-    @DisplayName("reportByStrategyVersion: orders correctly grouped by their own distinct strategyVersion string -- the actual review fix (\"Slippage analytics can't be tied to strategy version\")")
+    @DisplayName("reportByStrategyVersion: orders correctly grouped by their own distinct strategyVersion string")
     void reportByStrategyVersion_groupsByVersion() {
         Order v1a = order(100, 100.5);
         v1a.setStrategyVersion("v1");

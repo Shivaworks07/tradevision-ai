@@ -19,7 +19,7 @@
       <span class="idx-chg" [class.up]="nifty.up" [class.dn]="!nifty.up">
         {{nifty.up?'▲':'▼'}} {{nifty.pct}}%
       </span>
-      <!-- Review finding (P1 #10 — "Index fallback is also fake market data") -->
+      <!-- Flags the placeholder index values shown before a live quote arrives -->
       @if (nifty.stale) {
         <span class="idx-stale" title="Live index data unavailable — showing a placeholder, not a current price">⚠️ STALE</span>
       }
@@ -102,7 +102,7 @@
           <div class="card-header">
             <span class="symbol-badge">{{s.symbol}}</span>
             <span class="sector-tag">{{s.sector}}</span>
-            <!-- Review finding (P1 #8 — "The frontend still fabricates market data") -->
+            <!-- Flags a card whose price is a placeholder rather than a live quote -->
             @if (s.stale) {
               <span class="idx-stale" title="Live data unavailable — this price is a placeholder, not current">⚠️ STALE</span>
             }
@@ -137,8 +137,7 @@
               ⚠️ No intraday (15m) data available for {{s.symbol}} right now — try again during market hours, or use Swing Call instead.
             </div>
           }
-          <!-- Review finding (P1 #9 — "Synthetic candles are still used to generate trading
-          analysis"): the review's own required UI text for this exact state. -->
+          <!-- Shown when there isn't enough real historical data to run analysis -->
           @if (analysisUnavailable===s.symbol) {
             <div class="intraday-unavailable">
               ⚠️ Analysis unavailable — live historical market data could not be retrieved for {{s.symbol}}.

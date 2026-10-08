@@ -36,12 +36,10 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
- * Review finding (P1 #7 — "Admin bootstrap has a race" — full context in BootstrapLock's own
- * javadoc): the review's own explicitly requested test #7 ("20 concurrent requests. Expected:
- * exactly ONE admin"). Adapted to 5 concurrent requests to stay within this controller's own
- * 5-attempts-per-hour rate limit, which is a separate, deliberate defense and not something this
- * test should need to work around — the atomicity claim under test ("no matter how many
- * concurrent requests, exactly one can ever win") is proven just as validly at 5 as at 20.
+ * Verifies admin bootstrap's atomicity: with many concurrent requests, exactly one can ever win.
+ * Adapted to 5 concurrent requests to stay within this controller's own 5-attempts-per-hour rate
+ * limit, which is a separate, deliberate defense and not something this test should need to work
+ * around — the atomicity claim under test is proven just as validly at 5 as at a larger number.
  *
  * mongoTemplate.insert is mocked to faithfully replicate MongoDB's own real guarantee for this
  * scenario (a shared AtomicBoolean: the first caller succeeds, every other caller gets
@@ -67,8 +65,7 @@ class AdminControllerTest {
     @Mock com.tradevision.service.IncidentService incidentService;
     @Mock com.tradevision.config.TradingHeartbeatService heartbeatService;
     @Mock com.tradevision.service.AuditChainService auditChainService;
-    // P2-7 fix, full context in AuditChainCheckpoint's own class javadoc: verifyAuditChain now
-    // fetches this to pass into the checkpoint-aware verifyChain overload.
+    // verifyAuditChain fetches this to pass into the checkpoint-aware verifyChain overload.
     @Mock com.tradevision.repository.AuditChainCheckpointRepository auditChainCheckpointRepo;
     @Mock com.tradevision.repository.TradeEventRepository tradeEventRepo;
     @Mock com.tradevision.service.HistoricalReplayService historicalReplayService;
@@ -125,9 +122,9 @@ class AdminControllerTest {
         assertThat(allDone.await(10, TimeUnit.SECONDS)).isTrue();
         executor.shutdown();
 
-        // The actual claim under test: no matter how many threads race for it, exactly one can
-        // ever win the atomic insert — never zero (a real user should be promotable), never more
-        // than one (the exact bug the review found).
+        // The claim under test: no matter how many threads race for it, exactly one can ever
+        // win the atomic insert — never zero (a real user should be promotable), never more
+        // than one.
         assertThat(successCount.get()).isEqualTo(1);
         verify(userRepo, times(1)).save(any(User.class));
     }
@@ -150,11 +147,8 @@ class AdminControllerTest {
         verify(userRepo, never()).save(any());
     }
 
-    // ── Review finding ("Frontend authentication migration is incomplete and currently breaks
-    // authenticated APIs" -- P0, full context in UserController's own javadoc): the actual fix
-    // for this specific controller, tested directly -- isAdmin() now looks the already-
-    // authenticated userId up directly instead of re-parsing a bearer token this class no
-    // longer receives at all. ────────────────────────────────────────────────────────────
+    // ── isAdmin() looks the already-authenticated userId up directly instead of re-parsing a
+    // bearer token this class no longer receives at all. ────────────────────────────────────────────────────────────
 
     @Test
     @DisplayName("dashboard: an authenticated non-admin userId is correctly forbidden, not crashed or silently allowed")
@@ -192,7 +186,7 @@ class AdminControllerTest {
     }
 
     @Test
-    @DisplayName("bootstrap: the rate limit is enforced via the shared MongoDB counter, not a JVM-local one -- the actual review fix (\"Admin bootstrap rate limiter is JVM-local\"), since a real distributed rate limit means every replica must see the SAME count, not each starting its own count at zero")
+    @DisplayName("bootstrap: the rate limit is enforced via the shared MongoDB counter, not a JVM-local one, since a real distributed rate limit means every replica must see the SAME count, not each starting its own count at zero")
     void bootstrap_rateLimitEnforcedViaMongoCounter_notJvmLocal() {
         ReflectionTestUtils.setField(controller, "bootstrapSecret", "correct-secret");
         when(userRepo.countByRole("ADMIN")).thenReturn(0L);
@@ -208,9 +202,7 @@ class AdminControllerTest {
     }
 
     /**
-     * Review finding ("Audit-log retention is two years but not export/archive managed" --
-     * external review, twenty-third pass, P2, full context in AdminController.exportAuditLog's
-     * own javadoc): the actual tests for the new endpoint.
+     * Tests for the audit-log export endpoint.
      */
     @Test
     @DisplayName("exportAuditLog: a non-admin user is forbidden, never reaches the query")
@@ -283,9 +275,7 @@ class AdminControllerTest {
     }
 
     /**
-     * Review finding ("richer metrics around per-symbol execution latency" -- external review,
-     * P3, full context in latencyMetricsService's own updated field javadoc): the actual test
-     * for the new endpoint.
+     * Test for the per-symbol execution latency endpoint.
      */
     @Test
     @DisplayName("latencyReport: a non-admin user is forbidden, never reaches the service")
@@ -335,9 +325,7 @@ class AdminControllerTest {
     }
 
     /**
-     * Review finding ("exchange rejection taxonomy dashboards" / "automatic broker incident
-     * dashboards" -- external review, P3, full context in the endpoint's own javadoc): the
-     * actual tests.
+     * Tests for the incident taxonomy dashboard endpoint.
      */
     @Test
     @DisplayName("incidentTaxonomy: a non-admin user is forbidden")
@@ -353,11 +341,9 @@ class AdminControllerTest {
     }
 
     /**
-     * Review finding ("some admin reports are potentially expensive" -- external review,
-     * twenty-sixth pass, P2, full context in the endpoint's own updated javadoc): the actual
-     * test for the real aggregation-pipeline rewrite -- confirms the endpoint reads its counts
-     * from mongoTemplate.aggregate's own mapped results, not from a full in-memory collection
-     * loaded via findByCreatedAtAfter (which this endpoint no longer calls at all).
+     * Confirms the endpoint reads its counts from mongoTemplate.aggregate's own mapped results,
+     * not from a full in-memory collection loaded via findByCreatedAtAfter (which this endpoint
+     * never calls).
      */
     @Test
     @DisplayName("incidentTaxonomy: an admin gets real counts sourced from mongoTemplate.aggregate's own mapped results, grouped by type and severity, with a separate unresolved-by-type breakdown")
@@ -403,9 +389,8 @@ class AdminControllerTest {
     }
 
     /**
-     * Review finding, same context as the test above: a second, focused test confirming the
-     * actual database-side filter -- resolvedAt IS NULL is applied as a real $match stage, not
-     * an in-memory Java filter.
+     * A second, focused test confirming the actual database-side filter -- resolvedAt IS NULL
+     * is applied as a real $match stage, not an in-memory Java filter.
      */
     @Test
     @DisplayName("incidentTaxonomy: the unresolved-by-type breakdown is filtered via a real $match stage on resolvedAt, not an in-memory Java filter")
@@ -427,8 +412,7 @@ class AdminControllerTest {
     }
 
     /**
-     * Review finding ("strategy-versioned execution provenance" -- external review, P3, full
-     * context in the endpoint's own javadoc): the actual tests.
+     * Tests for the strategy-versioned execution provenance endpoint.
      */
     @Test
     @DisplayName("executionProvenance: a non-admin user is forbidden")
@@ -492,8 +476,7 @@ class AdminControllerTest {
     }
 
     /**
-     * Review finding ("automated reconciliation reports" -- external review, P3, full context
-     * in the endpoint's own javadoc): the actual tests.
+     * Tests for the reconciliation report endpoint.
      */
     @Test
     @DisplayName("reconciliationReport: a non-admin user is forbidden")
@@ -546,8 +529,7 @@ class AdminControllerTest {
     }
 
     /**
-     * Review finding ("immutable external audit export" -- external review, P3, full context
-     * in AuditChainService's own class javadoc): the actual tests for the new endpoint.
+     * Tests for the audit chain verification endpoint.
      */
     @Test
     @DisplayName("verifyAuditChain: a non-admin user is forbidden")
@@ -580,8 +562,7 @@ class AdminControllerTest {
     }
 
     /**
-     * Review finding ("full event-sourced order ledger" -- external review, P3, full context
-     * in the endpoint's own javadoc): the actual tests.
+     * Tests for the event-sourced order ledger endpoint.
      */
     @Test
     @DisplayName("orderLedger: a non-admin user is forbidden")
@@ -648,9 +629,8 @@ class AdminControllerTest {
     }
 
     /**
-     * Review finding ("Admin bootstrap is still vulnerable to permanent lockout after DB
-     * failure" -- external review, twenty-sixth pass, P1, full context in the bootstrap
-     * endpoint's own updated comment): the actual test proving the rollback works.
+     * Proves the lock rollback works, so admin bootstrap is never vulnerable to a permanent
+     * lockout after a DB failure.
      */
     @Test
     @DisplayName("bootstrap: promotion (save()) fails after the lock was already acquired -- the lock is rolled back, returning a real error instead of a silent, permanent lockout")
@@ -667,14 +647,13 @@ class AdminControllerTest {
         var response = controller.bootstrap("user1@example.com", null, "correct-secret");
 
         assertThat(response.getStatusCode().value()).isEqualTo(500);
-        // The actual fix: the just-acquired lock is rolled back so a retry can succeed later,
-        // instead of leaving a permanent, silent lockout.
+        // The just-acquired lock is rolled back so a retry can succeed later, instead of
+        // leaving a permanent, silent lockout.
         verify(mongoTemplate).remove(any(org.springframework.data.mongodb.core.query.Query.class), eq(BootstrapLock.class));
     }
 
     /**
-     * User's own explicit architectural request, full context in ExecutionContext's own class
-     * javadoc: the actual tests for the query endpoint.
+     * Tests for the execution context query endpoint.
      */
     @Test
     @DisplayName("executionContext: a non-admin user is forbidden")
@@ -786,8 +765,7 @@ class AdminControllerTest {
     }
 
     /**
-     * Review finding ("Recovery metrics need to be first-class" -- external review, thirty-sixth
-     * pass, P2, full context in the recoveryHealth endpoint's own javadoc): the actual tests.
+     * Tests for the recovery health metrics endpoint.
      */
     @Test
     @DisplayName("recoveryHealth: a non-admin user is forbidden")
@@ -868,9 +846,7 @@ class AdminControllerTest {
     }
 
     /**
-     * Review finding ("Incident retry is improved, but external paging still needs production
-     * validation" -- external review, thirty-eighth pass, P1, full context in the
-     * testNotification endpoint's own javadoc): the actual tests.
+     * Tests for the test-notification endpoint, which validates external paging in production.
      */
     @Test
     @DisplayName("testNotification: a non-admin user is forbidden")
@@ -904,30 +880,30 @@ class AdminControllerTest {
         assertThat(data.get("notificationAttempts")).isEqualTo(1);
     }
 
-    // ── P2-22: bootstrap secret comparison is constant-time (MessageDigest.isEqual), not
+    // ── bootstrap secret comparison is constant-time (MessageDigest.isEqual), not
     // String.equals ──────────────────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("P2-22 fix: secretsMatch -- identical secrets match")
+    @DisplayName("secretsMatch -- identical secrets match")
     void secretsMatch_identicalSecrets_match() {
         assertThat(AdminController.secretsMatch("correct-secret", "correct-secret")).isTrue();
     }
 
     @Test
-    @DisplayName("P2-22 fix: secretsMatch -- a wrong secret of the SAME length never matches")
+    @DisplayName("secretsMatch -- a wrong secret of the SAME length never matches")
     void secretsMatch_wrongSecretSameLength_neverMatches() {
         assertThat(AdminController.secretsMatch("correct-secret", "wr0ng-secr3t!")).isFalse();
     }
 
     @Test
-    @DisplayName("P2-22 fix: secretsMatch -- a wrong secret of a DIFFERENT length never matches, and never throws (no array-length mismatch from MessageDigest.isEqual)")
+    @DisplayName("secretsMatch -- a wrong secret of a DIFFERENT length never matches, and never throws (no array-length mismatch from MessageDigest.isEqual)")
     void secretsMatch_wrongSecretDifferentLength_neverMatchesAndNeverThrows() {
         assertThat(AdminController.secretsMatch("correct-secret", "short")).isFalse();
         assertThat(AdminController.secretsMatch("correct-secret", "a-much-longer-guess-than-the-real-secret")).isFalse();
     }
 
     @Test
-    @DisplayName("P2-22 fix: secretsMatch -- a null or blank configured secret never matches anything, even an empty/null supplied value")
+    @DisplayName("secretsMatch -- a null or blank configured secret never matches anything, even an empty/null supplied value")
     void secretsMatch_noConfiguredSecret_neverMatches() {
         assertThat(AdminController.secretsMatch(null, "anything")).isFalse();
         assertThat(AdminController.secretsMatch("", "anything")).isFalse();
@@ -935,7 +911,7 @@ class AdminControllerTest {
     }
 
     @Test
-    @DisplayName("P2-22 fix: secretsMatch -- a null supplied secret against a real configured one never matches and never throws an NPE")
+    @DisplayName("secretsMatch -- a null supplied secret against a real configured one never matches and never throws an NPE")
     void secretsMatch_nullSuppliedSecret_neverMatchesNeverThrows() {
         assertThat(AdminController.secretsMatch("correct-secret", null)).isFalse();
     }

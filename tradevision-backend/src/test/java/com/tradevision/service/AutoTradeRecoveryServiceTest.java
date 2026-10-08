@@ -24,19 +24,16 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Review finding (P1 #5 — "Auto-trading is not durable"): tests the actual recovery mechanism —
- * that a stuck signal is atomically reset to PENDING (not just re-dispatched directly, which
- * would bypass evaluateSignal's own claim gate) and re-dispatched, and that a signal which
- * completed in the race window between the query and the reset is correctly left alone.
+ * Tests the recovery mechanism: a stuck signal is atomically reset to PENDING (not just
+ * re-dispatched directly, which would bypass evaluateSignal's own claim gate) and re-dispatched,
+ * and a signal which completed in the race window between the query and the reset is correctly
+ * left alone.
  *
- * UPDATE ("Auto-trade recovery still needs a lease"): the EVALUATING staleness query moved from
- * a fixed elapsed-time comparison (findByAutoTradeEvalStatusAndAutoTradeEvalStartedAtBefore) to
- * a real lease-expiry check (findByAutoTradeEvalStatusAndEvaluationLeaseUntilBefore) — every
- * stub below updated accordingly, and a new fallback query
- * (findByAutoTradeEvalStatusAndEvaluationLeaseUntilIsNull, for records claimed by the OLD claim
- * logic before this field existed) is now also stubbed everywhere. A new dedicated test verifies
- * the deduplication fix this same change required — a record matching BOTH fallback queries must
- * only be recovered once, not twice.
+ * The EVALUATING staleness query uses a real lease-expiry check
+ * (findByAutoTradeEvalStatusAndEvaluationLeaseUntilBefore), with a fallback query
+ * (findByAutoTradeEvalStatusAndEvaluationLeaseUntilIsNull, for records claimed by the older
+ * claim logic before this field existed) also stubbed where relevant. A dedicated test verifies
+ * that a record matching BOTH fallback queries is recovered once, not twice.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -56,11 +53,10 @@ class AutoTradeRecoveryServiceTest {
         r.setUserId("user1");
         r.setSymbol("BTCUSDT");
         r.setAutoTradeEvalStatus(status);
-        // P0-9 fix ("Stale signal max-age gate" -- full context in AutoTradeService.MAX_SIGNAL_AGE's
-        // own javadoc): kept comfortably under MAX_SIGNAL_AGE (15 minutes) -- this fixture models
-        // a signal stuck behind a slow/crashed WORKER (the thing every test in this file is
-        // actually about), not a signal that's independently too OLD to trade at all. See the
-        // dedicated stuckSignalTooOld_* tests below for that separate case.
+        // Kept comfortably under MAX_SIGNAL_AGE (15 minutes) -- this fixture models a signal
+        // stuck behind a slow/crashed WORKER (the thing every test in this file is actually
+        // about), not a signal that's independently too OLD to trade at all. See the dedicated
+        // stuckSignalTooOld_* tests below for that separate case.
         r.setCalledAt(LocalDateTime.now().minusMinutes(11));
         if ("EVALUATING".equals(status)) {
             r.setAutoTradeEvalStartedAt(LocalDateTime.now().minusMinutes(15));
@@ -92,12 +88,10 @@ class AutoTradeRecoveryServiceTest {
     }
 
     /**
-     * Audit item P1-7 ("AsyncConfig's autoTradeExecutor has no explicit rejection policy, and
-     * this call site assumed it couldn't fail" -- full context in recoverStuckSignals' own
-     * updated comment): confirms a RejectedExecutionException from a saturated autoTradeExecutor
-     * doesn't propagate out of recoverStuckSignals() and abort the rest of its pass -- the
-     * signal was already reset to PENDING before the dispatch, so it's already eligible for the
-     * next recovery pass regardless of this one's outcome.
+     * Confirms a RejectedExecutionException from a saturated autoTradeExecutor doesn't propagate
+     * out of recoverStuckSignals() and abort the rest of its pass -- the signal was already reset
+     * to PENDING before the dispatch, so it's already eligible for the next recovery pass
+     * regardless of this one's outcome.
      */
     @Test
     @DisplayName("recoverStuckSignals: autoTradeExecutor rejecting the re-dispatch (RejectedExecutionException) does not propagate out of this method -- the signal stays reset to PENDING for the next pass")
@@ -115,7 +109,7 @@ class AutoTradeRecoveryServiceTest {
         verify(autoTradeService).evaluateSignal("user1", stuck);
     }
 
-    // ── P0-9: stale signal max-age gate ──────────────────────────────────────────
+    // ── stale signal max-age gate ──────────────────────────────────────────
 
     @Test
     @DisplayName("recoverStuckSignals: a stuck PENDING signal older than MAX_SIGNAL_AGE is marked EXPIRED, never re-dispatched")
@@ -190,7 +184,7 @@ class AutoTradeRecoveryServiceTest {
     }
 
     @Test
-    @DisplayName("recoverStuckSignals: a signal whose lease has NOT yet expired is not reclaimed — the actual review fix, a worker that's simply slow but genuinely still alive")
+    @DisplayName("recoverStuckSignals: a signal whose lease has NOT yet expired is not reclaimed -- a worker that's simply slow but genuinely still alive")
     void unexpiredLease_notReclaimed() {
         // The repository query itself encodes "stale" server-side — a real query would never
         // return this record at all, since its lease is still valid. Stubbing it to correctly
@@ -204,14 +198,10 @@ class AutoTradeRecoveryServiceTest {
     }
 
     /**
-     * Review finding ("Recovery can still race a slow evaluator around the exchange boundary" --
-     * external review, fifteenth pass, P0, full context in the new query method's own javadoc):
-     * the review's own explicitly required test -- "worker A reaches ORDER_PENDING, lease
-     * expires, recovery must NOT reset it." The actual filtering is Spring Data's own derived-
-     * query machinery against a real database (already well-established framework behavior, not
-     * this codebase's own logic to re-prove) -- what this unit test verifies is the part this
-     * codebase DOES control: that recoverStuckSignals() actually asks for that exclusion, with
-     * the right two statuses, every single time it queries.
+     * Covers the scenario where worker A reaches ORDER_PENDING and the lease expires -- recovery
+     * must NOT reset it. The actual filtering is Spring Data's own derived-query machinery
+     * against a real database; what this unit test verifies is that recoverStuckSignals()
+     * actually asks for that exclusion, with the right statuses, every time it queries.
      */
     @Test
     @DisplayName("recoverStuckSignals: the EVALUATING staleness query always excludes signals already at APPROVED, ORDER_PENDING, or EXECUTED -- none of these must ever be reclaimed by an expired lease, whatever the original worker is actually doing")
@@ -222,10 +212,8 @@ class AutoTradeRecoveryServiceTest {
 
         ArgumentCaptor<java.util.Collection<com.tradevision.model.SignalStatus>> excludedCaptor = ArgumentCaptor.forClass(java.util.Collection.class);
         verify(callRepo).findByAutoTradeEvalStatusAndEvaluationLeaseUntilBeforeAndSignalStatusNotIn(eq("EVALUATING"), any(), excludedCaptor.capture());
-        // Review finding ("Auto-trade recovery can still reclaim an evaluation while the
-        // original worker is at a late execution stage" -- external review, twenty-fourth pass,
-        // P1, full context in recoverStuckSignals' own updated comment): APPROVED added to this
-        // exclusion -- the actual fix.
+        // APPROVED is included in this exclusion, since an evaluation at a late execution stage
+        // must never be reclaimed just because the lease expired.
         assertThat(excludedCaptor.getValue()).containsExactlyInAnyOrder(
             com.tradevision.model.SignalStatus.APPROVED, com.tradevision.model.SignalStatus.ORDER_PENDING,
             com.tradevision.model.SignalStatus.EXECUTED);
@@ -341,9 +329,7 @@ class AutoTradeRecoveryServiceTest {
     }
 
     /**
-     * Review finding ("Evaluation recovery now excludes APPROVED, but APPROVED can become
-     * permanently abandoned" -- external review, twenty-sixth pass, P1, full context in the new
-     * method's own javadoc): the actual tests.
+     * Covers the case where an APPROVED signal can become permanently abandoned.
      */
     @Test
     @DisplayName("detectStaleApprovedSignals: shutting down -- does nothing at all")

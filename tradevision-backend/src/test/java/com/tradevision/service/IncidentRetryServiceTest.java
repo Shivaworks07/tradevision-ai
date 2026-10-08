@@ -19,10 +19,8 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Review finding ("Critical alerting is still best-effort" -- external review, thirty-sixth
- * pass, P1, full context in TradingIncident.notificationStatus's own field javadoc and
- * IncidentRetryService's own class javadoc): the actual tests for the review's own "retry" step
- * of its explicitly required chain.
+ * Covers IncidentRetryService's retry step for notification delivery, so that critical alerting
+ * is not purely best-effort.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)

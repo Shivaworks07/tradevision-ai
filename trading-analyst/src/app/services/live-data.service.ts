@@ -10,14 +10,12 @@ export interface LiveQuote {
   change: number; changePct: number;
   high: number; low: number; open: number;
   volume: number; marketCap?: number; sector?: string; exchange?: string;
-  // Review finding (P1 #8/#10 — "The frontend still fabricates market data" / "Index fallback
-  // is also fake market data"): confirmed real — fallback numbers were shown with no indication
-  // they weren't live. Matches the existing IPOResponse.stale precedent in this same file.
+  // True when this quote came from static fallback data rather than a live feed,
+  // so the UI can show a "STALE / DEMO DATA" indicator instead of presenting it as current.
   stale?: boolean;
-  // Review finding ("BUT — there is still fake/derived FX market data"): confirmed real — even
-  // with a genuinely live ECB rate, change/high/low/open were still Math.random()-derived. This
-  // flag lets the FX template show "—" for those specific fields rather than a fabricated
-  // number, while the price itself stays real. See buildFxQuotes' own comment for the full fix.
+  // True when the price is real but change/high/low/open could not be derived from the
+  // underlying data source, so the template shows "—" for those fields instead of a
+  // fabricated value while still trusting the price itself.
   ohlcUnavailable?: boolean;
 }
 export interface IPOItem {
@@ -416,8 +414,7 @@ export class LiveDataService {
             const pct = prev > 0 ? (chg/prev)*100 : 0;
             return { value: m.regularMarketPrice.toLocaleString('en-IN',{maximumFractionDigits:2}), change:(chg>=0?'+':'')+chg.toFixed(2), pct:(pct>=0?'+':'')+pct.toFixed(2), up:chg>=0, stale: false };
           }
-          // Review finding (P1 #10 — "Index fallback is also fake market data"): confirmed
-          // real — these static values had no available/stale state attached at all.
+          // No live quote available — fall back to a static value, explicitly marked stale.
           return { value: fbVal, change: '0.00', pct: '0.00', up: true, stale: true };
         };
         return { nifty: fmt(n,'24,013'), sensex: fmt(b,'79,212') };
@@ -555,20 +552,11 @@ export class LiveDataService {
     );
   }
 
-  // Review finding (P1 #8 — "The frontend still fabricates market data"): the isStale param is
-  // the explicit fix — every quote gets stale:true when built from fxFallback() rather than a
-  // real ECB rate. Separate, narrower issue found while fixing this, NOT addressed here: even
-  // in the LIVE branch, change/high/low/open are still Math.random()-derived below (the ECB
-  // rates endpoint only provides a single point-in-time rate per currency, no OHLC or change
-  // data) — real price, synthetic derived fields. Distinct from what the review named (which was
-  // about the base price itself being fake), and fixing it needs a different forex data source
-  // with real OHLC, not something to fold into this stale-marking fix.
-  // Review finding ("BUT — there is still fake/derived FX market data"): confirmed real — even
-  // when the underlying rate came from a genuine ECB API response, change/high/low/open were
-  // STILL Math.random()-derived on top of it. The review's own Option B: show only the actual
-  // current rate; everything this data source genuinely doesn't provide (change/high/low/open —
-  // the ECB rates endpoint is a single point-in-time rate per currency, no OHLC or change data
-  // at all) is now honestly marked unavailable via ohlcUnavailable, not manufactured.
+  // isStale marks every quote built from fxFallback() rather than a real ECB rate.
+  // The ECB rates endpoint only provides a single point-in-time rate per currency —
+  // no OHLC or change data — so change/high/low/open are not derivable even when the
+  // base price itself is live; ohlcUnavailable marks those fields honestly rather than
+  // fabricating them.
   private buildFxQuotes(rates: Record<string,number>, isStale: boolean = false): LiveQuote[] {
     return this.ALL_FOREX_PAIRS.map(p => {
       let price = 1;
@@ -592,9 +580,9 @@ export class LiveDataService {
     );
   }
 
-  // Review finding (P1 #8 — "The frontend still fabricates market data"): every quote marked
-  // stale:true — the review's own required signal, consumed by the components below to show a
-  // visible "STALE / DEMO DATA" indicator rather than presenting these as current prices.
+  // Static fallback quotes for when the live Indian market feed is unavailable.
+  // Every quote is marked stale:true so components show a visible "STALE / DEMO DATA"
+  // indicator rather than presenting these as current prices.
   indianFallback(): LiveQuote[] {
     return [
       {symbol:'RELIANCE', name:'Reliance Industries',sector:'Energy',   exchange:'NSE',price:2834,change:28,  changePct:1.0,  high:2865,low:2810,open:2806,volume:8423156},
@@ -619,10 +607,6 @@ export class LiveDataService {
       {symbol:'BHARTIARTL',name:'Bharti Airtel',     sector:'Telecom',   exchange:'NSE',price:1678,change:34,  changePct:2.07, high:1690,low:1645,open:1644,volume:6234567},
     ].map(q => ({...q, stale: true}));
   }
-
-  // Review finding (P1 #8 — full context above): cryptoFallback() was dead code — defined but
-  // never called anywhere in this file. Removed rather than left as an unused temptation for a
-  // future call site to wire in without the stale marking this pass is adding everywhere else.
 
   private fxFallback(): Record<string,number> {
     return {INR:83.42,EUR:0.9234,GBP:0.7891,JPY:151.23,AUD:1.5234,CAD:1.3621,CHF:0.8934,SGD:1.3445,HKD:7.8234,NZD:1.6234,MXN:17.15,ZAR:18.72,NOK:10.54,SEK:10.41,DKK:6.89,AED:3.67,SAR:3.75,MYR:4.71};

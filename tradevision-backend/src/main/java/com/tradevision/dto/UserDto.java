@@ -14,8 +14,7 @@ public class UserDto {
     private Set<String> favoriteStocks;
     private Set<String> favoriteCryptos;
     private Set<String> favoriteForex;
-    // P2-14 fix ("WebhookAlertService/User.alertWebhookUrl: no endpoint sets the webhook, feature
-    // is dead" -- external review, full context in AuthService's own webhookAlertService field
-    // javadoc): surfaced here so the frontend can actually show/edit the account's current value.
+    // URL that trade/price alerts are posted to; surfaced here so the frontend can show/edit the
+    // account's current value.
     private String alertWebhookUrl;
 }

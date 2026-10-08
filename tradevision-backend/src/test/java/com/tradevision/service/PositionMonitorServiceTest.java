@@ -46,25 +46,20 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * Review finding ("#17" — "drawdown still isn't mark-to-market"): tests the actual equity math
- * (free balance + open-position market value), not just that the method runs. checkDrawdown was
- * made package-private specifically so these can exercise it directly without needing to stand
- * up the whole reconcileCredential() call chain.
+ * Tests the equity math (free balance + open-position market value), not just that the method
+ * runs. checkDrawdown was made package-private specifically so these can exercise it directly
+ * without needing to stand up the whole reconcileCredential() call chain.
  *
- * Review finding ("P0 #1" — "OCO ALL_DONE with NO filled leg can falsely close a real
- * position"): handleOcoAllDoneWithNoFill gets the same treatment — made package-private,
- * tested directly, since this is exactly the kind of money-consequential branch that had zero
- * coverage before.
+ * Also covers handleOcoAllDoneWithNoFill directly (also made package-private), since an OCO
+ * reaching ALL_DONE with no filled leg is exactly the kind of money-consequential branch that
+ * needs direct test coverage.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
 class PositionMonitorServiceTest {
 
     @Mock BrokerCredentialRepository credentialRepo;
-    // Review finding ("OMS/ExecutedOrder full unification" -- P1, full context in
-    // PositionMonitorService's own removal of this same field): the real Order (OMS)
-    // repository the service now actually calls for every read this file's own tests used to
-    // stub on the now-removed ExecutedOrderRepository field.
+    // The real Order (OMS) repository the service calls for every read.
     @Mock com.tradevision.repository.OrderRepository omsOrderRepo;
     @Mock com.tradevision.repository.FlattenAttemptRepository flattenAttemptRepo;
     @Mock com.tradevision.repository.OrphanedOcoRepository orphanedOcoRepo;
@@ -84,34 +79,25 @@ class PositionMonitorServiceTest {
     @Mock PositionSafetyService positionSafetyService;
     @Mock RiskProfileRepository riskProfileRepo;
     @Mock TradeCallRepository callRepo;
-    // Review finding (P1 #5 -- "Global ML weights can be poisoned by unverified, client-supplied
-    // trade outcomes"): writeRealOutcomeBackToSignal now records the ML outcome for a real fill
-    // directly -- without this mock, @InjectMocks would leave the field null.
+    // writeRealOutcomeBackToSignal records the ML outcome for a real fill directly -- without
+    // this mock, @InjectMocks would leave the field null.
     @Mock MLWeightService mlWeightService;
     @Mock BrokerCredentialService credentialService;
     @Mock RiskEngineService riskEngine;
     @Mock BrokerAdapter adapter;
-    // Review finding ("Position P&L architecture is still scattered" -- full context in
-    // RealizedPnlService's own javadoc): @Spy (a REAL instance), same reasoning as
-    // PositionSafetyServiceTest's own identical addition.
+    // @Spy (a real instance), same reasoning as PositionSafetyServiceTest's identical field.
     @Spy RealizedPnlService realizedPnlService = new RealizedPnlService();
-    // Review finding ("Position Ledger is still not authoritative" -- full context in
-    // PositionLedgerService's own javadoc): @Mock with a default "genuine match" stub added in
-    // @BeforeEach below -- same NPE risk as RealizedPnlService's own comment above, since
-    // reconcilePositionAgainstLedger returns an object type, not a boolean.
+    // @Mock with a default "genuine match" stub added in @BeforeEach below -- same NPE risk as
+    // RealizedPnlService's comment above, since reconcilePositionAgainstLedger returns an object
+    // type, not a boolean.
     @Mock PositionLedgerService positionLedgerService;
-    // Review finding ("OMS not actually authoritative" -- P0, full context in
-    // PositionSafetyServiceTest's own identical addition): needed now that every OCO placement
-    // site in this class gets a real OMS Order record.
+    // Needed because every OCO placement site in this class gets a real OMS Order record.
     @Mock OrderService orderService;
-    // Review finding ("Reconciliation lock renewal failure currently continues anyway" --
-    // external review): confirmed a genuine, pre-existing gap while investigating this claim --
     // PositionMonitorService depends on DistributedLockService (both tryAcquire, called
-    // unconditionally in the public reconcileCredential() wrapper, and now renew() too), but
-    // this test file never mocked it at all. @InjectMocks would leave this field null, meaning
-    // any test that actually calls the public wrapper (not just reconcileCredentialLocked
-    // directly) would NPE on the very first tryAcquire call -- a real gap that predates this
-    // specific fix, not introduced by it, but one this fix's own new test needs regardless.
+    // unconditionally in the public reconcileCredential() wrapper, and renew() too). Without
+    // this mock, @InjectMocks would leave this field null, so any test that calls the public
+    // wrapper (not just reconcileCredentialLocked directly) would NPE on the first tryAcquire
+    // call.
     @Mock DistributedLockService distributedLockService;
 
     @InjectMocks PositionMonitorService service;
@@ -125,41 +111,28 @@ class PositionMonitorServiceTest {
 
     @BeforeEach
     void setup() {
-        // Review finding ("Reconciliation lock renewal failure currently continues anyway" --
-        // external review, full context in this file's own new @Mock field comment above): a
-        // realistic "this call succeeded" default for both distributed-lock calls the public
-        // reconcileCredential() wrapper and reconcileCredentialLocked() now depend on -- an
+        // A realistic "this call succeeded" default for both distributed-lock calls the public
+        // reconcileCredential() wrapper and reconcileCredentialLocked() depend on -- an
         // unstubbed boolean-returning call defaults to false in Mockito, which would otherwise
         // make every existing test in this file that reaches either call silently stop right
-        // there (tryAcquire failing skips reconciliation entirely; renew failing now correctly
-        // stops the pass early too, per this fix's own new behavior) instead of exercising the
-        // real reconciliation logic these tests actually mean to test. A test that specifically
-        // wants to exercise either lost-the-lock path overrides these explicitly.
-        // Review finding ("DistributedLockService has a subtle generation race" -- external
-        // review, twenty-ninth pass, P1, full context in DistributedLockService.LockLease's own
-        // javadoc): production code now calls tryAcquireWithDiagnosis() directly instead of the
-        // plain boolean tryAcquire() + a separate currentGeneration() query -- this single stub
-        // replaces both of the old ones, carrying the generation on the same return value.
+        // there (tryAcquire failing skips reconciliation entirely; renew failing stops the pass
+        // early too) instead of exercising the real reconciliation logic these tests mean to
+        // test. A test that specifically wants to exercise either lost-the-lock path overrides
+        // these explicitly.
+        // Production code calls tryAcquireWithDiagnosis() directly instead of a plain boolean
+        // tryAcquire() plus a separate currentGeneration() query -- this single stub carries the
+        // generation on the same return value.
         when(distributedLockService.tryAcquireWithDiagnosis(any(), any(), any()))
             .thenReturn(new com.tradevision.service.DistributedLockService.LockLease(
                 com.tradevision.service.DistributedLockService.AcquireResult.ACQUIRED, 1L));
-        // Review finding ("DistributedLockService.renew() does not verify ownership generation"
-        // -- external review, second pass, full context in PositionSafetyServiceTest's own
-        // identical fix): migrated to the new, generation-aware 4-arg overload the production
-        // code now actually calls exclusively -- the old 3-arg stub is dead against it.
+        // The generation-aware 4-arg renew() overload is the one production code calls.
         when(distributedLockService.renew(any(), any(), anyLong(), any())).thenReturn(true);
-        // Review finding ("Position close has atomic protection; not every position mutation
-        // does" -- P1, full context at the actual new atomic-update call in
-        // reconcileOcoProtectedPosition's own partial-exit branch): a genuine, pre-existing gap
-        // discovered while adding this fix, not caused by it -- mongoTemplate.updateFirst() has
-        // had NO stub anywhere in this file since the full-close atomic update was first added
-        // earlier this session, meaning Mockito's own confirmed default (null for an unstubbed
-        // object-returning call, verified directly against Mockito's own documented behavior
-        // before concluding this, not assumed) would NPE every test that reaches EITHER atomic
-        // update path -- full close or this new partial exit. A realistic "the conditional
-        // update succeeded" default, matching this codebase's own established pattern for every
-        // other object-returning dependency this session (OrderServiceTest's own identical
-        // UpdateResult default is the closest precedent).
+        // A realistic "the conditional update succeeded" default for mongoTemplate.updateFirst()
+        // against Position -- without it, Mockito's null default for an unstubbed
+        // object-returning call would NPE every test that reaches either atomic update path
+        // (full close or partial exit), matching this codebase's established pattern for other
+        // object-returning dependencies (OrderServiceTest's UpdateResult default is the closest
+        // precedent).
         when(mongoTemplate.updateFirst(any(), any(org.springframework.data.mongodb.core.query.Update.class), eq(Position.class)))
             .thenReturn(com.mongodb.client.result.UpdateResult.acknowledged(1, 1L, null));
         credential = new BrokerCredential();
@@ -179,12 +152,10 @@ class PositionMonitorServiceTest {
         // the profile via mongoTemplate.findOne() to read back the winning value -- realistic
         // "the database really did apply this atomic max" simulation, mutating the same live
         // profile object updateFirst is called against so the subsequent findOne naturally sees
-        // it. Without this, mongoTemplate.findOne(..., RiskProfile.class) was entirely unstubbed
-        // (Mockito's own null default for an object-returning call), so checkDrawdown's own
-        // "if (refreshed == null) return" guard fired on every single test that reaches it,
-        // silently skipping the rest of the method before peakEquityQuote was ever actually set
-        // -- confirmed directly against the real method's own sequential updateFirst-then-findOne
-        // shape, not assumed.
+        // it. Without this, mongoTemplate.findOne(..., RiskProfile.class) would be unstubbed
+        // (Mockito's null default for an object-returning call), so checkDrawdown's
+        // "if (refreshed == null) return" guard would fire on every test that reaches it,
+        // silently skipping the rest of the method before peakEquityQuote was ever set.
         when(mongoTemplate.updateFirst(any(), any(org.springframework.data.mongodb.core.query.Update.class), eq(RiskProfile.class)))
             .thenAnswer(inv -> {
                 org.springframework.data.mongodb.core.query.Update update = inv.getArgument(1);
@@ -199,24 +170,19 @@ class PositionMonitorServiceTest {
                 return com.mongodb.client.result.UpdateResult.acknowledged(1, 1L, null);
             });
         when(mongoTemplate.findOne(any(), eq(RiskProfile.class))).thenAnswer(inv -> profile);
-        // Review finding ("Position Ledger is still not authoritative" -- full context in
-        // PositionLedgerService's own javadoc): a realistic "genuine match" default, same
-        // reasoning as this file's own @Spy RealizedPnlService default -- an unstubbed
-        // reconcilePositionAgainstLedger would otherwise return null (an object type, not a
-        // boolean), NPEing every existing test that reaches the new position-close reconciliation
-        // check. A test that wants the mismatch path overrides this explicitly.
+        // A realistic "genuine match" default -- an unstubbed reconcilePositionAgainstLedger
+        // would otherwise return null (an object type, not a boolean), NPEing every test that
+        // reaches the position-close reconciliation check. A test that wants the mismatch path
+        // overrides this explicitly.
         when(positionLedgerService.reconcilePositionAgainstLedger(any(), any(), any()))
             .thenAnswer(invocation -> new PositionLedgerService.ReconcileResult(PositionLedgerService.ReconcileStatus.MATCH, invocation.getArgument(1), invocation.getArgument(1)));
         when(credentialService.decrypt(any(), org.mockito.ArgumentMatchers.eq(true))).thenReturn("key");
         when(credentialService.decrypt(any(), org.mockito.ArgumentMatchers.eq(false))).thenReturn("secret");
-        // Confirmed gap (see this file's own @Mock BrokerAdapter comment above): @InjectMocks
-        // cannot populate a List<BrokerAdapter> field from a single @Mock BrokerAdapter --
-        // Mockito only matches fields/params of the exact mock type, never a collection
-        // containing it. Left unset, "adapters" stays null, and reconcileCredentialLocked's
-        // unconditional adapters.stream() NPEs on the very first line of every test that reaches
-        // it -- the vast majority of this file's tests, confirmed directly against the actual
-        // test run rather than assumed. A handful of tests already worked around this locally
-        // with their own setField call; this makes it the shared default so every test gets it,
+        // @InjectMocks cannot populate a List<BrokerAdapter> field from a single @Mock
+        // BrokerAdapter -- Mockito only matches fields/params of the exact mock type, never a
+        // collection containing it. Left unset, "adapters" stays null, and
+        // reconcileCredentialLocked's unconditional adapters.stream() would NPE on the first
+        // line of every test that reaches it. This makes the real adapter the shared default,
         // and a test that specifically wants an empty adapter list still overrides it after
         // setup() runs.
         org.springframework.test.util.ReflectionTestUtils.setField(service, "adapters", List.of(adapter));
@@ -224,20 +190,19 @@ class PositionMonitorServiceTest {
         // adapter up by credential.getBroker() -- an unstubbed getType() returns null, the lookup
         // misses, and the whole pass silently returns before doing anything.
         when(adapter.getType()).thenReturn(BrokerType.BINANCE);
-        // P1-1 fix: reconcileCredentialLocked (and every other per-credential adapter lookup in
-        // this service) now resolves the adapter via credentialService.adapterForCredential(...)
-        // instead of the local BrokerType-keyed adapterMap, so PAPER credentials are correctly
-        // routed to the simulated adapter instead of the real one. Tests exercise a TESTNET
-        // credential by default, so this just needs to return the same mocked adapter.
+        // reconcileCredentialLocked (and every other per-credential adapter lookup in this
+        // service) resolves the adapter via credentialService.adapterForCredential(...), so PAPER
+        // credentials are correctly routed to the simulated adapter instead of the real one.
+        // Tests exercise a TESTNET credential by default, so this just needs to return the same
+        // mocked adapter.
         when(credentialService.adapterForCredential(any())).thenReturn(adapter);
         // Production calls the 9-arg reserve(..., boolean live) overload (the 8-arg one just delegates to
         // it, which never happens on a mock). Unstubbed it returns null and NPEs on exposureResult.allowed().
         when(exposureReservationService.reserve(any(), any(), any(), any(), any(), any(), any(), any(), anyBoolean()))
             .thenReturn(new com.tradevision.service.ExposureReservationService.ExposureReserveResult(true, null, "test-reservation-id"));
-        // Audit fix (P0-3 follow-up, full context in AutoTradeService's own
-        // stopLossLimitGapPercent field javadoc): @Value fields aren't populated by @InjectMocks,
-        // so this must be set explicitly or every resize/late-fill/remainder OCO-placement test
-        // NPEs on BigDecimal.ONE.subtract(null). Matches this project's own established default (0.5%).
+        // @Value fields aren't populated by @InjectMocks, so this must be set explicitly or
+        // every resize/late-fill/remainder OCO-placement test NPEs on
+        // BigDecimal.ONE.subtract(null). Matches this project's established default (0.5%).
         org.springframework.test.util.ReflectionTestUtils.setField(service, "stopLossLimitGapPercent", new java.math.BigDecimal("0.005"));
     }
 
@@ -265,13 +230,12 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * P1-15 fix ("Drawdown ignores locked USDT"): confirmed real -- equity used to read ONLY
-     * AssetBalance.free(), so quote genuinely reserved by the exchange (a resting LIMIT order,
-     * for instance) was invisible to this calculation, understating real equity and risking a
-     * fabricated drawdown breach the moment funds are locked (they don't actually disappear).
+     * Quote balance reserved by the exchange (a resting LIMIT order, for instance) is still
+     * real equity -- it hasn't disappeared, so it must count toward the drawdown calculation
+     * alongside free balance.
      */
     @Test
-    @DisplayName("checkDrawdown: equity includes LOCKED quote balance, not free only -- the P1-15 fix")
+    @DisplayName("checkDrawdown: equity includes LOCKED quote balance, not free only")
     void checkDrawdown_includesLockedQuoteBalance() {
         when(adapter.getBalance(any(), any(), any())).thenReturn(
             List.of(new AssetBalance("USDT", BigDecimal.valueOf(1000), BigDecimal.valueOf(500))));
@@ -308,7 +272,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("checkDrawdown: a pricing failure for any open position HALTS trading and raises a CRITICAL incident, rather than silently skipping the check -- the actual review fix (\"Drawdown can silently stop checking when pricing fails\")")
+    @DisplayName("checkDrawdown: a pricing failure for any open position HALTS trading and raises a CRITICAL incident, rather than silently skipping the check")
     void checkDrawdown_pricingFailure_haltsAndRaisesIncident() {
         when(adapter.getBalance(any(), any(), any())).thenReturn(
             List.of(new AssetBalance("USDT", BigDecimal.valueOf(1000), BigDecimal.ZERO)));
@@ -320,7 +284,7 @@ class PositionMonitorServiceTest {
 
         // Must NOT have computed or recorded a partial equity figure from just the free balance.
         assertThat(profile.getPeakEquityQuote()).isNull();
-        // The actual fix: inability to price is a risk event, not a free pass.
+        // Inability to price is a risk event, not a free pass.
         assertThat(profile.isTradingHalted()).isTrue();
         assertThat(profile.getHaltReason()).contains("BTCUSDT");
         verify(incidentService).raiseCritical(eq("user1"), any(), any(), any(), eq("BTCUSDT"), eq("DRAWDOWN_PRICING_UNAVAILABLE"), any());
@@ -336,7 +300,7 @@ class PositionMonitorServiceTest {
         assertThat(profile.getPeakEquityQuote()).isNull();
     }
 
-    // ── handleOcoAllDoneWithNoFill ("P0 #1") ──────────────────────────────────────
+    // ── handleOcoAllDoneWithNoFill ──────────────────────────────────────────────
 
     private Position ocoPosition(double qty, String ocoId, String entryOrderId) {
         Position p = new Position();
@@ -360,8 +324,8 @@ class PositionMonitorServiceTest {
 
         service.handleOcoAllDoneWithNoFill(credential, adapter, "key", "secret", position, 1L);
 
-        // The exact P0 #1 scenario: balance (1.0 BTC) still covers the position (1.0 BTC) —
-        // nothing was actually sold, so this must never become CLOSED_UNVERIFIED_PNL.
+        // Balance (1.0 BTC) still covers the position (1.0 BTC) -- nothing was actually sold,
+        // so this must never become CLOSED_UNVERIFIED_PNL.
         assertThat(position.getStatus()).isEqualTo("OPEN");
         assertThat(position.getOcoOrderListId()).isNull(); // old OCO consumed either way, needs fresh protection
         verify(slotReservationService, org.mockito.Mockito.never()).release(any());
@@ -384,22 +348,17 @@ class PositionMonitorServiceTest {
         assertThat(position.getStatus()).isEqualTo("CLOSED_UNVERIFIED_PNL");
         assertThat(position.getQuantity()).isEqualByComparingTo("0");
         assertThat(position.getClosedQuantity()).isEqualByComparingTo("1.0");
-        // Review finding ("Position slot reservations still don't have ownership IDs" --
-        // external review, twenty-eighth pass, P0, full context in
-        // PositionSlotReservationRecord's own class javadoc): this fixture's own position
-        // predates slotReservationId (never set by ocoPosition()'s own helper), so the real
-        // fallback path (releaseByKey) fires here, not the new id-based release.
+        // This fixture's position has no slotReservationId set (never set by ocoPosition()'s
+        // helper), so the fallback path (releaseByKey) fires here, not the id-based release.
         verify(slotReservationService).releaseByKey(credential.getId());
         verify(positionSafetyService, org.mockito.Mockito.never()).emergencyFlatten(any(), any(), any(), any(), any(), any());
     }
 
     /**
-     * P1-15 fix ("Risk accounting ignores unverified closes"): confirmed real -- before this
-     * fix, a CLOSED_UNVERIFIED_PNL close like this one never called riskEngine.recordRealizedLoss
-     * at all, meaning a real loss on this position was invisible to the daily loss total and
-     * loss streak. With an entry price of 100, a stop-loss trigger of 90 recorded on this
-     * position's own OCO_EXIT OMS order, and quantity 1.0, the worst-case estimate is
-     * (90-100)*1.0 = -10, i.e. a loss of 10.
+     * A CLOSED_UNVERIFIED_PNL close calls riskEngine.recordRealizedLoss so a real loss on this
+     * position is visible to the daily loss total and loss streak. With an entry price of 100, a
+     * stop-loss trigger of 90 recorded on this position's own OCO_EXIT OMS order, and quantity
+     * 1.0, the worst-case estimate is (90-100)*1.0 = -10, i.e. a loss of 10.
      */
     @Test
     @DisplayName("handleOcoAllDoneWithNoFill: balance confirms genuinely gone -- records a worst-case loss against the risk engine using the position's own OCO_EXIT stop-loss price, since no real exit price is known")
@@ -429,9 +388,8 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * P1-15 fix, same context: when no OCO_EXIT order exists for this position at all (this
-     * fixture's position has no such record), the fix must NOT fabricate a number -- it simply
-     * records nothing, exactly like every other genuinely-unknown case in this codebase.
+     * When no OCO_EXIT order exists for this position at all, no number is fabricated -- it
+     * simply records nothing, exactly like every other genuinely-unknown case in this codebase.
      */
     @Test
     @DisplayName("handleOcoAllDoneWithNoFill: no OCO_EXIT order exists to estimate from -- records nothing against the risk engine rather than guessing")
@@ -451,14 +409,13 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("handleOcoAllDoneWithNoFill: locked balance counts toward total holdings, not just free — the 'reverse problem' fix from P0 #2")
+    @DisplayName("handleOcoAllDoneWithNoFill: locked balance counts toward total holdings, not just free")
     void handleOcoAllDoneWithNoFill_lockedBalanceCountsToo() {
         Position position = ocoPosition(1.0, "old-oco-123", "entry-1");
         when(adapter.getSymbolRules("BTCUSDT", BrokerMode.TESTNET)).thenReturn(BTC_RULES);
-        // Free alone (0.5) would wrongly conclude the position is gone (0.5 < 0.98) — but 0.5
+        // Free alone (0.5) would wrongly conclude the position is gone (0.5 < 0.98) -- but 0.5
         // locked in some other open order means the account actually holds 1.0 total, which
-        // correctly covers the position. Before this fix, this exact case would have wrongly
-        // closed a position that's genuinely still held.
+        // correctly covers the position.
         when(adapter.getBalance("key", "secret", BrokerMode.TESTNET)).thenReturn(
             List.of(new AssetBalance("BTC", BigDecimal.valueOf(0.5), BigDecimal.valueOf(0.5))));
         when(omsOrderRepo.findByCredentialIdAndSymbolAndBrokerOrderId("cred1", "BTCUSDT", "entry-1")).thenReturn(Optional.empty());
@@ -470,7 +427,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("handleOcoAllDoneWithNoFill: another OPEN position on the same credential and symbol raises the expected minimum balance — the exact P0 #2 'own positions compete for the same pool' fix")
+    @DisplayName("handleOcoAllDoneWithNoFill: another OPEN position on the same credential and symbol raises the expected minimum balance -- own positions compete for the same pool")
     void handleOcoAllDoneWithNoFill_otherOwnPositionSameSymbol_raisesExpectedMinimum() {
         Position position = ocoPosition(0.5, "old-oco-123", "entry-1");
         position.setId("pos-checking-this-one");
@@ -478,10 +435,8 @@ class PositionMonitorServiceTest {
         siblingPosition.setId("pos-sibling");
         when(positionRepo.findByCredentialIdAndStatus(credential.getId(), "OPEN")).thenReturn(List.of(position, siblingPosition));
         when(adapter.getSymbolRules("BTCUSDT", BrokerMode.TESTNET)).thenReturn(BTC_RULES);
-        // Only 0.5 BTC total — covers THIS position (0.5) alone, but NOT this position plus its
-        // sibling's 0.5 (expected minimum 1.0). Before this fix, the check only ever compared
-        // against THIS position's own 0.5 and would have wrongly concluded "still fully held"
-        // even though the sibling's share is nowhere to be found.
+        // Only 0.5 BTC total -- covers this position (0.5) alone, but not this position plus its
+        // sibling's 0.5 (expected minimum 1.0).
         when(adapter.getBalance("key", "secret", BrokerMode.TESTNET)).thenReturn(
             List.of(new AssetBalance("BTC", BigDecimal.valueOf(0.5), BigDecimal.ZERO)));
 
@@ -491,13 +446,11 @@ class PositionMonitorServiceTest {
         assertThat(position.getStatus()).isEqualTo("CLOSED_UNVERIFIED_PNL");
     }
 
-    // Review's own explicitly requested test #3 ("Unrelated wallet balance... do NOT assume the
-    // position still exists") is deliberately NOT claimed as fixed here. That scenario — a
-    // user's own UNRELATED holdings of the same asset, not another TradeVision position — cannot
-    // be solved by any balance-comparison formula, no matter how it's computed; spot balances
-    // are fungible, and there's no exchange-side way to tag which coins belong to which bot
-    // position. See expectedMinimumBalanceForPosition's own javadoc for the full, honest
-    // disclosure — a per-position asset ledger is the only real fix, and is out of scope here.
+    // Unrelated wallet balance of the same asset (not another TradeVision position) is not
+    // solvable by any balance-comparison formula -- spot balances are fungible, and there's no
+    // exchange-side way to tag which coins belong to which bot position. See
+    // expectedMinimumBalanceForPosition's own javadoc for the full disclosure -- a per-position
+    // asset ledger is the only real fix, and is out of scope here.
 
     @Test
     @DisplayName("handleOcoAllDoneWithNoFill: unknown base asset — refuses to guess, doesn't touch balance or position at all")
@@ -514,16 +467,13 @@ class PositionMonitorServiceTest {
         assertThat(position.getStatus()).isEqualTo("OPEN"); // untouched
     }
 
-    // ── reconcileCredential concurrency ("P0 #2") ─────────────────────────────
+    // ── reconcileCredential concurrency ────────────────────────────────────────
 
     /**
-     * Review finding ("P0 #2" — "reconciliation is not concurrency-safe"): this had been
-     * declared "genuinely hard to unit-test — needs real thread concurrency" and left as a gap.
-     * That was too quick to give up — a ReentrantLock-based guard IS testable with real threads,
-     * no mocked timing required, no database needed (the lock itself is pure in-JVM state).
-     * Uses CountDownLatch to prove thread A has genuinely acquired the lock (not just "probably
-     * started by now") before the test thread attempts its own concurrent call — no sleep-based
-     * timing, no flakiness from scheduler variance.
+     * A ReentrantLock-based guard is testable with real threads, no mocked timing required, no
+     * database needed (the lock itself is pure in-JVM state). Uses CountDownLatch to prove
+     * thread A has genuinely acquired the lock before the test thread attempts its own
+     * concurrent call -- no sleep-based timing, no flakiness from scheduler variance.
      */
     @Test
     @DisplayName("reconcileCredential: a second concurrent call for the SAME credential is skipped entirely while the first is still running — real threads, not mocked timing")
@@ -561,7 +511,7 @@ class PositionMonitorServiceTest {
             // this test against releaseFirstThread below.
             service.reconcileCredential(credential);
 
-            // Confirms the second call was genuinely skipped, not merely "also ran but harmlessly" —
+            // Confirms the second call was genuinely skipped, not merely "also ran but harmlessly" --
             // the guarded work happened exactly once, from thread A alone.
             verify(omsOrderRepo, times(1)).findByCredentialIdAndStatusInOrderByCreatedAtAsc(any(), any());
 
@@ -573,16 +523,14 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * P1-13 fix ("reconcileEntryOrders polls OCO list IDs as order IDs"): confirmed real --
-     * findByCredentialIdAndStatusInOrderByCreatedAtAsc's own query has no role filter, and an
-     * OCO_EXIT order's OMS record stores the broker's own orderListId in the SAME brokerOrderId
+     * findByCredentialIdAndStatusInOrderByCreatedAtAsc's query has no role filter, and an
+     * OCO_EXIT order's OMS record stores the broker's orderListId in the same brokerOrderId
      * field once recordOcoPlacementResult() acknowledges it (see that method's own javadoc), so
-     * it used to be polled here right alongside real ENTRY orders via
-     * adapter.getOrderStatus(..., orderId=<orderListId>) -- an id that endpoint was never meant
-     * to receive. Two records with the SAME ACKNOWLEDGED status come back from the stubbed
-     * query: a real ENTRY order and an OCO_EXIT order sharing a broker id that, if ever queried
-     * through getOrderStatus, would prove the bug reproduced. Only the ENTRY order's id may ever
-     * reach that call.
+     * reconcileEntryOrders must filter by role rather than polling it alongside real ENTRY
+     * orders via adapter.getOrderStatus(..., orderId=<orderListId>) -- an id that endpoint was
+     * never meant to receive. Two records with the same ACKNOWLEDGED status come back from the
+     * stubbed query: a real ENTRY order and an OCO_EXIT order sharing a broker id. Only the
+     * ENTRY order's id may ever reach that call.
      */
     @Test
     @DisplayName("reconcileEntryOrders: an OCO_EXIT order's OMS record is never polled via getOrderStatus (its brokerOrderId is a list id, not an order id) -- only ENTRY orders are")
@@ -616,15 +564,14 @@ class PositionMonitorServiceTest {
 
         service.reconcileCredential(credential);
 
-        // The real bug's exact fingerprint: this call must never happen for the OCO's own
-        // shared-list id, under any status mapping.
+        // This call must never happen for the OCO's own shared-list id, under any status mapping.
         verify(adapter, never()).getOrderStatus(any(), any(), any(), any(), eq("shared-list-id-999"));
         // Confirms the ENTRY order was still genuinely reconciled -- this is a role filter, not
         // an accidental "nothing gets polled at all" regression.
         verify(adapter, times(1)).getOrderStatus(any(), any(), any(), any(), eq("real-entry-order-id"));
     }
 
-    // ── Startup state machine ("P1 — startup trading should remain disabled") ──
+    // ── Startup state machine ─────────────────────────────────────────────────
 
     @Test
     @DisplayName("reconcileOnStartup: zero credentials to reconcile — zero failures — marks TRADING_ENABLED")
@@ -642,7 +589,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("reconcileOnStartup: a credential's reconciliation throws — marks RECONCILIATION_FAILED (false), the exact P1 fix — nothing about this pass silently succeeds")
+    @DisplayName("reconcileOnStartup: a credential's reconciliation throws — marks RECONCILIATION_FAILED (false) — nothing about this pass silently succeeds")
     void reconcileOnStartup_credentialReconciliationFails_marksFailed() {
         credential.setActive(true);
         when(credentialRepo.findAll()).thenReturn(List.of(credential));
@@ -660,10 +607,9 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * P1-17 fix ("Emergency revoke / credential deactivation stops all monitoring of live
-     * positions"): confirmed real -- doReconcile()'s own per-credential loop used to skip EVERY
-     * inactive credential unconditionally, so a deactivated credential with a real, still-open
-     * position on the exchange stopped being reconciled at all the moment it was deactivated.
+     * doReconcile()'s per-credential loop must not skip every inactive credential
+     * unconditionally -- a deactivated credential with a real, still-open position on the
+     * exchange must keep being reconciled.
      */
     @Test
     @DisplayName("reconcileOnStartup (doReconcile): an INACTIVE credential with an open position IS still reconciled -- deactivation must not abandon monitoring of what it already has open")
@@ -683,7 +629,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("reconcileOnStartup (doReconcile): an INACTIVE credential with NO open positions is still skipped -- this fix must not make every deactivated credential reconcile forever")
+    @DisplayName("reconcileOnStartup (doReconcile): an INACTIVE credential with NO open positions is still skipped, not reconciled forever just because it's deactivated")
     void doReconcile_inactiveCredentialWithNoOpenPositions_stillSkipped() {
         credential.setActive(false);
         when(credentialRepo.findAll()).thenReturn(List.of(credential));
@@ -697,10 +643,10 @@ class PositionMonitorServiceTest {
         verify(startupState).markComplete(true);
     }
 
-    // ── Real P&L accounting ("P0 #3" — division-by-zero bug) ────────────────────
+    // ── Real P&L accounting (division-by-zero safety) ────────────────────────────
 
     @Test
-    @DisplayName("writeRealOutcomeBackToSignal: computes a correct, finite pnlPct using the CLOSED quantity, never position.getQuantity() (which is always zero by the time this runs) — the exact P0 #3 fix")
+    @DisplayName("writeRealOutcomeBackToSignal: computes a correct, finite pnlPct using the CLOSED quantity, never position.getQuantity() (which is always zero by the time this runs)")
     void writeRealOutcomeBackToSignal_computesCorrectPnlPct() {
         Position position = new Position();
         position.setSignalId("sig1");
@@ -738,15 +684,15 @@ class PositionMonitorServiceTest {
         when(callRepo.findById("sig1")).thenReturn(Optional.of(call));
         when(callRepo.save(any())).thenAnswer(i -> i.getArguments()[0]);
 
-        // Simulates the exact bug scenario: whatever quantity gets passed in is zero (as it
-        // would have been if this method still read position.getQuantity() internally).
+        // Whatever quantity gets passed in is zero (as it would be if this method read
+        // position.getQuantity() internally, which is always zero by this point).
         service.writeRealOutcomeBackToSignal(position, BigDecimal.valueOf(110), "TAKE_PROFIT",
             BigDecimal.valueOf(10), BigDecimal.ZERO);
 
         ArgumentCaptor<TradeCallRecord> captor = ArgumentCaptor.forClass(TradeCallRecord.class);
         verify(callRepo).save(captor.capture());
         Double pnlPct = captor.getValue().getOutcome().getPnlPct();
-        // Before the fix, this would have been Infinity (10 / 0 * 100). Now: simply never set.
+        // Division by zero (10 / 0 * 100) is avoided entirely -- pnlPct is simply never set.
         assertThat(pnlPct).isNull();
     }
 
@@ -774,10 +720,10 @@ class PositionMonitorServiceTest {
         assertThat(outcome.getPnlPct()).isNull();
     }
 
-    // ── ML weight learning only from real, verified fills (P1 #5) ──────────────────
+    // ── ML weight learning only from real, verified fills ──────────────────────────
 
     @Test
-    @DisplayName("P1-5: writeRealOutcomeBackToSignal records a WIN (\"HIT_T1\") to MLWeightService when this real, broker-confirmed close had positive pnl -- the ONLY place in the codebase that may now feed the global ML weights")
+    @DisplayName("writeRealOutcomeBackToSignal records a WIN (\"HIT_T1\") to MLWeightService when this real, broker-confirmed close had positive pnl -- the only place in the codebase that may feed the global ML weights")
     void writeRealOutcomeBackToSignal_positivePnl_recordsMlWin() {
         Position position = new Position();
         position.setSignalId("sig1");
@@ -803,7 +749,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("P1-5: writeRealOutcomeBackToSignal records a LOSS (\"HIT_SL\") to MLWeightService when this real close had negative pnl, regardless of the close reason string")
+    @DisplayName("writeRealOutcomeBackToSignal records a LOSS (\"HIT_SL\") to MLWeightService when this real close had negative pnl, regardless of the close reason string")
     void writeRealOutcomeBackToSignal_negativePnl_recordsMlLoss() {
         Position position = new Position();
         position.setSignalId("sig1");
@@ -831,7 +777,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("P1-5: writeRealOutcomeBackToSignal never lets an ML recording failure prevent the real outcome write, which already succeeded and matters far more than this additive learning signal")
+    @DisplayName("writeRealOutcomeBackToSignal never lets an ML recording failure prevent the real outcome write, which already succeeded and matters far more than this additive learning signal")
     void writeRealOutcomeBackToSignal_mlRecordingThrows_doesNotPropagate() {
         Position position = new Position();
         position.setSignalId("sig1");
@@ -855,7 +801,7 @@ class PositionMonitorServiceTest {
         verify(callRepo).save(any());
     }
 
-    // ── Base-asset commission through reconciliation ("review's own requested test #5") ────
+    // ── Base-asset commission through reconciliation ─────────────────────────────
 
     @Test
     @DisplayName("syncPositionQuantityIfMismatched: base-asset commission is deducted when the reconciliation path recomputes position quantity — BUY 1 BTC, 0.001 BTC commission, expected 0.999")
@@ -881,8 +827,7 @@ class PositionMonitorServiceTest {
 
         List<Fill> fills = List.of(new Fill(BigDecimal.valueOf(100), BigDecimal.valueOf(1.0), BigDecimal.valueOf(0.001), "BTC"));
         when(adapter.getFillsForOrder("key", "secret", BrokerMode.TESTNET, "BTCUSDT", "entry-1")).thenReturn(fills);
-        // Gross confirmedExecutedQty (1.0) net of 0.001 BTC commission = 0.999 — matching the
-        // review's exact scenario (BUY 1 BTC, 0.001 BTC commission, expected position = 0.999).
+        // Gross confirmedExecutedQty (1.0) net of 0.001 BTC commission = 0.999.
         when(positionSafetyService.computeNetQuantity(eq(BigDecimal.valueOf(1.0)), eq(fills), eq("BTC")))
             .thenReturn(new PositionSafetyService.FillAccountingResult(BigDecimal.valueOf(0.999), BigDecimal.valueOf(0.001)));
         when(adapter.cancelOco(any(), any(), any(), any(), any())).thenReturn(new OcoOrderResult(true, null, "{}", null));
@@ -894,7 +839,7 @@ class PositionMonitorServiceTest {
         assertThat(position.getQuantity()).isEqualByComparingTo("0.999"); // net of commission, not the gross 1.0
     }
 
-    // ── Fill ledger completion ("#6 — Complete Fill Ledger") ─────────────────
+    // ── Fill ledger completion ────────────────────────────────────────────────
 
     @Test
     @DisplayName("reconcileOcoProtectedPosition: a full take-profit close records the fill to the ledger using the broker's own order id, real quote asset, and real quantity/price")
@@ -920,15 +865,12 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * Audit fix (P0-3 follow-up -- external review, second pass: "Make the stop-limit gap
-     * configurable or use a market stop. Add a gap-through test."). This is that test: price
-     * doesn't just dip to the stop trigger, it gaps straight through both the trigger AND the
-     * resting STOP_LOSS_LIMIT price itself (current price well below stopTrigger) -- exactly the
-     * scenario a wider configurable gap can reduce the odds of, but can never fully rule out.
-     * handleStopTriggeredButUnfilled's own detection (current price <= recorded stopTrigger)
-     * doesn't care how far through the gap went, so this must fire identically to a near-miss
-     * trigger: cancel the stuck OCO and flatten at market rather than leave the position sitting
-     * on a resting limit order the market has already blown past.
+     * Price doesn't just dip to the stop trigger, it gaps straight through both the trigger and
+     * the resting STOP_LOSS_LIMIT price itself (current price well below stopTrigger).
+     * handleStopTriggeredButUnfilled's detection (current price <= recorded stopTrigger) doesn't
+     * care how far through the gap went, so this must fire identically to a near-miss trigger:
+     * cancel the stuck OCO and flatten at market rather than leave the position sitting on a
+     * resting limit order the market has already blown past.
      */
     @Test
     @DisplayName("reconcileOcoProtectedPosition: price gaps straight through both the stop trigger AND the resting stop-limit price -- still detected and flattened, not left stuck")
@@ -956,14 +898,13 @@ class PositionMonitorServiceTest {
         verify(credentialService).audit(eq("user1"), any(), any(), eq("OCO_STOP_TRIGGERED_UNFILLED"), any());
     }
 
-    // ── P1-15: unverified closes still contribute to risk accounting ──────────
+    // ── Unverified closes still contribute to risk accounting ────────────────
 
     /**
-     * P1-15 fix: a leg reported FILLED but with no resolvable price used to close the position
-     * as CLOSED_UNVERIFIED_PNL and record NOTHING against the risk engine. With avgEntryPrice
-     * 100 and a stop-loss trigger of 85 recorded on this position's own OCO_EXIT OMS order
-     * (looked up since no real exit price is available), the worst-case estimate is
-     * (85-100)*1.0 = -15.
+     * A leg reported FILLED but with no resolvable price closes the position as
+     * CLOSED_UNVERIFIED_PNL and still records against the risk engine. With avgEntryPrice 100
+     * and a stop-loss trigger of 85 recorded on this position's own OCO_EXIT OMS order (looked
+     * up since no real exit price is available), the worst-case estimate is (85-100)*1.0 = -15.
      */
     @Test
     @DisplayName("reconcileOcoProtectedPosition: OCO leg FILLED but price unresolved -- records a worst-case loss against the risk engine using the position's own OCO_EXIT stop-loss price")
@@ -995,9 +936,8 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * P1-15 fix: same gap, the sibling branch where price IS known but quantity is not -- the
-     * real, known price (110, a gain) must be used directly rather than falling back to the
-     * stop-loss estimate.
+     * The sibling branch where price is known but quantity is not -- the real, known price (110,
+     * a gain) must be used directly rather than falling back to the stop-loss estimate.
      */
     @Test
     @DisplayName("reconcileOcoProtectedPosition: OCO leg FILLED but quantity unresolved -- uses the real, known exit price directly (not the stop-loss fallback) to record the risk-engine impact")
@@ -1026,7 +966,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("reconcileOcoProtectedPosition: the exit fill's own commission backfill is called after a full OCO close -- the actual review fix (\"Exit/OCO commission backfill is still NOT wired\"), confirmed real: entry fills already got this treatment, exit fills genuinely didn't")
+    @DisplayName("reconcileOcoProtectedPosition: the exit fill's own commission backfill is called after a full OCO close -- entry fills already got this treatment, exit fills need it too")
     void ocoFullTakeProfitClose_backfillsExitCommission() {
         Position position = openPosition("BTCUSDT", 1.0);
         position.setUserId("user1");
@@ -1038,7 +978,7 @@ class PositionMonitorServiceTest {
         when(adapter.getOcoStatus(any(), any(), any(), eq("oco1"))).thenReturn(
             new com.tradevision.service.broker.dto.OcoStatusInfo("test-oco-id", "ALL_DONE", List.of(filledLeg), "{}"));
         when(adapter.getSymbolRules("BTCUSDT", BrokerMode.TESTNET)).thenReturn(BTC_RULES);
-        // Commission in BNB, NOT the quote asset (USDT) -- the review's own exact example.
+        // Commission in BNB, not the quote asset (USDT).
         List<Fill> exitFills = List.of(new Fill(BigDecimal.valueOf(110), BigDecimal.valueOf(1.0), BigDecimal.valueOf(0.001), "BNB"));
         when(adapter.getFillsForOrder(any(), any(), any(), eq("BTCUSDT"), eq("tp1"))).thenReturn(exitFills);
         var exitFillRecord = mock(com.tradevision.model.FillRecord.class);
@@ -1050,7 +990,7 @@ class PositionMonitorServiceTest {
         verify(fillLedgerService).backfillHistoricalCommissionConversion(exitFillRecord, "USDT", adapter, credential.getMode());
     }
 
-    // ── P0-3: stop leg triggered but unfilled ─────────────────────────────────
+    // ── Stop leg triggered but unfilled ─────────────────────────────────
 
     @Test
     @DisplayName("reconcileOcoProtectedPosition: OCO list EXECUTING (not ALL_DONE), stop leg still NEW, but current price has moved to/through the recorded stop trigger -- the stop has triggered and gotten stuck unfilled, so this cancels the OCO and emergency-flattens rather than treating it as still protected")
@@ -1132,7 +1072,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("reconcileOcoProtectedPosition: a partial exit ALSO records to the fill ledger — the review's own explicit 'PARTIAL EXIT' requirement, not just full closes")
+    @DisplayName("reconcileOcoProtectedPosition: a partial exit ALSO records to the fill ledger, not just full closes")
     void ocoPartialExit_recordsToFillLedger() {
         Position position = openPosition("BTCUSDT", 1.0); // full position is 1.0
         position.setUserId("user1");
@@ -1158,7 +1098,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("reconcileOcoProtectedPosition: a partial exit that loses the atomic-update race (another process already modified this position first) skips its own side effects entirely -- never double-counts P&L, never double-audits -- the actual review fix (\"Position close has atomic protection; not every position mutation does\"), extended to the partial-exit path")
+    @DisplayName("reconcileOcoProtectedPosition: a partial exit that loses the atomic-update race (another process already modified this position first) skips its own side effects entirely -- never double-counts P&L, never double-audits")
     void ocoPartialExit_lostRace_skipsSideEffects() {
         Position position = openPosition("BTCUSDT", 1.0);
         position.setUserId("user1");
@@ -1207,7 +1147,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("reconcileOcoProtectedPosition: when recordFills returns fewer records than expected on an OCO exit, the profile is halted and a CRITICAL incident is raised, but the position's own close still proceeds normally -- the actual review fix (\"Fill Ledger can still fail without stopping financial state changes\"), extended from the entry path to the exit path per the review's own \"entry first, then exits\" phasing")
+    @DisplayName("reconcileOcoProtectedPosition: when recordFills returns fewer records than expected on an OCO exit, the profile is halted and a CRITICAL incident is raised, but the position's own close still proceeds normally")
     void ocoExitLedgerRecordingFailed_haltsProfileButStillClosesPosition() {
         Position position = openPosition("BTCUSDT", 1.0);
         position.setUserId("user1");
@@ -1241,7 +1181,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("reconcileOcoProtectedPosition: getFillsForOrder() itself throwing (before ever reaching recordFills) ALSO halts the profile and raises a CRITICAL incident -- the actual review fix (\"Fill Ledger can still be missing after a confirmed fill\"), closing the gap where a failure earlier in the sequence than recordFills() itself used to be silently swallowed by a bare log.warn() with no escalation at all")
+    @DisplayName("reconcileOcoProtectedPosition: getFillsForOrder() itself throwing (before ever reaching recordFills) ALSO halts the profile and raises a CRITICAL incident, rather than being silently swallowed with no escalation")
     void ocoExitFillFetchFailure_haltsProfileButStillClosesPosition() {
         Position position = openPosition("BTCUSDT", 1.0);
         position.setUserId("user1");
@@ -1276,7 +1216,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("reconcileOcoProtectedPosition: a genuine position-ledger mismatch on close (the fill history doesn't net to ~0 for a fully-closed position) halts the profile and raises a CRITICAL incident, but the position's own close still proceeds normally -- the actual review fix (\"Position Ledger is still not authoritative\")")
+    @DisplayName("reconcileOcoProtectedPosition: a genuine position-ledger mismatch on close (the fill history doesn't net to ~0 for a fully-closed position) halts the profile and raises a CRITICAL incident, but the position's own close still proceeds normally")
     void ocoExitPositionLedgerMismatch_haltsProfileButStillClosesPosition() {
         Position position = openPosition("BTCUSDT", 1.0);
         position.setUserId("user1");
@@ -1381,7 +1321,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("createPositionForLateDiscoveredFill: a genuine position-ledger mismatch on a late-discovered fill halts the profile and raises a CRITICAL incident, but the position is still created -- the actual review fix (\"Late-fill path still mutates Position directly\"), extending the same reconciliation escalation already wired at entry/OCO-close/flatten-close to this creation point too")
+    @DisplayName("createPositionForLateDiscoveredFill: a genuine position-ledger mismatch on a late-discovered fill halts the profile and raises a CRITICAL incident, but the position is still created")
     void lateDiscoveredFill_positionLedgerMismatch_haltsProfileButStillCreatesPosition() {
         when(slotReservationService.reserve(any(), anyInt(), any(), anyBoolean())).thenReturn(com.tradevision.service.PositionSlotReservationService.SlotReserveResult.reserved("test-slot-id"));
         when(exposureReservationService.reserve(any(), any(), any(), any(), any(), any(), any(), any(), anyBoolean()))
@@ -1398,7 +1338,7 @@ class PositionMonitorServiceTest {
         order2.setUserId("user1");
         order2.setSymbol("BTCUSDT");
         order2.setBrokerOrderId("entry-1");
-        order2.setSide("BUY"); // P0 fix regression: this method now requires side == BUY -- these tests all test genuine BUY-entry scenarios
+        order2.setSide("BUY"); // This method requires side == BUY -- these tests all cover genuine BUY-entry scenarios
         order2.setSignalId("sig1");
         // Deliberately no SL/TP set — takes the method's own early emergency-flatten return,
         // same as the sibling test above; this test verifies the reconciliation check that runs
@@ -1422,15 +1362,13 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * Review finding ("Graceful shutdown does not stop @Scheduled work or WebSocket listeners
-     * from starting new work" -- external review, nineteenth pass, P1, full context in
-     * reconcileCredential's own updated comment): the actual test -- this exact public method,
-     * the one BinanceUserDataStreamService calls directly on every executionReport, must itself
-     * refuse to start a new reconciliation pass during shutdown, not rely on doReconcile's own
-     * check (which this call path never goes through at all).
+     * This exact public method is the one BinanceUserDataStreamService calls directly on every
+     * executionReport, so it must itself refuse to start a new reconciliation pass during
+     * shutdown, rather than relying on doReconcile's own check, which this call path never goes
+     * through.
      */
     @Test
-    @DisplayName("reconcileCredential: refuses to start a new reconciliation pass at all when the process is shutting down -- closing the gap where BinanceUserDataStreamService's own onText() calls this method directly, bypassing doReconcile's own shutdown check entirely")
+    @DisplayName("reconcileCredential: refuses to start a new reconciliation pass at all when the process is shutting down, even when called directly and not through doReconcile's own shutdown check")
     void reconcileCredential_shuttingDown_neverStartsNewWork() {
         when(shutdownState.isShuttingDown()).thenReturn(true);
 
@@ -1441,7 +1379,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("reconcileCredential: a lost lock-renewal mid-pass STOPS the pass rather than continuing to mutate shared state -- the actual review fix (\"Reconciliation lock renewal failure currently continues anyway\"), since continuing risks a second instance that now believes it owns the lock concurrently mutating the same positions")
+    @DisplayName("reconcileCredential: a lost lock-renewal mid-pass STOPS the pass rather than continuing to mutate shared state, since continuing risks a second instance that now believes it owns the lock concurrently mutating the same positions")
     void reconcileCredential_lostRenewal_stopsPassRatherThanContinuing() {
         when(positionRepo.findByCredentialIdAndStatus(any(), any())).thenReturn(List.of());
         when(omsOrderRepo.findByCredentialIdAndStatusInOrderByCreatedAtAsc(any(), any())).thenReturn(List.of());
@@ -1458,7 +1396,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("recoverStuckFlattening: with NO order-level truth at all, account balance below minQty does NOT auto-close the position anymore -- the actual review fix (\"Stuck FLATTENING fallback can still use balance when order-level truth is unavailable\"), whose own recommended policy is UNKNOWN + HALT + MANUAL RECONCILIATION rather than an inference-based closure, since balance alone can never mathematically prove this exact flatten order filled (could be manual trading, a transfer, another application, another worker)")
+    @DisplayName("recoverStuckFlattening: with NO order-level truth at all, account balance below minQty does NOT auto-close the position -- balance alone can never prove this exact flatten order filled (it could be manual trading, a transfer, another application, another worker), so this escalates to manual reconciliation instead of inferring a closure")
     void recoverStuckFlattening_noOrderLevelTruth_neverAutoClosesFromBalanceAlone() {
         var customRules = new com.tradevision.service.broker.dto.SymbolRules("BTCUSDT", "BTC", "USDT",
             BigDecimal.ONE, BigDecimal.ONE, BigDecimal.valueOf(0.0001), BigDecimal.ZERO, 2, 6, BigDecimal.ZERO, false, false, BigDecimal.ZERO, BigDecimal.ZERO);
@@ -1511,7 +1449,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("recoverStuckFlattening: a PARTIALLY_FILLED order status is a definitive, ground-truth fact -- the actual review fix (\"recoverStuckFlattening() can still incorrectly close a partially-filled flatten\"). A significant remainder stays OPEN with corrected quantity accounting and gets escalated, rather than the whole position being silently marked closed via the balance fallback")
+    @DisplayName("recoverStuckFlattening: a PARTIALLY_FILLED order status is a definitive, ground-truth fact. A significant remainder stays OPEN with corrected quantity accounting and gets escalated, rather than the whole position being silently marked closed via the balance fallback")
     void recoverStuckFlattening_partiallyFilledSignificantRemainder_correctsQuantityAndEscalates() {
         var customRules = new com.tradevision.service.broker.dto.SymbolRules("BTCUSDT", "BTC", "USDT",
             BigDecimal.ONE, BigDecimal.ONE, BigDecimal.valueOf(0.0001), BigDecimal.ZERO, 2, 6, BigDecimal.ZERO, false, false, BigDecimal.ZERO, BigDecimal.ZERO);
@@ -1543,11 +1481,9 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * Review finding ("partial recovery overwrites previous closedQuantity" -- external review,
-     * thirty-second pass, full context in recoverStuckFlattening's own updated comment on this
-     * exact block): the actual test -- a position that already has a confirmed closedQuantity
-     * from an EARLIER flatten attempt (0.4) must have this NEW leg's own confirmed amount (0.2)
-     * ADDED to it, ending at 0.6 -- not overwritten down to 0.2.
+     * A position that already has a confirmed closedQuantity from an EARLIER flatten attempt
+     * (0.4) must have this NEW leg's own confirmed amount (0.2) ADDED to it, ending at 0.6 --
+     * not overwritten down to 0.2.
      */
     @Test
     @DisplayName("recoverStuckFlattening: a position with an already-confirmed closedQuantity (0.4) from an earlier flatten attempt gets this NEW partial leg's amount (0.2) ADDED to it -- ends at 0.6, never overwritten down to 0.2")
@@ -1581,11 +1517,8 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * Review finding ("Emergency flatten still allows an exchange sell without durable
-     * pre-submission intent" -- external review, twenty-sixth pass, P1, full context in
-     * FlattenAttempt's own class javadoc): the actual test proving the fallback works -- no OMS
-     * Order record exists at all (as if the OMS setup itself had failed at submission time),
-     * but a FlattenAttempt record does, and its own clientOrderId still gets a real,
+     * No OMS Order record exists at all (as if the OMS setup itself had failed at submission
+     * time), but a FlattenAttempt record does, and its own clientOrderId still gets a real,
      * order-status-level answer instead of falling straight to the weaker balance heuristic.
      */
     @Test
@@ -1638,7 +1571,7 @@ class PositionMonitorServiceTest {
         verify(adapter, never()).getBalance(any(), any(), any());
     }
 
-    // ── P0-4: unprotected OPEN positions are re-protected or exited, not left as-is ──────────
+    // ── Unprotected OPEN positions are re-protected or exited, not left as-is ──────────
 
     @Test
     @DisplayName("reconcileUnprotectedPosition: no OCO, coins genuinely still held, price still above the recorded stop trigger -- re-places protection via a fresh OCO rather than leaving the position open with unlimited downside")
@@ -1716,7 +1649,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("reconcileOpenPositions: a renewal that succeeds for the first position but fails before the second STOPS the rest of the loop -- the actual review fix (\"Reconciliation lease can still expire during one long mutation step\"), since a credential with many open positions could otherwise exhaust the lease entirely mid-loop with no renewal at all")
+    @DisplayName("reconcileOpenPositions: a renewal that succeeds for the first position but fails before the second STOPS the rest of the loop, since a credential with many open positions could otherwise exhaust the lease entirely mid-loop with no renewal at all")
     void reconcileOpenPositions_renewalFailsMidLoop_stopsRestOfLoop() {
         Position first = new Position();
         first.setId("pos-first"); first.setUserId("user1"); first.setCredentialId("cred1"); first.setSymbol("BTCUSDT");
@@ -1745,7 +1678,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("recoverOrphanedOcos: an orphan whose position is still OPEN and still unprotected gets re-attached -- the actual review fix (\"OCO Persistence Failure Has No Reconciliation Path\"), confirming the original failure really was a transient race rather than a permanently lost update")
+    @DisplayName("recoverOrphanedOcos: an orphan whose position is still OPEN and still unprotected gets re-attached, confirming a transient placement race rather than a permanently lost update")
     void recoverOrphanedOcos_positionStillOpenAndUnprotected_reattaches() {
         Position position = new Position();
         position.setId("pos1"); position.setUserId("user1"); position.setCredentialId("cred1"); position.setSymbol("BTCUSDT");
@@ -1756,11 +1689,9 @@ class PositionMonitorServiceTest {
         when(orphanedOcoRepo.findByCredentialIdAndResolvedFalse(eq("cred1"), any())).thenReturn(List.of(orphan));
         when(positionRepo.findById("pos1")).thenReturn(Optional.of(position));
         when(positionRepo.findByCredentialIdAndStatus("cred1", "OPEN")).thenReturn(List.of());
-        // Review finding ("OrphanedOco recovery still has an identity limitation" -- external
-        // review, thirty-eighth pass, P1, full context in this method's own updated comment in
-        // production code): the exchange's own live OCO status is now fetched and verified
-        // BEFORE auto-attach even in this branch -- this test's own OCO must genuinely pass that
-        // verification (still active, both legs SELL, quantity matching the position).
+        // The exchange's own live OCO status is fetched and verified before auto-attach, so
+        // this test's OCO must genuinely pass that verification (still active, both legs SELL,
+        // quantity matching the position).
         when(adapter.getOcoStatus(any(), any(), any(), eq("oco-999"))).thenReturn(
             new com.tradevision.service.broker.dto.OcoStatusInfo("oco-999", "EXECUTING", List.of(
                 new com.tradevision.service.broker.dto.OcoStatusInfo.Leg("leg1", "SELL", "LIMIT_MAKER", "NEW", BigDecimal.valueOf(70000), BigDecimal.ZERO, BigDecimal.valueOf(1.0)),
@@ -1786,14 +1717,11 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * Review finding ("Orphan recovery can mark an unresolved OCO as RESOLVED" -- external
-     * review, thirty-fifth pass, P0, the review's own explicit race, full context in
-     * atomicSetOcoPlaced's own updated javadoc): the actual test proving the fix -- when the
-     * position update inside atomicSetOcoPlaced genuinely fails (matches zero documents, e.g.
-     * because the position closed concurrently between this reconciliation pass's own read and
-     * the update), the original orphan record must NOT be marked resolved -- since the real
-     * exchange OCO may still genuinely be active, and resolved=true would make every future
-     * recovery pass's own resolved=false query silently skip it forever.
+     * When the position update inside atomicSetOcoPlaced genuinely fails (matches zero
+     * documents, e.g. because the position closed concurrently between this reconciliation
+     * pass's own read and the update), the original orphan record must NOT be marked resolved
+     * -- since the real exchange OCO may still genuinely be active, and resolved=true would
+     * make every future recovery pass's own resolved=false query silently skip it forever.
      */
     @Test
     @DisplayName("recoverOrphanedOcos: the re-attach's own position update genuinely fails (matches zero documents -- a concurrent close race) -- the orphan is left unresolved, NOT silently marked resolved=true")
@@ -1812,8 +1740,8 @@ class PositionMonitorServiceTest {
                 new com.tradevision.service.broker.dto.OcoStatusInfo.Leg("leg1", "SELL", "LIMIT_MAKER", "NEW", BigDecimal.valueOf(70000), BigDecimal.ZERO, BigDecimal.valueOf(1.0)),
                 new com.tradevision.service.broker.dto.OcoStatusInfo.Leg("leg2", "SELL", "STOP_LOSS_LIMIT", "NEW", BigDecimal.valueOf(65000), BigDecimal.ZERO, BigDecimal.valueOf(1.0))
             ), "{}"));
-        // Simulates the review's own named race: the position closed concurrently, so the real
-        // update inside atomicSetOcoPlaced matches zero documents.
+        // Simulates a concurrent close: the position closed between the read and the update, so
+        // the real update inside atomicSetOcoPlaced matches zero documents.
         when(mongoTemplate.updateFirst(any(), any(org.springframework.data.mongodb.core.query.Update.class), eq(Position.class)))
             .thenReturn(com.mongodb.client.result.UpdateResult.acknowledged(0, 0L, null));
 
@@ -1830,7 +1758,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("recoverOrphanedOcos: an orphan that's still active on the exchange but has no position to attach to gets escalated, not silently dropped -- the review's own named risk (\"a live, unattached order affecting this account's real balance\"). Stays resolved=false so it keeps being re-checked -- the actual review fix (\"An active orphan OCO is marked 'resolved' even though the exchange order remains active\")")
+    @DisplayName("recoverOrphanedOcos: an orphan that's still active on the exchange but has no position to attach to gets escalated, not silently dropped, since a live, unattached order still affects the account's real balance. Stays resolved=false so it keeps being re-checked")
     void recoverOrphanedOcos_stillActiveOnExchangeUnattachable_escalatesButStaysUnresolved() {
         var orphan = new com.tradevision.model.OrphanedOco();
         orphan.setId("orphan1"); orphan.setUserId("user1"); orphan.setCredentialId("cred1");
@@ -1854,12 +1782,9 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * Review finding ("OrphanedOco recovery still has an identity limitation" -- external
-     * review, thirty-eighth pass, P1, the review's own explicit required checks, full context in
-     * this method's own updated comment in production code): the actual test proving the fix --
-     * an orphan whose exchange-side OCO quantity is meaningfully LARGER than the position's own
-     * actual quantity (far beyond the small normalization tolerance) fails verification and does
-     * NOT get auto-attached, escalating instead.
+     * An orphan whose exchange-side OCO quantity is meaningfully LARGER than the position's own
+     * actual quantity (far beyond the small normalization tolerance) fails verification and
+     * does NOT get auto-attached, escalating instead.
      */
     @Test
     @DisplayName("recoverOrphanedOcos: the position is OPEN and unprotected, but the exchange-side OCO quantity is meaningfully larger than the position's own actual quantity -- fails verification, does NOT auto-attach, escalates instead")
@@ -1890,7 +1815,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("recoverOrphanedOcos: an orphan already escalated recently does NOT get re-alerted with a fresh critical incident on every single reconciliation pass -- the deduplication half of the same review fix")
+    @DisplayName("recoverOrphanedOcos: an orphan already escalated recently does NOT get re-alerted with a fresh critical incident on every single reconciliation pass")
     void recoverOrphanedOcos_alreadyEscalatedRecently_doesNotReAlert() {
         var orphan = new com.tradevision.model.OrphanedOco();
         orphan.setId("orphan1"); orphan.setUserId("user1"); orphan.setCredentialId("cred1");
@@ -1910,7 +1835,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("recoverStuckFlattening: a definitive, genuine order-level FILLED status is the ONLY thing that can still close a position from this recovery path -- confirming the review's own recommended policy (\"UNKNOWN + HALT + MANUAL RECONCILIATION rather than automatically closing\") narrowed closure to real ground truth without breaking it entirely")
+    @DisplayName("recoverStuckFlattening: a definitive, genuine order-level FILLED status is the ONLY thing that can still close a position from this recovery path -- closure is narrowed to real ground truth (UNKNOWN cases escalate to manual reconciliation instead), without breaking the genuine-fill case")
     void recoverStuckFlattening_orderLevelFilled_stillClosesCorrectly() {
         profile.setMaxDrawdownPercent(0); // checkDrawdown() legitimately reads balances every pass; this test is about the recovery fallback only
         var customRules = new com.tradevision.service.broker.dto.SymbolRules("BTCUSDT", "BTC", "USDT",
@@ -1935,28 +1860,21 @@ class PositionMonitorServiceTest {
         verify(incidentService, never()).raiseCritical(any(), any(), any(), any(), any(), any(), any());
         // Never even fetched balance -- a definitive order-level FILLED needs no supporting context.
         verify(adapter, never()).getBalance(any(), any(), any());
-        // Review finding ("recovered full flatten does not release its reservations" --
-        // external review, thirty-fourth pass, P1, full context in this branch's own updated
-        // comment in production code): the actual test proving the fix -- this position
-        // predates slotReservationId/exposureReservationId (never set on this fixture), so both
-        // release helpers correctly fall back to their own key-based paths; either way, they
-        // must actually be called now, which they weren't before this fix.
+        // This position predates slotReservationId/exposureReservationId (never set on this
+        // fixture), so both release helpers correctly fall back to their own key-based paths;
+        // either way, both must actually be called when the position closes.
         verify(slotReservationService).releaseByKey("cred1");
         verify(exposureReservationService).release(eq("cred1"), eq("BTCUSDT"), any(BigDecimal.class));
         verify(executionContextService).recordClosedByPositionId("pos-stuck-5");
     }
 
     /**
-     * Review finding ("stuck-FLATTENING recovery can still falsely close a capped order" --
-     * external review, thirty-first pass, P0, the review's own explicitly required test, full
-     * context in the FILLED-status branch's own updated comment in recoverStuckFlattening):
-     * this is that exact test. A flatten SELL capped below the real position size (free balance
-     * 0.4 out of a real 1.0 position) can genuinely, fully FILL its own smaller target -- the
-     * broker reports "FILLED", not "PARTIALLY_FILLED", because as far as the exchange is
-     * concerned the 0.4 order it was actually given DID fully fill. The crash happens before
-     * TradeVision's own position update ever runs. Recovery must still correctly conclude 0.6
-     * genuinely remains, exactly matching what this session's own earlier fix already proved
-     * for the live (non-crash) flatten path.
+     * A flatten SELL capped below the real position size (free balance 0.4 out of a real 1.0
+     * position) can genuinely, fully FILL its own smaller target -- the broker reports
+     * "FILLED", not "PARTIALLY_FILLED", because as far as the exchange is concerned the 0.4
+     * order it was actually given DID fully fill. The crash happens before TradeVision's own
+     * position update ever runs. Recovery must still correctly conclude 0.6 genuinely remains,
+     * matching the same distinction the live (non-crash) flatten path already makes.
      */
     @Test
     @DisplayName("recoverStuckFlattening: a broker-reported FILLED status whose own executedQty (0.4) is less than the real internal position size (1.0) -- the order genuinely filled ITS OWN capped target, but the real position is NOT fully closed. Corrects quantity to 0.6, stays OPEN, escalates -- never falsely marks NAKED_FLATTENED/CLOSED")
@@ -1971,10 +1889,10 @@ class PositionMonitorServiceTest {
         Order flattenOrder = new Order(); flattenOrder.setId("order1"); flattenOrder.setClientOrderId("tv-flat-1");
         when(omsOrderRepo.findByPositionIdAndOrderRoleOrderByCreatedAtDesc("pos-stuck-6", "FLATTEN")).thenReturn(List.of(flattenOrder));
         // The order itself genuinely, fully FILLED -- but only 0.4 of it, because that's all it
-        // was ever submitted for (balance-capped). This is the review's own exact distinction:
-        // "Order FILLED = the requested order filled. Position CLOSED = the entire position was
-        // sold." The broker has no way to report anything else here -- it only knows about the
-        // 0.4 order it was actually given, not the real 1.0 position TradeVision holds.
+        // was ever submitted for (balance-capped). Order FILLED means the requested order
+        // filled; position CLOSED means the entire position was sold. The broker has no way to
+        // report anything else here -- it only knows about the 0.4 order it was actually given,
+        // not the real 1.0 position TradeVision holds.
         when(adapter.getOrderStatusByClientOrderId(any(), any(), any(), eq("BTCUSDT"), eq("tv-flat-1")))
             .thenReturn(new com.tradevision.service.broker.dto.OrderStatusInfo("FILLED", BigDecimal.valueOf(0.4), BigDecimal.valueOf(50000), "{}"));
         RiskProfile riskProfile = new RiskProfile(); riskProfile.setId("rp1"); riskProfile.setCredentialId("cred1");
@@ -1996,13 +1914,10 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * Review finding ("FILLED + zero executedQty can still close the position" -- external
-     * review, thirty-second pass, P1, the review's own explicitly required test, full context
-     * in the FILLED-status branch's own updated comment): this is that exact test. The review's
-     * own named root cause: BinanceBrokerAdapter.getOrderStatusByClientOrderId parses
-     * executedQty via asText("0") -- a malformed or field-missing response genuinely produces
-     * exactly this combination (status=FILLED, executedQty=0) from this codebase's own real
-     * adapter, not a hypothetical one.
+     * BinanceBrokerAdapter.getOrderStatusByClientOrderId parses executedQty via asText("0") --
+     * a malformed or field-missing response genuinely produces exactly this combination
+     * (status=FILLED, executedQty=0) from this codebase's own real adapter, not a hypothetical
+     * one.
      */
     @Test
     @DisplayName("recoverStuckFlattening: FILLED status with executedQty=0 (a malformed/incomplete broker response, per this codebase's own real BinanceBrokerAdapter parsing) is NEVER treated as a confirmed full close -- routes to the same UNKNOWN/halt path as no order-level truth at all")
@@ -2088,8 +2003,8 @@ class PositionMonitorServiceTest {
 
         service.reconcileCredential(credential);
 
-        // P1-2 fix: max-hold-time is a routine, plan-configured exit, not a protection failure --
-        // now goes through exitPosition() so a clean close doesn't halt the profile.
+        // Max-hold-time is a routine, plan-configured exit, not a protection failure -- it goes
+        // through exitPosition() so a clean close doesn't halt the profile.
         verify(positionSafetyService).exitPosition(eq(credential), eq(adapter), any(), any(), eq(position), contains("MAX_HOLD_TIME"));
     }
 
@@ -2206,8 +2121,8 @@ class PositionMonitorServiceTest {
 
         service.reconcileCredential(credential);
 
-        // P1-2 fix: end-of-session is a routine, plan-configured exit, not a protection failure --
-        // now goes through exitPosition() so a clean close doesn't halt the profile.
+        // End-of-session is a routine, plan-configured exit, not a protection failure -- it goes
+        // through exitPosition() so a clean close doesn't halt the profile.
         verify(positionSafetyService).exitPosition(eq(credential), eq(adapter), any(), any(), eq(position), contains("END_OF_SESSION"));
     }
 
@@ -2276,14 +2191,11 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * Review finding ("OCO placement success + local persistence failure still has a residual
-     * crash window" -- external review, eighteenth pass, P0, full context in
-     * createOrphanForOco's own javadoc): the actual test proving the fix -- the safety-net
-     * OrphanedOco record is now created immediately after the exchange OCO call succeeds, in a
-     * real InOrder sequence BEFORE OMS recording (orderService.recordOcoPlacementResult) runs,
-     * not after it. Previously, a crash or exception during that OMS step (or anything else
-     * between the exchange call and the old, later orphan-creation point) would have left zero
-     * durable trace of a real, active exchange OCO.
+     * The safety-net OrphanedOco record is created immediately after the exchange OCO call
+     * succeeds, in a real InOrder sequence BEFORE OMS recording
+     * (orderService.recordOcoPlacementResult) runs, not after it. A crash or exception during
+     * that OMS step (or anything else between the exchange call and a later orphan-creation
+     * point) would otherwise leave zero durable trace of a real, active exchange OCO.
      */
     @Test
     @DisplayName("createPositionForLateDiscoveredFill: the safety-net OrphanedOco record is created IMMEDIATELY after the exchange OCO call succeeds, strictly before OMS recording -- closing the crash window between the two")
@@ -2309,7 +2221,7 @@ class PositionMonitorServiceTest {
         order.setUserId("user1");
         order.setSymbol("BTCUSDT");
         order.setBrokerOrderId("entry-1");
-        order.setSide("BUY"); // P0 fix regression: this method now requires side == BUY -- these tests all test genuine BUY-entry scenarios
+        order.setSide("BUY"); // This method requires side == BUY -- these tests all cover genuine BUY-entry scenarios
         order.setSignalId("sig1");
         order.setTakeProfitPrice(BigDecimal.valueOf(110));
         order.setStopLossTriggerPrice(BigDecimal.valueOf(90));
@@ -2318,18 +2230,14 @@ class PositionMonitorServiceTest {
 
         // The actual guarantee under test: the orphan for this exact OCO exists, proving
         // createOrphanForOco ran and completed BEFORE recordOcoPlacementResult's own simulated
-        // throw above -- if creation happened after (the old, pre-fix ordering), this save would
-        // never have been reached at all once the throw propagated.
+        // throw above.
         verify(orphanedOcoRepo).save(argThat(o -> "oco-new-999".equals(o.getOcoOrderListId())));
     }
 
     /**
-     * Review finding ("Protective OCO recovery still has a path with no durable recovery
-     * record" -- external review, twenty-first pass, P0, full context in
-     * haltForProtectionAttemptPersistenceFailure's own javadoc): the actual test proving the
-     * LIVE-specific halt -- when the pre-submission ProtectionAttempt record can't be persisted,
-     * the OCO exchange call must never be made at all, the credential must be halted, and a
-     * critical incident must be raised.
+     * When the pre-submission ProtectionAttempt record can't be persisted, the OCO exchange
+     * call must never be made at all, the credential must be halted, and a critical incident
+     * must be raised.
      */
     @Test
     @DisplayName("createPositionForLateDiscoveredFill: for a LIVE credential, a failed ProtectionAttempt persistence HALTS before the OCO exchange call is ever made")
@@ -2352,7 +2260,7 @@ class PositionMonitorServiceTest {
         order.setUserId("user1");
         order.setSymbol("BTCUSDT");
         order.setBrokerOrderId("entry-1");
-        order.setSide("BUY"); // P0 fix regression: this method now requires side == BUY -- these tests all test genuine BUY-entry scenarios
+        order.setSide("BUY"); // This method requires side == BUY -- these tests all cover genuine BUY-entry scenarios
         order.setSignalId("sig1");
         order.setTakeProfitPrice(BigDecimal.valueOf(110));
         order.setStopLossTriggerPrice(BigDecimal.valueOf(90));
@@ -2369,11 +2277,9 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * Review finding ("OCO persistence has a second crash window" -- external review,
-     * twenty-second pass, P1, full context in createOrphanForOco's own updated javadoc): the
-     * actual test proving the escalation -- unlike the P0-3 test above, the exchange OCO call
-     * DOES succeed here (there is nothing left to prevent by this point), and the fix is purely
-     * about making sure a human learns about it immediately.
+     * Unlike the persistence-failure test above, the exchange OCO call DOES succeed here (there
+     * is nothing left to prevent by this point); the only remaining concern is making sure a
+     * human learns about the orphaned record immediately.
      */
     @Test
     @DisplayName("createPositionForLateDiscoveredFill: for a LIVE credential, a failed OrphanedOco persistence (AFTER the OCO already succeeded on the exchange) escalates loudly rather than silently continuing")
@@ -2401,14 +2307,14 @@ class PositionMonitorServiceTest {
         order.setUserId("user1");
         order.setSymbol("BTCUSDT");
         order.setBrokerOrderId("entry-1");
-        order.setSide("BUY"); // P0 fix regression: this method now requires side == BUY -- these tests all test genuine BUY-entry scenarios
+        order.setSide("BUY"); // This method requires side == BUY -- these tests all cover genuine BUY-entry scenarios
         order.setSignalId("sig1");
         order.setTakeProfitPrice(BigDecimal.valueOf(110));
         order.setStopLossTriggerPrice(BigDecimal.valueOf(90));
 
         service.createPositionForLateDiscoveredFill(credential, adapter, "key", "secret", order, BigDecimal.valueOf(1.0), 1L);
 
-        // The exchange call DID happen -- unlike P0-3, there was nothing left to prevent.
+        // The exchange call DID happen -- there was nothing left to prevent at this point.
         verify(adapter).placeExitOco(any(), any(), any(), any(), any(), any(), any(), any(), any());
         verify(incidentService).raiseCritical(any(), eq("cred1"), any(), isNull(), eq("BTCUSDT"),
             eq("ORPHANED_OCO_PERSISTENCE_FAILED_LIVE_HALT"), any());
@@ -2419,11 +2325,8 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * Review finding ("Some repository queries return unlimited lists" -- external review,
-     * thirty-eighth pass, P2, the review's own explicit example naming this exact query, full
-     * context in ProtectionAttemptRepository's own updated method javadoc): the actual test
-     * proving the fix -- recoverStuckProtectionAttempts genuinely queries with a bounded
-     * Pageable, not an unbounded list.
+     * recoverStuckProtectionAttempts genuinely queries with a bounded Pageable, not an
+     * unbounded list.
      */
     @Test
     @DisplayName("recoverStuckProtectionAttempts: queries the repository with a bounded Pageable, not an unbounded list -- a large backlog on one credential cannot make one reconciliation cycle process every stuck record across all of history")
@@ -2438,7 +2341,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("recoverOrphanedOcos: queries the repository with a bounded Pageable too, same fix as recoverStuckProtectionAttempts")
+    @DisplayName("recoverOrphanedOcos: queries the repository with a bounded Pageable too, same as recoverStuckProtectionAttempts")
     void recoverOrphanedOcos_queriesWithBoundedPageable() {
         when(orphanedOcoRepo.findByCredentialIdAndResolvedFalse(eq("cred1"), any())).thenReturn(List.of());
 
@@ -2450,9 +2353,7 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * Review finding ("OCO persistence still has an unavoidable crash window" -- external
-     * review, nineteenth pass, P1, full context in ProtectionAttempt's own class javadoc): the
-     * actual tests proving recoverStuckProtectionAttempts's three real, distinct outcomes.
+     * recoverStuckProtectionAttempts's three real, distinct outcomes.
      */
     @Test
     @DisplayName("recoverStuckProtectionAttempts: a stuck attempt whose position already has SOME OCO recorded is resolved as ACTIVE -- the real work already completed, whatever crash (if any) happened after")
@@ -2465,11 +2366,9 @@ class PositionMonitorServiceTest {
         attempt.setSymbol("BTCUSDT"); attempt.setListClientOrderId("client-oco-1");
         when(protectionAttemptRepo.findByStatusAndCreatedAtBefore(eq("SUBMITTING"), any(), any())).thenReturn(List.of(attempt));
         when(positionRepo.findById("pos1")).thenReturn(Optional.of(position));
-        // Review finding ("Stuck ProtectionAttempt considers 'ANY OCO' sufficient" -- external
-        // review, thirty-fifth pass, P0, full context in this branch's own updated comment in
-        // production code): the fix now verifies the position's own recorded OCO is genuinely
-        // still active before trusting it -- this test's own name is specifically about that
-        // "already has SOME OCO" case being genuinely, verifiably active, so it must stub this.
+        // The position's own recorded OCO is verified as genuinely still active before it's
+        // trusted as proof of protection, so this "already has SOME OCO" case must stub that
+        // verification.
         when(adapter.getOcoStatus(any(), any(), any(), eq("some-real-oco-id")))
             .thenReturn(new com.tradevision.service.broker.dto.OcoStatusInfo("test-oco-id", "EXECUTING", List.of(), "{}"));
 
@@ -2483,12 +2382,9 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * Review finding ("Stuck ProtectionAttempt considers 'ANY OCO' sufficient" -- external
-     * review, thirty-fifth pass, P0, the review's own explicit scenario, full context in this
-     * branch's own updated comment): the actual test proving the fix -- a position's recorded
-     * OCO that's genuinely stale (ALL_DONE on the exchange, from an old, already-finished OCO)
-     * must NOT be trusted as proof of protection. Falls through to checking THIS attempt's own
-     * client id directly instead.
+     * A position's recorded OCO that's genuinely stale (ALL_DONE on the exchange, from an old,
+     * already-finished OCO) must NOT be trusted as proof of protection. Falls through to
+     * checking THIS attempt's own client id directly instead.
      */
     @Test
     @DisplayName("recoverStuckProtectionAttempts: the position's recorded OCO is STALE (ALL_DONE on the exchange, from an old finished OCO) -- NOT trusted as proof of protection, falls through to checking this attempt's own client id directly")
@@ -2503,9 +2399,9 @@ class PositionMonitorServiceTest {
         when(positionRepo.findById("pos1")).thenReturn(Optional.of(position));
         when(adapter.getOcoStatus(any(), any(), any(), eq("old-finished-oco-id")))
             .thenReturn(new com.tradevision.service.broker.dto.OcoStatusInfo("test-oco-id", "ALL_DONE", List.of(), "{}"));
-        // This attempt's OWN client id genuinely has a real, active OCO on the exchange -- the
-        // scenario the review names: a crash happened before this NEW OCO got recorded on the
-        // position, which still shows the OLD, now-finished one.
+        // This attempt's OWN client id genuinely has a real, active OCO on the exchange -- a
+        // crash happened before this NEW OCO got recorded on the position, which still shows
+        // the OLD, now-finished one.
         when(adapter.getOcoStatusByClientOrderId(any(), any(), any(), eq("client-oco-new")))
             .thenReturn(new com.tradevision.service.broker.dto.OcoStatusInfo("test-oco-id", "EXECUTING", List.of(
                 new com.tradevision.service.broker.dto.OcoStatusInfo.Leg("999", "SELL", "LIMIT_MAKER", "NEW", BigDecimal.valueOf(51000), BigDecimal.ZERO, BigDecimal.valueOf(1.0))), "{}"));
@@ -2545,13 +2441,9 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * Review finding ("Active orphan OCO still requires manual action" -- external review,
-     * thirty-sixth pass, P0, full context in this branch's own updated comment in production
-     * code): this test's own original scenario (position OPEN, unprotected, a real OCO exists
-     * under this attempt's own client id) now correctly auto-attaches instead of escalating --
-     * exactly the review's own required "GET OCO -> get ID -> attach -> verify ACTIVE" flow,
-     * closed without needing a human. Renamed and rewritten from this test's own prior name
-     * ("...escalates") to reflect that.
+     * When the position is OPEN, unprotected, and a real OCO exists under this attempt's own
+     * client id, this correctly auto-attaches instead of escalating -- a "GET OCO -> get ID ->
+     * attach -> verify ACTIVE" flow closed without needing a human.
      */
     @Test
     @DisplayName("recoverStuckProtectionAttempts: the exchange confirms a real, active OCO exists for this client id, and the position is still OPEN and unprotected -- auto-attaches it, resolves ACTIVE, never escalates to a human")
@@ -2582,10 +2474,8 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * Review finding ("Recovery auto-attach needs quantity verification" -- external review,
-     * thirty-eighth pass, P1, the review's own explicit example: "the actual exchange OCO may
-     * protect 0.999 BTC while the Position says 1.000 BTC because of: base asset fee, step-size
-     * rounding, exchange quantity normalization"): the actual test proving the fix -- when the
+     * The actual exchange OCO may protect 0.999 BTC while the Position says 1.000 BTC because
+     * of base asset fee, step-size rounding, or exchange quantity normalization. When the
      * recovered OCO's own real SELL leg quantity (0.999) genuinely differs from the position's
      * own recorded quantity (1.000), the ATTACHED protectedQuantity must be the exchange's own
      * real figure (0.999), not silently substituted with the position's own recorded amount.
@@ -2622,10 +2512,10 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * Review finding, same context as the test above: when no SELL leg carries a usable origQty
-     * at all (a genuinely malformed/incomplete exchange response), the fallback to the
-     * position's own recorded quantity still applies -- protecting SOMETHING (the position's own
-     * best-known figure) rather than silently protecting zero.
+     * When no SELL leg carries a usable origQty at all (a genuinely malformed/incomplete
+     * exchange response), the fallback to the position's own recorded quantity still applies --
+     * protecting SOMETHING (the position's own best-known figure) rather than silently
+     * protecting zero.
      */
     @Test
     @DisplayName("recoverStuckProtectionAttempts: no SELL leg carries a usable origQty at all -- falls back to the position's own recorded quantity rather than protecting zero")
@@ -2650,10 +2540,9 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * Review finding, same context as the test above: the genuine escalation case -- the
-     * position can no longer safely take this OCO (already closed), AND the auto-cancel attempt
-     * itself fails to be confirmed. Only THEN does this escalate to a human -- the review's own
-     * explicit "final branch, not the normal recovery branch."
+     * The genuine escalation case: the position can no longer safely take this OCO (already
+     * closed), AND the auto-cancel attempt itself fails to be confirmed. Only THEN does this
+     * escalate to a human -- the final fallback branch, not the normal recovery branch.
      */
     @Test
     @DisplayName("recoverStuckProtectionAttempts: the position is already CLOSED (can't safely take the OCO), and auto-cancel itself cannot be confirmed -- only then escalates to a human, as the genuine last resort")
@@ -2686,9 +2575,9 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * Review finding, same context as the tests above: the auto-cancel success path -- the
-     * position can't safely take the OCO, but the cancel itself is confirmed by the exchange.
-     * Resolves as FAILED (protection not active), never escalates.
+     * The auto-cancel success path: the position can't safely take the OCO, but the cancel
+     * itself is confirmed by the exchange. Resolves as FAILED (protection not active), never
+     * escalates.
      */
     @Test
     @DisplayName("recoverStuckProtectionAttempts: the position is already CLOSED, but auto-cancel succeeds and is confirmed by the exchange -- resolves FAILED, never escalates to a human")
@@ -2718,14 +2607,11 @@ class PositionMonitorServiceTest {
         verify(incidentService, never()).raiseCritical(any(), any(), any(), any(), any(), eq("PROTECTION_ATTEMPT_STUCK_WITH_REAL_OCO"), any());
     }
 
-    // ── P0 fix: phantom-position loop from emergency-flatten SELL orders being misclassified
-    // as late-discovered BUY entries (production incident, full context in
-    // OrderRepository.findByCredentialIdAndSideAndStatusAndCreatedAtAfterOrderByCreatedAtAsc's
-    // and createPositionForLateDiscoveredFill's own updated javadoc) ────────────────────────
+    // ── Emergency-flatten SELL orders must never be misclassified as late-discovered BUY
+    // entries, which would otherwise create a phantom-position loop ────────────────────────
 
-    /** TEST A (required test A): a genuine FILLED BUY order with no existing Position IS
-     *  eligible for late-discovered entry creation -- confirms the new side guard does not
-     *  regress the legitimate case it must continue to allow. */
+    /** A genuine FILLED BUY order with no existing Position IS eligible for late-discovered
+     *  entry creation -- confirms the side guard does not regress this legitimate case. */
     @Test
     @DisplayName("createPositionForLateDiscoveredFill: a genuine FILLED BUY order with no existing position creates a late-discovered entry Position")
     void createPositionForLateDiscoveredFill_buyOrder_createsPosition() {
@@ -2752,14 +2638,12 @@ class PositionMonitorServiceTest {
         verify(positionRepo, atLeastOnce()).save(any(Position.class));
     }
 
-    /** TEST B (required test B): a genuine FILLED SELL order must NEVER create a Position --
-     *  the actual, direct guard this whole fix is about. Also proves the guard fires before
-     *  ANY side-effecting work (no slot reservation, no exposure reservation, no fill-ledger
-     *  interaction at all) -- satisfies TEST G's own "no fill-ledger interaction either"
-     *  requirement in the same assertion set, since a SELL reaching this method must be an
-     *  inert no-op in every respect, not just with respect to Position creation specifically. */
+    /** A genuine FILLED SELL order must NEVER create a Position. Also proves the guard fires
+     *  before ANY side-effecting work (no slot reservation, no exposure reservation, no
+     *  fill-ledger interaction at all), since a SELL reaching this method must be an inert
+     *  no-op in every respect, not just with respect to Position creation specifically. */
     @Test
-    @DisplayName("createPositionForLateDiscoveredFill: a FILLED SELL order NEVER creates a Position, and touches nothing else either -- the core P0 fix")
+    @DisplayName("createPositionForLateDiscoveredFill: a FILLED SELL order NEVER creates a Position, and touches nothing else either")
     void createPositionForLateDiscoveredFill_sellOrder_neverCreatesPosition() {
         var order = new Order();
         order.setUserId("user1");
@@ -2795,29 +2679,26 @@ class PositionMonitorServiceTest {
         verify(positionRepo, never()).save(any(Position.class));
     }
 
-    /** TEST C (required test C) + TEST D (required test D), combined: exercises the actual
-     *  QUERY-level fix (not just the method-level guard) through the real, public
+    /** Exercises the QUERY-level guard (not just the method-level one) through the real, public
      *  reconcileCredential() entry point -- proving a SELL order can never even reach
      *  createPositionForLateDiscoveredFill in the first place, and that this holds true across
-     *  repeated reconciliation passes (TEST D's own "discovered repeatedly, zero phantom
-     *  positions" requirement), not just once. This is the closest a unit test can come to
-     *  reproducing the actual production loop: the side-filtered repository query is mocked to
-     *  behave exactly as the real derived query now does -- it simply never returns a SELL
-     *  order, by construction, regardless of how many times reconciliation runs. */
+     *  repeated reconciliation passes, not just once. The side-filtered repository query is
+     *  mocked to behave exactly as the real derived query does -- it simply never returns a
+     *  SELL order, by construction, regardless of how many times reconciliation runs. */
     @Test
-    @DisplayName("reconcileCredential: an emergency-flatten SELL order is never discovered as a late entry, across repeated reconciliation passes -- the actual production loop, closed at the query level")
+    @DisplayName("reconcileCredential: an emergency-flatten SELL order is never discovered as a late entry, across repeated reconciliation passes")
     void reconcileCredential_flattenSellNeverRediscoveredAsEntry_repeatedPasses() {
         when(adapter.getType()).thenReturn(BrokerType.BINANCE);
         org.springframework.test.util.ReflectionTestUtils.setField(service, "adapters", List.of(adapter));
         when(omsOrderRepo.findByCredentialIdAndStatusInOrderByCreatedAtAsc(any(), any())).thenReturn(List.of());
-        // The actual, real fix under test: this query REQUIRES side == "BUY" at the database
-        // level now. A real SELL order (the flatten's own exit) would never be matched by it --
-        // modeled here by simply never stubbing it to return anything for this credential,
-        // exactly as the real query would behave for a SELL-only order history.
+        // This query REQUIRES side == "BUY" at the database level. A real SELL order (the
+        // flatten's own exit) would never be matched by it -- modeled here by simply never
+        // stubbing it to return anything for this credential, exactly as the real query would
+        // behave for a SELL-only order history.
         when(omsOrderRepo.findByCredentialIdAndSideAndStatusAndCreatedAtAfterOrderByCreatedAtAsc(
                 eq("cred1"), eq("BUY"), eq(OrderStatus.FILLED), any())).thenReturn(List.of());
 
-        // Three separate reconciliation passes -- TEST D's own "discovered repeatedly" requirement.
+        // Three separate reconciliation passes, confirming the guard holds on repeated runs too.
         service.reconcileCredential(credential);
         service.reconcileCredential(credential);
         service.reconcileCredential(credential);
@@ -2830,10 +2711,9 @@ class PositionMonitorServiceTest {
             eq("cred1"), eq("BUY"), eq(OrderStatus.FILLED), any());
     }
 
-    /** TEST E (required test E): when both a BUY and a SELL genuinely exist in this
-     *  credential's recent order history, only the BUY is ever eligible for late-entry
-     *  discovery -- the SELL is excluded at the query level (it is never even returned), and
-     *  the BUY alone reaches Position creation. */
+    /** When both a BUY and a SELL genuinely exist in this credential's recent order history,
+     *  only the BUY is ever eligible for late-entry discovery -- the SELL is excluded at the
+     *  query level (it is never even returned), and the BUY alone reaches Position creation. */
     @Test
     @DisplayName("reconcileCredential: with both a BUY and a SELL in recent order history, only the BUY is eligible for late-entry Position creation")
     void reconcileCredential_buyAndSellBothExist_onlyBuyIsEligible() {
@@ -2851,11 +2731,11 @@ class PositionMonitorServiceTest {
 
         // The side-filtered query, by construction (side == "BUY" required), returns ONLY the
         // BUY order here -- a real SELL order genuinely present in this credential's history
-        // (e.g. the same flatten SELL from the production incident) would never be included in
-        // this result set at all, which is exactly the guarantee under test. Not separately
-        // modeled as a second stubbed order the query "filters out," because the real query
-        // never receives or evaluates a SELL in the first place -- it is excluded by the WHERE
-        // clause itself, before any row is even considered.
+        // (e.g. a flatten exit) would never be included in this result set at all, which is
+        // exactly the guarantee under test. Not separately modeled as a second stubbed order
+        // the query "filters out," because the real query never receives or evaluates a SELL in
+        // the first place -- it is excluded by the WHERE clause itself, before any row is even
+        // considered.
         when(omsOrderRepo.findByCredentialIdAndSideAndStatusAndCreatedAtAfterOrderByCreatedAtAsc(
                 eq("cred1"), eq("BUY"), eq(OrderStatus.FILLED), any())).thenReturn(List.of(buyOrder));
         when(positionRepo.findByCredentialIdAndSymbolAndEntryOrderId("cred1", "BTCUSDT", "real-buy-2")).thenReturn(Optional.empty());
@@ -2878,7 +2758,7 @@ class PositionMonitorServiceTest {
     }
 
     @Test
-    @DisplayName("reconcileCredential: a manual test order (clientOrderId starting \"manual-\", from OrderExecutionService.placeTestOrder) is NEVER adopted as a late-discovered position by reconciliation -- the real bug: a filled manual order has no linked Position by design, but reconciliation previously couldn't tell that apart from a genuinely orphaned bot entry and flattened it")
+    @DisplayName("reconcileCredential: a manual test order (clientOrderId starting \"manual-\", from OrderExecutionService.placeTestOrder) is NEVER adopted as a late-discovered position by reconciliation, since a filled manual order has no linked Position by design and must not be confused with a genuinely orphaned bot entry")
     void reconcileCredential_manualTestOrder_isNeverAdoptedAsLateDiscoveredPosition() {
         when(adapter.getType()).thenReturn(BrokerType.BINANCE);
         org.springframework.test.util.ReflectionTestUtils.setField(service, "adapters", List.of(adapter));
@@ -2946,14 +2826,12 @@ class PositionMonitorServiceTest {
         assertThat(positionCaptor.getValue().getEntryOrderId()).isEqualTo("real-buy-bot-1");
     }
 
-    /** TEST F (required test F): a position created via late-fill discovery is labeled with
-     *  this codebase's own existing "LATE_FILL_DISCOVERED" domain term (already used elsewhere
-     *  as an audit-event type, reused here for triggerSource) -- NOT "MANUAL", and NOT a blind
-     *  copy of the underlying order's own triggerSource (the actual bug: every phantom position
-     *  in the production incident inherited "MANUAL" from the original order this way). The
-     *  MANUAL side of this requirement (a genuine, directly-placed manual order) is set by
-     *  OrderExecutionService.java at placement time -- untouched by this fix, confirmed by
-     *  inspection, not re-tested here since it belongs to a different service/test file. */
+    /** A position created via late-fill discovery is labeled with this codebase's existing
+     *  "LATE_FILL_DISCOVERED" domain term -- NOT "MANUAL", and NOT a blind copy of the
+     *  underlying order's own triggerSource, which would otherwise let a phantom position
+     *  inherit "MANUAL" from the original order. The MANUAL side of this (a genuine,
+     *  directly-placed manual order) is set by OrderExecutionService.java at placement time and
+     *  belongs to a different service/test file. */
     @Test
     @DisplayName("createPositionForLateDiscoveredFill: triggerSource is the existing LATE_FILL_DISCOVERED domain term, never MANUAL and never copied from the order's own triggerSource")
     void createPositionForLateDiscoveredFill_setsLateFillDiscoveredTriggerSource_notCopiedFromOrder() {
@@ -2984,22 +2862,22 @@ class PositionMonitorServiceTest {
         assertThat(positionCaptor.getValue().getTriggerSource()).isEqualTo("LATE_FILL_DISCOVERED");
     }
 
-    /** TEST 7 (required, the exact production reproduction): BUY fills, Position A is created
-     *  and (for this test's purposes) already closed by its own emergency-flatten SELL -- that
-     *  SELL order genuinely exists in this credential's order history with status FILLED, side
-     *  SELL. The NEXT reconciliation pass must find zero eligible late-entry orders (the SELL
-     *  is excluded at the query level) and therefore create zero further positions -- Position
-     *  B, the phantom this whole incident was about, must never come into existence. */
+    /** End-to-end scenario: BUY fills, Position A is created and (for this test's purposes)
+     *  already closed by its own emergency-flatten SELL -- that SELL order genuinely exists in
+     *  this credential's order history with status FILLED, side SELL. The NEXT reconciliation
+     *  pass must find zero eligible late-entry orders (the SELL is excluded at the query level)
+     *  and therefore create zero further positions -- a second, phantom position must never
+     *  come into existence. */
     @Test
-    @DisplayName("PRODUCTION REPRODUCTION: BUY fills -> Position A -> emergency-flatten SELL -> reconciliation sees the SELL -> Position B is NEVER created")
+    @DisplayName("reconcileCredential: BUY fills -> Position A -> emergency-flatten SELL -> reconciliation sees the SELL -> a second phantom position is NEVER created")
     void productionReproduction_buyThenFlattenSell_neverCreatesPositionB() {
         when(adapter.getType()).thenReturn(BrokerType.BINANCE);
         org.springframework.test.util.ReflectionTestUtils.setField(service, "adapters", List.of(adapter));
         when(omsOrderRepo.findByCredentialIdAndStatusInOrderByCreatedAtAsc(any(), any())).thenReturn(List.of());
 
         // Position A already exists and is CLOSED -- exactly the real-world state right after
-        // an emergency-flatten completes (matching the production incident's own
-        // "NAKED_FLATTENED" positions). Its own entry order id is the original real BUY.
+        // an emergency-flatten completes (a "NAKED_FLATTENED" position). Its own entry order id
+        // is the original real BUY.
         Position positionA = new Position();
         positionA.setId("position-a");
         positionA.setEntryOrderId("real-buy-4");
@@ -3007,13 +2885,12 @@ class PositionMonitorServiceTest {
         when(positionRepo.findByCredentialIdAndSymbolAndEntryOrderId(any(), any(), eq("real-buy-4"))).thenReturn(Optional.of(positionA));
 
         // The flatten's own real SELL order -- genuinely exists, genuinely FILLED, genuinely
-        // SELL. This is the exact order that, before this fix, became the next phantom
-        // position's own "entry order ID" in production.
+        // SELL.
         when(positionRepo.findByCredentialIdAndSymbolAndEntryOrderId(any(), any(), eq("real-flatten-sell-4"))).thenReturn(Optional.empty());
-        // The actual fix under test: the side-filtered query never returns this SELL order at
-        // all, so reconcileEntryOrders' own loop never even considers it as a candidate late
-        // entry -- syncPositionQuantityIfMismatched/createPositionForLateDiscoveredFill are
-        // never invoked for it.
+        // The side-filtered query never returns this SELL order at all, so
+        // reconcileEntryOrders' own loop never even considers it as a candidate late entry --
+        // syncPositionQuantityIfMismatched/createPositionForLateDiscoveredFill are never
+        // invoked for it.
         when(omsOrderRepo.findByCredentialIdAndSideAndStatusAndCreatedAtAfterOrderByCreatedAtAsc(
                 eq("cred1"), eq("BUY"), eq(OrderStatus.FILLED), any())).thenReturn(List.of());
 
@@ -3023,12 +2900,11 @@ class PositionMonitorServiceTest {
         verify(slotReservationService, never()).reserve(any(), anyInt(), any(), anyBoolean());
     }
 
-    // ── Audit item P0-3 fix: watchExitProtection ──────────────────────────────────────────
-    // Full context in SchedulingConfig.watchdogScheduler's own javadoc and this class's own
-    // watchExitProtection javadoc -- this is wiring around the ALREADY-TESTED
-    // reconcileOcoProtectedPosition/handleStopTriggeredButUnfilled logic above (see
-    // ocoStuckTriggeredStop_cancelsAndFlattens), running it on a faster, dedicated cadence.
-    // These tests cover the new wiring itself, not the detection logic a second time.
+    // ── watchExitProtection ──────────────────────────────────────────
+    // This is wiring around the already-tested reconcileOcoProtectedPosition/
+    // handleStopTriggeredButUnfilled logic above (see ocoStuckTriggeredStop_cancelsAndFlattens),
+    // running it on a faster, dedicated cadence. These tests cover the wiring itself, not the
+    // detection logic a second time.
 
     @Test
     @DisplayName("watchExitProtection: credential has no OPEN, OCO-protected positions -- skips entirely, never acquires a lock or decrypts credentials")

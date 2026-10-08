@@ -40,14 +40,14 @@ public class BrokerCredential {
     private LocalDateTime lastValidatedAt;
 
     /**
-     * Review finding (P1 #9 -- "API key rotation doesn't verify it's the same Binance account"):
-     * the real account identity (Binance's own `uid`) this credential was FIRST connected under
-     * -- recorded once, at connect time, and never changed by a rotation. rotateApiKey compares
-     * a new key's own reported uid against this exact value before accepting it, refusing a
-     * rotation that would silently move this credential (and every open position/OCO/limit tied
-     * to it) onto a completely different account's key. Null for any credential connected before
-     * this field existed -- rotateApiKey treats that as "not yet recorded" rather than a forced
-     * mismatch, and backfills it from the very rotation it allows.
+     * The real account identity (the broker's own `uid`) this credential was first connected
+     * under -- recorded once, at connect time, and never changed by a rotation. rotateApiKey
+     * compares a new key's own reported uid against this exact value before accepting it,
+     * refusing a rotation that would silently move this credential (and every open
+     * position/OCO/limit tied to it) onto a completely different account's key. Null for any
+     * credential connected before this field existed -- rotateApiKey treats that as "not yet
+     * recorded" rather than a forced mismatch, and backfills it from the very rotation it
+     * allows.
      */
     private String accountUid;
 }

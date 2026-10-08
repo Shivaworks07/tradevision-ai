@@ -15,9 +15,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * P2-17 fix ("20x System.out.println, PII in logs, no correlation IDs" -- external review, full
- * context in CorrelationIdFilter's own header javadoc): this file did not exist before this fix
- * -- CorrelationIdFilter is entirely new.
+ * Verifies CorrelationIdFilter: a correlation ID is generated or reused per request, set in
+ * both the MDC and the response header, and cleared once the request finishes so it never
+ * leaks onto whatever this worker thread handles next.
  */
 class CorrelationIdFilterTest {
 

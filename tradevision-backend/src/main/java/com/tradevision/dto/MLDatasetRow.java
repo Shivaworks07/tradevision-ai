@@ -1,11 +1,11 @@
 package com.tradevision.dto;
 
 /**
- * Review item #17 (honest adjacent piece, NOT a trained model): one labeled training example —
- * a signal's feature snapshot plus its actual resolved outcome. This is real infrastructure for
- * eventually training a model; it is not a model, a prediction, or a probability. It only exists
- * for calls whose outcome has actually resolved (not PENDING) — an unresolved call has no label
- * and is useless for supervised training, so it's excluded rather than filled with a guess.
+ * One labeled training example — a signal's feature snapshot plus its actual resolved outcome.
+ * This is infrastructure for eventually training a model; it is not itself a model, a
+ * prediction, or a probability. It only exists for calls whose outcome has actually resolved
+ * (not PENDING) — an unresolved call has no label and is useless for supervised training, so
+ * it's excluded rather than filled with a guess.
  */
 public record MLDatasetRow(
     String callId, String symbol, String market, String timeframe,

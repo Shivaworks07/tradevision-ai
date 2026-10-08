@@ -37,7 +37,8 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
- * Audit item P0-1, full context in LiveCanaryRecord's own class javadoc.
+ * Covers LiveCanaryService's small, real-money canary order flow, including the explicit
+ * confirmation phrase and notional/size safety limits.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)

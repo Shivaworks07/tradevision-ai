@@ -28,10 +28,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * P2-13 fix ("FeedbackController.submit: Public, CSRF-exempt, unthrottled, stores 2.8 MB base64
- * per request" -- external review, full context in FeedbackController's own updated javadoc): the
- * actual review-required test -- "100 requests/min -> 429". This file did not exist before this
- * fix; FeedbackController had zero test coverage previously.
+ * Verifies per-IP rate limiting on the public, CSRF-exempt feedback submission endpoint, which
+ * otherwise could store an unbounded number of near-2.8 MB base64 documents per request.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -77,12 +75,11 @@ class FeedbackControllerTest {
     }
 
     /**
-     * The actual review-required proof: "100 requests/min -> 429". Simulates a burst of 100
-     * rapid submissions from the same IP -- the first MAX_FEEDBACK_SUBMISSIONS_PER_IP_PER_WINDOW
-     * (30) are allowed by the (mocked) rate limiter, and every one after that is rejected with
-     * 429 and never reaches feedbackRepo.save at all, proving the storage-cost DoS this endpoint
-     * was genuinely exposed to (an unbounded number of near-2.8MB documents per second, with zero
-     * authentication) is now bounded.
+     * Simulates a burst of 100 rapid submissions from the same IP -- the first
+     * MAX_FEEDBACK_SUBMISSIONS_PER_IP_PER_WINDOW (30) are allowed by the (mocked) rate limiter,
+     * and every one after that is rejected with 429 and never reaches feedbackRepo.save at all,
+     * proving the storage-cost DoS this endpoint is exposed to (an unbounded number of
+     * near-2.8MB documents per second, with zero authentication) is bounded.
      */
     @Test
     @DisplayName("submit: a 100-request/minute burst from the same IP is rate-limited -- requests beyond the per-IP limit get 429 and are never persisted")
@@ -112,7 +109,7 @@ class FeedbackControllerTest {
     }
 
     @Test
-    @DisplayName("submit: once the per-IP rate limit is exceeded, returns 429 and never even reaches feedbackRepo.save -- the actual review fix (\"unthrottled, stores 2.8 MB base64 per request\")")
+    @DisplayName("submit: once the per-IP rate limit is exceeded, returns 429 and never even reaches feedbackRepo.save")
     void submit_rateLimitExceeded_returns429WithoutSaving() {
         when(distributedRateLimitService.allow(eq("feedback_submit_by_ip"), any(), anyInt(), anyLong())).thenReturn(false);
         when(request.getRemoteAddr()).thenReturn("1.2.3.4");

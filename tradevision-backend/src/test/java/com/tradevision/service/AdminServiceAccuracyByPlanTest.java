@@ -21,11 +21,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 /**
- * Review finding ("strategy-level performance attribution" -- external review, P3, full context
- * in AdminService's own updated accuracyByPlan comment): the actual test for the new
- * segmentation. Scoped to this one new addition -- AdminService itself had no test file at all
- * before this, and comprehensively testing its many pre-existing, untouched computations is
- * outside what this specific fix changed.
+ * Verifies AdminService's accuracyByPlan segmentation. Scoped to this one addition --
+ * comprehensively testing AdminService's other, unrelated computations is out of scope here.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)

@@ -16,47 +16,29 @@ import java.util.List;
 import org.springframework.data.domain.PageRequest;
 
 /**
- * P2-17 fix ("20x System.out.println, PII in logs, no correlation IDs" -- external review, full
- * context in this codebase's own new CorrelationIdFilter javadoc): this class's own three
- * System.out.println calls are replaced with this class's own SLF4J logger below -- println
- * bypasses logging.level entirely (can't be turned down in production, isn't captured by any log
+ * Periodically resolves PENDING trade calls by comparing their stop-loss/target levels against
+ * real market price history. Uses this class's own SLF4J logger throughout -- println bypasses
+ * logging.level entirely (can't be turned down in production, isn't captured by any log
  * aggregator that scrapes SLF4J/Logback output specifically, and carries none of the correlation
- * id CorrelationIdFilter now injects into every other log line for the same request). No PII
- * here (symbol/price/result only), so no masking is needed in this class specifically.
+ * id CorrelationIdFilter injects into every other log line for the same request). No PII here
+ * (symbol/price/result only), so no masking is needed in this class specifically.
  */
 @Service
 @RequiredArgsConstructor
 public class CallResultUpdater {
     private static final Logger log = LoggerFactory.getLogger(CallResultUpdater.class);
     private final TradeCallRepository callRepo;
-    /**
-     * Real compile error, confirmed by the person's own local build ("ExecutedOrderRepository...
-     * not existing"): this field used to be typed com.tradevision.repository.ExecutedOrderRepository,
-     * a class that genuinely does not exist anywhere in this project -- every other file that
-     * once used it (OrderExecutionService, PositionDashboardService, PositionMonitorService,
-     * AutoTradeService, TradeCallService -- confirmed by direct search, not assumed) already
-     * migrated to OrderRepository/Order per the "OMS/ExecutedOrder full unification" review
-     * finding; this was the one file that migration missed. OrderRepository.existsBySignalId
-     * already exists with the identical name and signature this file's own check needs.
-     */
+    /** Used to check whether a signal was actually auto-traded (via OrderRepository.existsBySignalId), so a real broker-backed outcome is never overwritten by a guess. */
     private final com.tradevision.repository.OrderRepository orderRepo;
-    // Review finding ("CallResultUpdater can race with real position outcomes" -- P1): needed
-    // for the actual atomic guard in updateResult below.
+    // Backs the atomic guard in updateResult below.
     private final org.springframework.data.mongodb.core.MongoTemplate mongoTemplate;
-    // Review finding (P1 #5 -- "Global ML weights can be poisoned by unverified, client-supplied
-    // trade outcomes"): the MLWeightService dependency that used to live here is removed. This
-    // class's own two result paths (the ticker-crossing TP/SL guess in updateResult, and the
-    // 30-day-EXPIRED sweep above) are never backed by a real broker fill -- see both call sites'
-    // own updated comments for the full reasoning -- so neither may feed the GLOBAL,
-    // unscoped-by-user ML weights every live signal reads from. That write now happens only from
+    // This class's own two result paths (the ticker-crossing TP/SL guess in updateResult, and
+    // the 30-day-EXPIRED sweep above) are never backed by a real broker fill -- see both call
+    // sites' own comments for the full reasoning -- so neither may feed the global,
+    // unscoped-by-user ML weights every live signal reads from. That write happens only from
     // PositionMonitorService.writeRealOutcomeBackToSignal, the one place a real, verified fill is
     // actually known.
-    /**
-     * Review finding ("Graceful shutdown does not stop @Scheduled work or WebSocket listeners
-     * from starting new work" -- external review, nineteenth pass, P1, confirmed real by direct
-     * inspection: this scheduled task had no shutdown-awareness at all, unlike every other
-     * @Scheduled method in this codebase, which already check this exact field): the fix.
-     */
+    /** Gates this scheduled task on shutdown, same as every other @Scheduled method in this codebase. */
     private final com.tradevision.config.ShutdownState shutdownState;
     private final RestTemplate restTemplate = new RestTemplate();
     private final ObjectMapper mapper = new ObjectMapper();
@@ -64,59 +46,47 @@ public class CallResultUpdater {
     @Scheduled(fixedDelay = 300000, scheduler = "maintenanceScheduler")
     public void updatePendingCalls() {
         if (shutdownState.isShuttingDown()) return;
-        // P2-19 fix ("CallResultUpdater: ... newest 50 only" -- external review, full context in
-        // TradeCallRepository.findByOutcome_ResultOrderByCalledAtAsc's own updated javadoc):
-        // oldest-first, not newest-first -- a backlog beyond 50 PENDING calls now actually drains
-        // over successive 5-minute runs instead of permanently starving behind newer calls.
+        // Oldest-first, not newest-first -- a backlog beyond 50 PENDING calls drains over
+        // successive 5-minute runs instead of permanently starving behind newer calls. See
+        // TradeCallRepository.findByOutcome_ResultOrderByCalledAtAsc's own javadoc.
         List<TradeCallRecord> pending = callRepo.findByOutcome_ResultOrderByCalledAtAsc("PENDING", PageRequest.of(0, 50));
         for (TradeCallRecord call : pending) {
             try {
-                // Review items #20 / #2 (this doc's numbering): if this call was actually
-                // auto-traded, its real outcome comes from PositionMonitorService's broker
-                // reconciliation — this theoretical ticker-crossing check must never overwrite
-                // that with a guessed result. (It also shouldn't normally get the chance to,
-                // since PositionMonitorService now writes the real outcome back onto the call
-                // when a linked position closes — but this guard is the actual enforcement.)
+                // If this call was actually auto-traded, its real outcome comes from
+                // PositionMonitorService's broker reconciliation — this theoretical
+                // ticker-crossing check must never overwrite that with a guessed result. (It
+                // also shouldn't normally get the chance to, since PositionMonitorService
+                // writes the real outcome back onto the call when a linked position closes —
+                // but this guard is the actual enforcement.)
                 if (orderRepo.existsBySignalId(call.getId())) {
                     continue;
                 }
                 if (call.getCalledAt().isBefore(LocalDateTime.now().minusDays(30))) {
                     TradeOutcome o = call.getOutcome() != null ? call.getOutcome() : new TradeOutcome();
                     o.setResult("EXPIRED"); o.setResolvedAt(LocalDateTime.now());
-                    // Review finding ("CallResultUpdater can race with real position outcomes"
-                    // -- P1, full context in updateResult's own identical fix below): same
-                    // atomic-conditional pattern, same reasoning -- a plain callRepo.save() here
-                    // could overwrite a real outcome written between this loop iteration's own
-                    // existsBySignalId() check above and this save.
+                    // Same atomic-conditional pattern as updateResult's own identical update
+                    // below, same reasoning -- a plain callRepo.save() here could overwrite a
+                    // real outcome written between this loop iteration's own existsBySignalId()
+                    // check above and this save.
                     var expiredUpdateResult = mongoTemplate.updateFirst(
                         new org.springframework.data.mongodb.core.query.Query(
                             org.springframework.data.mongodb.core.query.Criteria.where("id").is(call.getId())
                                 .and("outcome.result").is("PENDING")),
                         new org.springframework.data.mongodb.core.query.Update().set("outcome", o),
                         TradeCallRecord.class);
-                    // Review finding ("Strategy engine is not the complete strategy actually
-                    // represented by the frontend" -- P1, full context in updateResult's own
-                    // identical wiring below): recorded here too, for the same reason -- an
-                    // EXPIRED result still counts toward totalCalls (the warm-up threshold)
+                    // An EXPIRED result still counts toward totalCalls (the warm-up threshold)
                     // even though it affects neither wins nor losses (see
-                    // MLWeightService.recordOutcome's own isWin/loss logic). Skipping this whole
-                    // category of resolved signal would leave totalCalls artificially low.
-                    // Review finding (P1 #5 -- "Global ML weights can be poisoned by unverified,
-                    // client-supplied trade outcomes"): this used to call
-                    // mlWeightService.recordOutcome(..., "EXPIRED", ...) here. Removed -- this
-                    // whole branch is reached precisely for calls with NO linked real order (the
+                    // MLWeightService.recordOutcome's own isWin/loss logic). This whole branch
+                    // is reached precisely for calls with no linked real order (the
                     // existsBySignalId guard above already sent every order-backed call down a
                     // different path), which includes every call saved via POST /api/calls/save
                     // with arbitrary client-supplied RSI/MACD/pattern features that simply aged
-                    // out unresolved. The GLOBAL, unscoped per-symbol ML weights that every
+                    // out unresolved. The global, unscoped per-symbol ML weights that every
                     // user's live signal-scoring reads from must only ever learn from real,
                     // broker-confirmed fills -- see PositionMonitorService.
-                    // writeRealOutcomeBackToSignal, the one place that now does this, wired in
-                    // the same pass as this removal. "EXPIRED" never counted as a win or a loss
-                    // in MLWeightService's own isWin/loss logic anyway (neither startsWith
-                    // "HIT_T" nor equals "HIT_SL") -- it only ever inflated totalCalls (the
-                    // warm-up counter) for calls nobody ever actually traded, which is removed
-                    // along with the call itself.
+                    // writeRealOutcomeBackToSignal, the one place that does this. "EXPIRED"
+                    // never counts as a win or a loss in MLWeightService's own isWin/loss logic
+                    // anyway (neither startsWith "HIT_T" nor equals "HIT_SL").
                     continue;
                 }
                 PriceRange range = fetchPriceRange(call);
@@ -129,21 +99,18 @@ public class CallResultUpdater {
     }
 
     /**
-     * P2-19 fix ("CallResultUpdater: point-in-time price decides HIT_T/HIT_SL" -- external
-     * review, confirmed real): the highest and lowest price actually reached over an interval,
-     * not a single instant. Package-private (record, not private class) purely so its accessors
-     * are directly usable from CallResultUpdaterTest without needing a real network call.
+     * The highest and lowest price actually reached over an interval, not a single instant.
+     * Package-private (record, not private class) purely so its accessors are directly usable
+     * from CallResultUpdaterTest without needing a real network call.
      */
     record PriceRange(double high, double low) {}
 
     /**
-     * P2-19 fix ("CallResultUpdater: point-in-time price decides HIT_T/HIT_SL" -- external
-     * review, confirmed real by direct inspection before this fix): this used to fetch a single
-     * CURRENT spot price every 5 minutes (fetchPrice, removed) and compare THAT ONE instant
-     * against stopLoss/target1/2/3 -- a real price spike or crash that touched a target or the
-     * stop loss and reverted before the next 5-minute check was simply invisible, silently
-     * misreporting a call's actual outcome. Fetches the real high/low actually reached across the
-     * whole window from the call's own calledAt to now instead, via each market's own OHLC
+     * Fetching a single current spot price every 5 minutes and comparing that one instant
+     * against stopLoss/target1/2/3 would miss a real price spike or crash that touched a target
+     * or the stop loss and reverted before the next 5-minute check, silently misreporting a
+     * call's actual outcome. Fetches the real high/low actually reached across the whole window
+     * from the call's own calledAt to now instead, via each market's own OHLC
      * candle data (Binance klines for crypto; Yahoo's chart quote arrays for stocks), and
      * updateResultFromRange below evaluates crossing against those actual extremes.
      *
@@ -232,7 +199,7 @@ public class CallResultUpdater {
     }
 
     /**
-     * P2-19 fix, full context in fetchPriceRange's own updated comment above: evaluates crossing
+     * See fetchPriceRange's own comment above. Evaluates crossing
      * against the actual high/low reached over the window, not a single price. Stop-loss is
      * always checked first regardless of whether a target was also touched in the same window --
      * deliberately conservative, since a candle's high/low alone can't say which was touched
@@ -267,21 +234,18 @@ public class CallResultUpdater {
         }
     }
 
-    // Review finding ("CallResultUpdater can race with real position outcomes" -- P1, full
-    // context in this method's own comment below): package-private, not private, specifically
-    // so the atomic-update fix is directly testable without needing a real network call through
-    // fetchPrice() -- restTemplate here is a real, non-mockable inline-initialized field, not a
-    // constructor-injected dependency a test could swap out.
+    // Package-private, not private, specifically so the atomic-update guard below is directly
+    // testable without needing a real network call through fetchPrice() -- restTemplate here is
+    // a real, non-mockable inline-initialized field, not a constructor-injected dependency a
+    // test could swap out.
     void updateResult(TradeCallRecord call, double price) {
         boolean isLong = "LONG".equals(call.getDirection());
         TradeOutcome o = call.getOutcome() != null ? call.getOutcome() : new TradeOutcome();
         String result = null;
-        // Review finding ("Financial values still mix double and BigDecimal" -- external
-        // review, twenty-fourth pass, P2, full context in TradeCallRecord's own updated field
-        // comment): those fields are BigDecimal now -- .doubleValue() here converts at this
-        // method's own internal-comparison boundary, deliberately not cascading this change
-        // into the shared PnlCalculator utility below (used by TradeCallService too) or
-        // TradeOutcome's own Double fields, which stay outside this pass's scope.
+        // These fields are BigDecimal -- .doubleValue() here converts at this method's own
+        // internal-comparison boundary, deliberately not cascading into the shared
+        // PnlCalculator utility below (used by TradeCallService too) or TradeOutcome's own
+        // Double fields. See TradeCallRecord's own field comment.
         double stopLoss = call.getStopLoss().doubleValue();
         double target1 = call.getTarget1().doubleValue();
         double target2 = call.getTarget2().doubleValue();
@@ -300,28 +264,24 @@ public class CallResultUpdater {
         if (result != null) {
             o.setResult(result); o.setExitPrice(price); o.setResolvedAt(LocalDateTime.now());
             if (call.getEntryPrice().doubleValue() > 0) {
-                // Review finding ("Financial model still mixes double and BigDecimal" --
-                // external review, sixteenth pass, P2, full context in PnlCalculator's own
-                // class javadoc): this formula used to be duplicated verbatim here and in
-                // TradeCallService -- now the single, shared implementation.
+                // The single, shared PnL computation (also used by TradeCallService) rather
+                // than duplicating the formula here. See PnlCalculator's own class javadoc.
                 var pnl = com.tradevision.util.PnlCalculator.compute(call.getEntryPrice().doubleValue(), price, stopLoss, isLong);
                 o.setPnlPct(pnl.pnlPct());
                 o.setPnlR(pnl.pnlR());
             }
             call.setOutcome(o);
-            // Review finding ("CallResultUpdater can race with real position outcomes" -- P1):
-            // confirmed real -- the guard at the top of updatePendingCalls() only checks
-            // existsBySignalId() ONCE, at the start of this call's own loop iteration. Between
-            // that check and this save, fetchPrice() makes a real, potentially slow network
-            // call -- if a real trade executes and PositionMonitorService writes the ACTUAL
-            // outcome onto this same call during that exact window, the old plain
-            // callRepo.save(call) here would silently overwrite it with this theoretical,
-            // ticker-crossing-based guess. Fixed with an atomic conditional update, re-checked
-            // fresh at the moment of the actual write, not trusted from when the loop iteration
-            // started: only applies if outcome.result is STILL "PENDING" in the database right
-            // now. A real outcome write landing in that window means this update simply doesn't
-            // apply -- exactly the same "lost the race, and that's correct" pattern already
-            // established elsewhere in this codebase this session.
+            // The guard at the top of updatePendingCalls() only checks existsBySignalId() once,
+            // at the start of this call's own loop iteration. Between that check and this save,
+            // fetchPrice() makes a real, potentially slow network call -- if a real trade
+            // executes and PositionMonitorService writes the actual outcome onto this same call
+            // during that exact window, a plain callRepo.save(call) here would silently
+            // overwrite it with this theoretical, ticker-crossing-based guess. An atomic
+            // conditional update instead, re-checked fresh at the moment of the actual write,
+            // not trusted from when the loop iteration started: only applies if outcome.result
+            // is still "PENDING" in the database right now. A real outcome write landing in
+            // that window means this update simply doesn't apply -- "lost the race, and that's
+            // correct."
             var updateResult = mongoTemplate.updateFirst(
                 new org.springframework.data.mongodb.core.query.Query(
                     org.springframework.data.mongodb.core.query.Criteria.where("id").is(call.getId())
@@ -333,21 +293,14 @@ public class CallResultUpdater {
                     + "something else during price-fetch.", call.getSymbol(), result);
                 return;
             }
-            // Review finding (P1 #5 -- "Global ML weights can be poisoned by unverified,
-            // client-supplied trade outcomes"): this used to call mlWeightService.recordOutcome
-            // right here with THIS method's own guessed result (a plain price-vs-SL/target
-            // comparison against whatever entry/SL/target values the call was saved with --
-            // client-suppliable, never verified against a real fill). That guess is exactly what
-            // reaches this line for every call with no linked real order (the existsBySignalId
-            // guard in updatePendingCalls already sent every order-backed call down a different,
-            // real-outcome path) -- including any call saved via POST /api/calls/save with
-            // fabricated RSI/MACD/pattern/SL/target values designed to nudge the GLOBAL,
-            // unscoped per-symbol weights that every user's live signal-scoring reads from.
-            // Removed: the learner now only ever hears about real, broker-confirmed fills, via
+            // This method's own guessed result (a plain price-vs-SL/target comparison against
+            // whatever entry/SL/target values the call was saved with -- client-suppliable,
+            // never verified against a real fill) never feeds the global, unscoped per-symbol ML
+            // weights that every user's live signal-scoring reads from -- that learner only ever
+            // hears about real, broker-confirmed fills, via
             // PositionMonitorService.writeRealOutcomeBackToSignal. This method still writes the
             // theoretical result onto the call's own outcome (above) -- that's real, useful
-            // history for the user who saved the call -- it just no longer feeds the shared
-            // learner.
+            // history for the user who saved the call -- it just doesn't feed the shared learner.
             log.info("[Updater] {} -> {} @{}", call.getSymbol(), result, price);
         }
     }

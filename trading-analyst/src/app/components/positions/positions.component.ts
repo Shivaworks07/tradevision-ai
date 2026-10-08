@@ -7,11 +7,9 @@ import { BrokerService, BrokerCredentialResponse } from '../../services/broker.s
 import { environment } from '../../../environments/environment';
 
 /**
- * Review finding ("UI has no real Position/Execution dashboard" — "A user should never have to
- * open Binance manually to discover: does my bot currently own something?"): this is that
- * dashboard. Also carries the two safe manual actions this review asked for (Emergency Flatten,
- * Reconcile Now) — see PositionDashboardService's own javadoc for why "Cancel protection" was
- * deliberately left out rather than added alongside them.
+ * Dashboard showing the bot's current open and closed positions without the user
+ * needing to check the exchange directly. Also exposes the two safe manual
+ * interventions an operator may need: Emergency Flatten and Reconcile Now.
  */
 @Component({
     selector: 'app-positions',
@@ -76,8 +74,7 @@ export class PositionsComponent implements OnInit, OnDestroy {
       },
       error: () => { this.loading = false; this.showToast('Could not load positions.', true); }
     });
-    // Review finding (P1 #20 — "Need a durable incident model"): the "🔴 N CRITICAL" indicator
-    // the review's own mockup asked for.
+    // Drives the "🔴 N CRITICAL" indicator so unresolved incidents are visible at a glance.
     this.positionService.unresolvedIncidents(this.selectedCredentialId).subscribe({
       next: (r: any) => { this.criticalIncidentCount = (r?.data || []).length; },
       error: () => { /* non-critical to the page's core function — fails silently */ }
@@ -125,11 +122,9 @@ export class PositionsComponent implements OnInit, OnDestroy {
     });
   }
 
-  // Review finding ("The UI needs explicit protection-state presentation" -- external review,
-  // second pass): this component's own former client-side isPartiallyProtected() guess is
-  // removed -- the template now reads the server's own real, minQty-aware protectionStatus
-  // field directly (see position.service.ts's own updated interface), rather than a
-  // client-side heuristic that had no real exchange minQty to judge a residual against at all.
+  // Protection status (fully/partially/unprotected) is read directly from the server's
+  // protectionStatus field, since only the server knows the exchange's minQty and can
+  // judge whether a residual quantity is actually protectable.
 
   private showToast(text: string, err: boolean) {
     this.toast = { text, err };

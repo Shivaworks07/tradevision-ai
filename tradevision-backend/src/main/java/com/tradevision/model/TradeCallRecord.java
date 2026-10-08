@@ -27,12 +27,9 @@ public class TradeCallRecord {
     // ── Identity ──────────────────────────────────────────────
     @Indexed private String userId;
     /**
-     * Review finding ("Evaluation recovery now excludes APPROVED, but APPROVED can become
-     * permanently abandoned" -- external review, twenty-sixth pass, P1, full context in
-     * AutoTradeRecoveryService.detectStaleApprovedSignals's own javadoc): set once an
-     * EXECUTION_STALE incident has been raised for this signal sitting at APPROVED past the
-     * timeout, so the hourly scheduled check doesn't raise a duplicate incident for the same
-     * still-stale signal on every subsequent run.
+     * Set once an EXECUTION_STALE incident has been raised for this signal sitting at APPROVED
+     * past the timeout, so the hourly scheduled check (AutoTradeRecoveryService) doesn't raise
+     * a duplicate incident for the same still-stale signal on every subsequent run.
      */
     private boolean staleApprovedIncidentRaised = false;
     private String symbol;
@@ -47,12 +44,12 @@ public class TradeCallRecord {
      */
     private String planId;
     /**
-     * Review finding ("Strategy Plan disable vs execution is still technically non-atomic" --
-     * external review, fourteenth pass, P1, full context in StrategyPlan.version's own field
-     * javadoc): the plan's own version at the exact moment this signal was generated -- the
-     * value AutoTradeService's own final claim (StrategyPlanService.claimPlanExecution) verifies
-     * still matches the plan's current version before allowing execution. Null for a signal with
-     * no associated plan at all, same as planId itself.
+     * The plan's own version (see StrategyPlan.version) at the exact moment this signal was
+     * generated -- the value AutoTradeService's own final claim
+     * (StrategyPlanService.claimPlanExecution) verifies still matches the plan's current
+     * version before allowing execution, so a plan edited or disabled after this signal was
+     * generated cannot execute under stale authorization. Null for a signal with no associated
+     * plan at all, same as planId itself.
      */
     private Long planVersion;
 
@@ -62,23 +59,12 @@ public class TradeCallRecord {
     private int    confidence;
 
     // ── Trade Levels ─────────────────────────────────────────
-    // Review finding (P1 #7 — "Financial values still mix double and BigDecimal", re-flagged
-    // across multiple review passes, now actually converted here): the earlier comment on this
-    // exact spot explained why this was deferred (cross-cutting scope across
-    // TradeCallRequest/ML export/frontend). Scoped here to what's genuinely safe without a
-    // compiler to verify a full cross-boundary conversion: this model's own 7 fields are now
-    // BigDecimal, and every real accessor usage across the backend (confirmed via a precise
-    // search for .getEntryPrice()/.setEntryPrice()/etc., not a broad field-name substring match
-    // that would have caught unrelated classes' own same-named fields) has been updated to
-    // match. TradeCallRequest (the wire-format input DTO) deliberately still uses double at the
-    // JSON boundary -- that's a normal, safe type-conversion point (BigDecimal.valueOf(...) at
-    // construction), not the "inconsistency" the earlier comment was concerned about; the actual
-    // concern (these values being double throughout STORAGE and ANALYTICS, where P&L math
-    // actually happens) is what this fix closes.
-    // Defaults to BigDecimal.ZERO, deliberately matching the old primitive double's own
-    // implicit 0.0 default -- a BigDecimal field with no explicit default would be null
-    // wherever the old code relied on that implicit zero, a real regression risk this default
-    // avoids.
+    // These price/ratio fields are BigDecimal so storage and analytics (where P&L math
+    // actually happens) avoid floating-point representation error. TradeCallRequest (the
+    // wire-format input DTO) still uses double at the JSON boundary and converts via
+    // BigDecimal.valueOf(...) at construction -- a normal, safe type-conversion point.
+    // Defaults to BigDecimal.ZERO, matching a primitive double's implicit 0.0 default, so
+    // nothing that relies on an implicit zero sees null instead.
     private BigDecimal entryPrice = BigDecimal.ZERO;
     private BigDecimal stopLoss = BigDecimal.ZERO;
     private BigDecimal target1 = BigDecimal.ZERO;
@@ -104,63 +90,44 @@ public class TradeCallRecord {
     // ── Timestamps ───────────────────────────────────────────
     private LocalDateTime calledAt  = LocalDateTime.now();
 
-    // Review finding (P1 #5 — "Auto-trading is not durable"): confirmed real — the old flow was
-    // save-then-fire-an-@Async-task, with no durable record of whether that task actually ran.
-    // A crash in the narrow window after save but before the async task executes meant the
-    // signal existed in Mongo but was never evaluated, and nothing ever revisited it. This field
-    // is the outbox: PENDING (saved, not yet evaluated) -> EVALUATING (a worker has picked it
-    // up) -> EVALUATED (evaluation against every applicable risk profile completed, whether or
-    // not that resulted in an actual trade — "no trade" is a complete outcome, not a failure).
+    // Durable outbox status for this signal's own evaluation, so a crash between saving the
+    // signal and an async evaluation task actually running doesn't leave it silently
+    // unevaluated: PENDING (saved, not yet evaluated) -> EVALUATING (a worker has picked it up)
+    // -> EVALUATED (evaluation against every applicable risk profile completed, whether or not
+    // that resulted in an actual trade -- "no trade" is a complete outcome, not a failure).
     // AutoTradeRecoveryService periodically re-dispatches anything stuck in PENDING or
-    // EVALUATING for too long — the "Mongo-backed outbox/worker" the review itself said would be
-    // enough for this stage, not a message broker.
+    // EVALUATING for too long.
     @Indexed private String autoTradeEvalStatus = "PENDING";
 
-    // Review finding (P1 — "Auto-trade recovery has a duplicate-evaluation edge"): confirmed
-    // real, and a real bug in the recovery worker's original design — its staleness check for
-    // an EVALUATING signal compared against calledAt (when the signal was CREATED), not when the
-    // current evaluation attempt actually STARTED. A signal that sat queued for 8 minutes before
-    // being claimed, then legitimately evaluating for only 2 more, would already be >10 minutes
-    // past calledAt — the recovery worker would incorrectly consider it stuck and reset it to
-    // PENDING, letting a second worker claim and evaluate the SAME signal concurrently with the
-    // first, still-alive one. Set atomically at the exact moment the PENDING->EVALUATING claim
-    // succeeds — the recovery worker's staleness check now measures against THIS, not calledAt.
+    // When the current evaluation attempt actually started, set atomically at the moment the
+    // PENDING->EVALUATING claim succeeds. The recovery worker's staleness check measures
+    // against this, not calledAt (when the signal was created) -- otherwise a signal that sat
+    // queued for a while before being claimed could be mistaken for stuck shortly after a
+    // worker legitimately picked it up, letting a second worker claim and evaluate it
+    // concurrently with the first.
     private LocalDateTime autoTradeEvalStartedAt;
 
-    // Review finding ("Auto-trade recovery still needs a lease"): confirmed sound reasoning —
-    // a fixed elapsed-time reclaim (autoTradeEvalStartedAt + 10 minutes) can steal a signal from
-    // a worker that's simply slow but genuinely still alive and working on it. A real lease —
-    // set at claim time, checked at reclaim time — only reclaims once the lease has actually
-    // expired, not merely "a while has passed". evaluationOwner identifies which worker instance
-    // currently holds the lease (informational/diagnostic — the lease EXPIRY, not the owner
-    // identity, is what actually gates reclaiming).
+    // A lease on this signal's evaluation: set at claim time, checked at reclaim time, so a
+    // worker that is simply slow but still alive isn't mistaken for stuck and have its signal
+    // reclaimed on a fixed elapsed-time basis alone. evaluationOwner identifies which worker
+    // instance currently holds the lease (informational/diagnostic -- the lease expiry, not
+    // the owner identity, is what actually gates reclaiming).
     private String evaluationOwner;
     private LocalDateTime evaluationLeaseUntil;
 
-    // Review finding ("Auto-trade recovery still has a durability problem" — "I'd distinguish
-    // EVALUATED from EVALUATION_FAILED, and only mark EVALUATED after all intended work
-    // completed"): confirmed real — autoTradeEvalStatus used to unconditionally become
-    // "EVALUATED" in a finally block regardless of whether an exception interrupted the work,
-    // meaning a transient infrastructure failure could produce a signal that LOOKS complete but
-    // never actually finished, and the recovery worker would never pick it up (its own query
-    // only looks for PENDING/EVALUATING, not "EVALUATED but actually failed"). autoTradeEvalStatus
-    // itself is unchanged (still a plain String, matching this file's existing convention) — the
-    // new value is "EVALUATION_FAILED", set instead of "EVALUATED" specifically when the
-    // evaluation loop was interrupted by an exception, so it's visibly distinct from a genuine
-    // completion rather than indistinguishable from one.
+    // autoTradeEvalStatus becomes "EVALUATED" only when evaluation actually completed; if the
+    // evaluation loop was interrupted by an exception it becomes "EVALUATION_FAILED" instead,
+    // so a transient infrastructure failure produces a status the recovery worker's own
+    // PENDING/EVALUATING query can distinguish from a genuine completion and revisit.
 
-    // Review finding ("#3 — Signal engine" — full context in SignalStatus's own javadoc): a
-    // SEPARATE lifecycle from autoTradeEvalStatus above — that field tracks "has this signal's
-    // dispatch been durably claimed and processed" (a narrower, crash-recovery concept, #5's own
-    // work). This tracks the review's own requested GENERATED -> VALIDATING -> RISK_REJECTED ->
-    // APPROVED -> ORDER_PENDING -> EXECUTED lifecycle — a different axis, not a replacement.
+    // The signal's own decision lifecycle (see SignalStatus) -- a separate axis from
+    // autoTradeEvalStatus above, which tracks whether dispatch/evaluation has been durably
+    // claimed and processed (a crash-recovery concept), not what decision was reached.
     private SignalStatus signalStatus = SignalStatus.GENERATED;
 
-    // Review item #16 (fixed): this used to auto-delete every record after 90 days via a Mongo
-    // TTL index — directly contradictory with using this same collection as ML training history.
-    // expiresAt is kept as a plain field (still useful for other logic that reads it) but the
-    // @Indexed(expireAfterSeconds=...) TTL behavior is removed: nothing in this collection
-    // auto-deletes anymore. If storage growth becomes a real concern later, the fix is a
-    // deliberate archive/cold-storage job, not a silent TTL that also destroys training data.
+    // Kept as a plain field for other logic that reads it, but with no TTL index attached --
+    // this collection also serves as ML training history, so records are never auto-deleted.
+    // If storage growth becomes a concern, the answer is a deliberate archive/cold-storage job,
+    // not a TTL that would also destroy training data.
     private LocalDateTime expiresAt = LocalDateTime.now().plusDays(90);
 }

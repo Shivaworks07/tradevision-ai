@@ -11,10 +11,9 @@ import org.springframework.web.bind.annotation.*;
 import java.util.UUID;
 
 /**
- * Review finding ("UI has no real Position/Execution dashboard" / "No user-facing emergency
- * position action"): kept deliberately thin — every actual decision (ownership checks, what's
- * safe to expose as a manual action) lives in PositionDashboardService, same pattern as every
- * other controller in this codebase.
+ * Exposes a user's open/closed positions, manual emergency-flatten and reconcile-now actions,
+ * and unresolved incidents for a credential. Kept thin: ownership checks and what's safe to
+ * expose as a manual action live in PositionDashboardService.
  */
 @RestController
 @RequestMapping("/api/positions")
@@ -26,21 +25,10 @@ public class PositionController {
     @GetMapping("/{credentialId}")
     public ResponseEntity<?> list(@AuthenticationPrincipal String userId, @PathVariable String credentialId,
                                    @RequestParam(required = false) String status,
-                                   // Review finding ("Pagination for order history/positions/
-                                   // metrics" -- P2): confirmed real -- this endpoint used to
-                                   // return every position ever opened for this credential, with
-                                   // no limit at all. A credential open for months could
-                                   // eventually return thousands of closed positions on a single
-                                   // request. HONEST NOTE: defaulting page/size to 0/50 (rather
-                                   // than defaulting to "no limit" and only bounding when a
-                                   // caller explicitly asks) is a genuine behavior change for
-                                   // this existing endpoint, not silently backward-compatible --
-                                   // a default of "unbounded unless asked" would leave the
-                                   // actual problem unfixed for the current frontend, which
-                                   // doesn't pass these params yet. The frontend may need
-                                   // corresponding UI work (a "load more"/pager control) to
-                                   // surface access to anything past the first 50 -- not
-                                   // attempted here, scoped to the backend response-size fix.
+                                   // Paginated so a credential with a long history of closed
+                                   // positions doesn't return thousands of records in one
+                                   // response; callers that need more than the first page must
+                                   // page through explicitly.
                                    @RequestParam(required = false, defaultValue = "0") int page,
                                    @RequestParam(required = false, defaultValue = "50") int size) {
         try {

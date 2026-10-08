@@ -25,9 +25,8 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 /**
- * Review finding ("#8 — Market-data quality engine"): verifies the actual checks, in
- * milliseconds throughout — matching the real unit of Candle.time(), a mismatch this class's
- * own comments describe catching and fixing during development, not after.
+ * Covers MarketDataQualityService's checks, in milliseconds throughout, matching the unit of
+ * Candle.time().
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -39,10 +38,9 @@ class MarketDataQualityServiceTest {
 
     @BeforeEach
     void setup() {
-        // Review finding ("Market data" — "order-book depth"): a generous, balanced default so
-        // every existing test (which never cared about order-book depth) isn't NPE'd by
-        // Mockito's default null return for the unstubbed OrderBookDepth object — same pattern
-        // as PositionSafetyServiceTest's own getBalance default stub.
+        // A generous, balanced default so tests that don't care about order-book depth aren't
+        // NPE'd by Mockito's default null return for the unstubbed OrderBookDepth object -- same
+        // pattern as PositionSafetyServiceTest's getBalance default stub.
         when(adapter.getOrderBookDepth(any(), any(), anyInt())).thenReturn(new com.tradevision.service.broker.dto.OrderBookDepth(
             List.of(new com.tradevision.service.broker.dto.OrderBookDepth.PriceLevel(BigDecimal.valueOf(100), BigDecimal.valueOf(1000))),
             List.of(new com.tradevision.service.broker.dto.OrderBookDepth.PriceLevel(BigDecimal.valueOf(100.1), BigDecimal.valueOf(1000)))));

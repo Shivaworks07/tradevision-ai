@@ -141,10 +141,8 @@ export class AdminComponent implements OnInit, OnDestroy {
   loadFeedback(status='', type='') {
     this.loadingFeedback = true;
     this.feedbackFilter = status; this.feedbackTypeFilter = type;
-    // Review finding (P1 — "UI bug: Admin feedback uses hardcoded localhost", confirmed present
-    // in the packaged production JS, not just dead source): every other endpoint in this file
-    // already uses environment.apiUrl (see this.API above) — these three were the only ones
-    // that missed it.
+    // Uses environment.apiUrl so requests resolve correctly across environments,
+    // consistent with the other endpoints in this component.
     let url = `${environment.apiUrl}/feedback/admin?size=50`;
     if (status) url += `&status=${status}`;
     if (type)   url += `&type=${type}`;

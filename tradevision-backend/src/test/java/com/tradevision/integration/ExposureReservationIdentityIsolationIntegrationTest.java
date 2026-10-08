@@ -22,23 +22,19 @@ import java.math.BigDecimal;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding ("Test coverage does not prove the new reservation ownership model" -- external
- * review, twenty-eighth pass, P2, the review's own exact ask: "I want a dedicated test for:
- * reservation identity isolation... Reservation A, Reservation B, A release, B unaffected"): this
- * is that exact test, against a real MongoDB -- proving the actual database-level guarantee the
- * whole reservation-record architecture exists for, not a mocked stand-in for it.
+ * Verifies reservation identity isolation against a real MongoDB: Reservation A, Reservation
+ * B, A released, B unaffected -- proving the database-level guarantee the whole
+ * reservation-record architecture exists for, not a mocked stand-in for it.
  *
- * HONEST LIMITATION, same as every other integration test in this package: `docker ps` fails
- * outright in this sandbox -- no Docker daemon is available here, so I have not executed this
- * test and cannot confirm it passes. Run
- * `mvn test -Dtest=ExposureReservationIdentityIsolationIntegrationTest` on a machine with Docker
- * available to actually confirm this before trusting it.
+ * Requires Docker (via Testcontainers) and is skipped automatically when no Docker daemon is
+ * available. Run `mvn test -Dtest=ExposureReservationIdentityIsolationIntegrationTest` on a
+ * machine with Docker to execute it.
  */
 @Testcontainers(disabledWithoutDocker = true)
-// P1-16 fix: spring.profiles.active now defaults to "prod" (fail-closed), which has no default
-// secrets at all -- without this, this Testcontainers-backed context would fail to start
-// outside a real deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, the
-// same secrets this test always implicitly relied on before that default changed.
+// spring.profiles.active defaults to "prod" (fail-closed), which has no default secrets at
+// all -- without this, this Testcontainers-backed context would fail to start outside a real
+// deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, which has the
+// secrets this test relies on.
 @ActiveProfiles("local")
 @SpringBootTest
 class ExposureReservationIdentityIsolationIntegrationTest {
@@ -76,7 +72,7 @@ class ExposureReservationIdentityIsolationIntegrationTest {
         assertThat(beforeRelease).isNotNull();
         assertThat(beforeRelease.getReservedTotalExposureQuote()).isEqualByComparingTo(amountA.add(amountB));
 
-        // The actual claim under test: releasing A must decrement by EXACTLY A's own amount,
+        // Releasing A must decrement by EXACTLY A's own amount,
         // leaving B's own amount completely untouched in the real database.
         exposureReservationService.release(resultA.reservationId());
 
@@ -108,11 +104,11 @@ class ExposureReservationIdentityIsolationIntegrationTest {
         assertThat(result.allowed()).isTrue();
 
         exposureReservationService.release(result.reservationId());
-        exposureReservationService.release(result.reservationId()); // the actual claim under test: a second call, same id
+        exposureReservationService.release(result.reservationId()); // a second call, same id
 
         var afterBothReleases = mongoTemplate.findOne(new Query(Criteria.where("credentialId").is(credentialId)), ExposureReservation.class);
         assertThat(afterBothReleases).isNotNull();
-        // Must be exactly zero -- a real double-decrement bug would drive this to -400.
+        // Must be exactly zero -- a real double-decrement would incorrectly drive this to -400.
         assertThat(afterBothReleases.getReservedTotalExposureQuote()).isEqualByComparingTo(BigDecimal.ZERO);
     }
 }

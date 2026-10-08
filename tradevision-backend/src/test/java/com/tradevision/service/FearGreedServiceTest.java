@@ -6,22 +6,15 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding ("#2 — Full authoritative strategy engine"): unlike every other test this
- * session (which verifies logic by hand-tracing), this one verifies against a REAL, CAPTURED
- * reference — the actual fear-greed.service.ts getSignal/getColor/getEmoji functions, extracted
- * verbatim (not rewritten) and run under Node against 19 cases spanning every threshold
- * boundary, with the exact output captured and hardcoded below. This is the closest this session
- * gets to a genuine cross-language parity test, specifically because this piece was small and
- * self-contained enough to make that kind of verification possible — the same standard could not
- * responsibly be applied to SMC/order-flow/volume-profile, which is exactly why those remain
- * unported rather than blindly guessed at.
+ * Verifies FearGreedService.classify against a reference set of 19 cases spanning every
+ * threshold boundary, captured from the original fear-greed.service.ts implementation.
  */
 class FearGreedServiceTest {
 
     private final FearGreedService service = new FearGreedService();
 
     @Test
-    @DisplayName("classify: exact parity with the real TypeScript output across every threshold boundary — verified against a captured Node run, not assumed")
+    @DisplayName("classify: exact parity with the reference implementation's output across every threshold boundary")
     void classify_exactParityWithOriginalTypeScript() {
         assertCase(0, 0, "STRONG_BUY", "Extreme Fear 0 — historically the best time to accumulate. Market panic creates opportunity. ", "#FF3B5C", "Extreme Fear");
         assertCase(15, 10, "STRONG_BUY", "Extreme Fear 15 — historically the best time to accumulate. Market panic creates opportunity. Sentiment recovering (+5).", "#FF3B5C", "Extreme Fear");

@@ -14,21 +14,17 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 /**
- * Review finding ("Frontend authentication migration is incomplete and currently breaks
- * authenticated APIs" -- P0): confirmed real and fixed -- see UserController's own javadoc for
- * the full root-cause explanation (Spring's required @RequestHeader rejects a request with its
- * own 400 before this method's body runs, and the frontend no longer sends that header at all).
- * isAdmin() previously parsed the raw bearer token itself (jwt.getUserId(...)) -- now just looks
- * the already-authenticated userId up directly, since SecurityContext (populated by
- * SecurityConfig's own jwtFilter) has already done the token verification this class doesn't
- * need to repeat.
+ * Administrative operations: dashboard metrics, user/role management, ML dataset and audit-log
+ * export, order/execution tracing, operational health reports, and first-admin bootstrap.
+ *
+ * Admin identity checks look the authenticated userId (from SecurityContext, populated by
+ * SecurityConfig's jwtFilter) up directly via isAdmin() rather than re-parsing a token.
  */
 @RestController
 @RequestMapping("/api/admin")
 @RequiredArgsConstructor
-// Review finding ("@CrossOrigin still has hardcoded localhost origins" -- external review,
-// thirty-fifth pass, P2, full context in NewsController's own identical fix): removed --
-// CorsConfig's own global CorsFilter already covers this endpoint.
+// CORS is handled centrally by CorsConfig's global CorsFilter; no per-controller
+// @CrossOrigin is needed here.
 public class AdminController {
 
     private static final Logger log = LoggerFactory.getLogger(AdminController.class);
@@ -37,102 +33,46 @@ public class AdminController {
     private final UserRepository userRepo;
     private final com.tradevision.service.MLDatasetExportService mlDatasetExportService;
     private final org.springframework.data.mongodb.core.MongoTemplate mongoTemplate;
-    /**
-     * Review finding ("Audit-log retention is two years but not export/archive managed" --
-     * external review, twenty-third pass, P2, full context in exportAuditLog's own javadoc):
-     * needed for the actual export endpoint.
-     */
+    // Backs the audit-log export endpoint.
     private final com.tradevision.repository.BrokerAuditLogRepository auditLogRepo;
-    /**
-     * Review finding ("richer metrics around per-symbol execution latency" -- external review,
-     * P3, confirmed real by direct inspection before this fix: LatencyMetricsService already
-     * has genuinely rich per-symbol/per-strategy-version reporting built -- reportForSymbol,
-     * reportByStrategyVersion, positionLifetimeReport, entryToProtectionReport -- but no
-     * controller anywhere exposed any of it. The metrics existed; nothing surfaced them.
-     */
+    // Provides per-symbol and per-strategy-version execution latency reporting.
     private final com.tradevision.service.LatencyMetricsService latencyMetricsService;
-    /**
-     * Review finding ("exchange rejection taxonomy dashboards" / "automatic broker incident
-     * dashboards" -- external review, P3, full context in the new endpoint's own javadoc):
-     * needed for the taxonomy aggregation.
-     */
+    // Backs the incident taxonomy aggregation (counts by type/severity).
     private final com.tradevision.repository.TradingIncidentRepository tradingIncidentRepo;
-    /**
-     * Review finding ("strategy-versioned execution provenance" -- external review, P3, full
-     * context in the new endpoint's own javadoc): needed for the actual provenance lookup --
-     * orderRepo for the strategy-versioned orders themselves, callRepo to join each order's own
-     * signalId back to its real, resolved outcome.
-     */
+    // orderRepo backs the strategy-versioned execution provenance lookup; callRepo joins each
+    // order's signalId back to its resolved outcome.
     private final com.tradevision.repository.OrderRepository orderRepo;
     private final com.tradevision.repository.TradeCallRepository callRepo;
-    /**
-     * Review finding ("automated reconciliation reports" -- external review, P3, full context
-     * in the new endpoint's own javadoc): needed for the actual report.
-     */
+    // Backs the automated reconciliation report.
     private final com.tradevision.repository.OrphanedOcoRepository orphanedOcoRepo;
-    /**
-     * Review finding ("Recovery metrics need to be first-class" -- external review, thirty-sixth
-     * pass, P2, full context in the new recoveryHealth endpoint below): needed for that endpoint.
-     */
+    // Backs the recovery-health endpoint's protection-attempt metrics.
     private final com.tradevision.repository.ProtectionAttemptRepository protectionAttemptRepo;
-    /**
-     * Review finding ("Incident retry is improved, but external paging still needs production
-     * validation" -- external review, thirty-eighth pass, P1, the review's own explicit ask:
-     * "CRITICAL generated -> notification delivered -> delivery acknowledged -> retry if failed,
-     * tested end-to-end"): needed for the new test-notification endpoint below.
-     */
+    // Drives the test-notification endpoint, which exercises the same incident/delivery code
+    // path used for real trading incidents.
     private final com.tradevision.service.IncidentService incidentService;
     private final com.tradevision.config.TradingHeartbeatService heartbeatService;
-    /**
-     * Review finding ("immutable external audit export" -- external review, P3, full context
-     * in the new verify-chain endpoint's own javadoc): needed to make the hash chain actually
-     * usable by an operator, not just built.
-     */
+    // Verifies the broker audit log's hash chain for tamper detection.
     private final com.tradevision.service.AuditChainService auditChainService;
-    /**
-     * P2-7 fix ("IndexInitializer: BrokerAuditLog TTL 730 days conflicts with AuditChainService's
-     * hash chain" -- full context in AuditChainCheckpoint's own class javadoc): needed so
-     * verifyAuditChain can actually check a queried range's own first record against something,
-     * instead of always trusting whatever record TTL happened to leave as the chain's start.
-     */
+    // Durable checkpoint used so chain verification has a trusted starting point even after
+    // older records have aged out under BrokerAuditLog's TTL.
     private final com.tradevision.repository.AuditChainCheckpointRepository auditChainCheckpointRepo;
-    /**
-     * Review finding ("full event-sourced order ledger" -- external review, P3, confirmed real
-     * by direct inspection before this fix: TradeEvent already exists, already immutable by
-     * construction, already wired into OrderService's own single transition chokepoint -- see
-     * its own class javadoc for the full, already-honest scope disclosure -- but nothing
-     * anywhere exposed it): needed for the actual endpoint making it usable.
-     */
+    // Backs the order-ledger endpoint, exposing each order's/position's full lifecycle event
+    // timeline.
     private final com.tradevision.repository.TradeEventRepository tradeEventRepo;
-    /**
-     * Review finding ("historical replay engine" -- external review, P3, full context in
-     * HistoricalReplayService's own class javadoc): needed for the actual endpoint.
-     */
+    // Replays strategy decision logic over a given candle sequence.
     private final com.tradevision.service.HistoricalReplayService historicalReplayService;
-    /**
-     * User's own explicit architectural request, full context in ExecutionContext's own class
-     * javadoc: needed for the actual query endpoint making this document usable.
-     */
+    // Backs the execution-context lookup endpoint.
     private final com.tradevision.repository.ExecutionContextRepository executionContextRepo;
 
-    // Review finding ("P0 #2" — investigating this turned up that bootstrap() previously read
-    // System.getProperty/System.getenv directly, completely bypassing Spring's configuration —
-    // meaning the application-local/prod.properties split didn't actually apply to this secret
-    // at all. @Value is how every other secret in this codebase is wired; this now matches.
+    // Wired through Spring configuration like every other secret in this codebase, so it
+    // respects the normal application-local/prod.properties override chain.
     @Value("${app.admin.bootstrap-secret}")
     private String bootstrapSecret;
 
-    // Review finding ("Admin bootstrap rate limiter is JVM-local" -- P1): confirmed real --
-    // this JVM-local counter's own original design comment defended it against a DIFFERENT
-    // concern (a JVM restart resetting the count, which is a genuinely acceptable failure mode
-    // for a soft rate limit) but never actually addressed the review's real concern: with N
-    // replicas running simultaneously, each has its OWN independent counter, so the effective
-    // limit across the whole deployment becomes 5*N, not 5. Fixed with a real, atomic, Mongo-
-    // backed counter -- a single fixed-id document, incremented via $inc (the same atomic
-    // building block this codebase's own OTP attempt-limiting and RiskProfile safety-state
-    // fixes already use), so every replica genuinely shares one count. Still explicitly a SOFT
-    // rate limit, not this endpoint's real hard security boundary -- that remains
-    // userRepo.countByRole("ADMIN") > 0 above, checked first and unconditionally.
+    // Soft, deployment-wide cap on bootstrap attempts, backed by an atomic Mongo counter so
+    // every replica shares one count rather than each enforcing its own independent limit. Not
+    // the real security boundary for this endpoint -- that's userRepo.countByRole("ADMIN") > 0
+    // below, which is checked first and unconditionally.
     private static final int MAX_BOOTSTRAP_ATTEMPTS_PER_HOUR = 5;
 
     /** Atomically increments the shared bootstrap-attempt counter and returns the new count,
@@ -160,16 +100,12 @@ public class AdminController {
     }
 
     /**
-     * P2-22 fix ("AdminController.bootstrap: secret compared with String.equals instead of
-     * MessageDigest.isEqual" -- external review, full context in bootstrap's own updated
-     * comment above): a constant-time comparison, deliberately structured so its running time
-     * doesn't depend on WHICH precondition (configured secret missing, caller supplied nothing,
-     * or a genuine mismatch) is the reason for the "no match" result -- MessageDigest.isEqual
-     * itself is only constant-time for two arrays of the SAME length, so a caller-supplied secret
-     * of the wrong length is padded to the configured secret's own length before comparing,
-     * rather than short-circuiting on a length check the way a naive `a.length() != b.length()`
-     * guard would. Package-private (not private) so this is directly unit-testable -- see
-     * AdminControllerTest.
+     * Constant-time comparison of the bootstrap secret, structured so its running time doesn't
+     * depend on which precondition (missing configured secret, no secret supplied, or a genuine
+     * mismatch) produced the "no match" result. MessageDigest.isEqual is only constant-time for
+     * two arrays of the same length, so a caller-supplied secret of the wrong length is padded
+     * to the configured secret's length before comparing, rather than short-circuiting on a
+     * length check first. Package-private so it is directly unit-testable.
      */
     static boolean secretsMatch(String configured, String supplied) {
         if (configured == null || configured.isBlank()) return false;
@@ -232,7 +168,7 @@ public class AdminController {
         }).orElse(ResponseEntity.notFound().build());
     }
 
-    // ── ML dataset export (review item #17, honest scope: export only, no model) ─
+    // ── ML dataset export: raw labeled training data only, no model training here ─
     @GetMapping("/ml-dataset/export")
     public ResponseEntity<?> exportMlDataset(
             @AuthenticationPrincipal String userId,
@@ -245,18 +181,10 @@ public class AdminController {
     }
 
     /**
-     * Review finding ("Audit-log retention is two years but not export/archive managed" --
-     * external review, twenty-third pass, P2, confirmed real by direct inspection before this
-     * fix: the TTL index already correctly deletes BrokerAuditLog records after 730 days, but
-     * nothing let an operator actually extract them first): the actual fix, honestly scoped --
-     * this application can guarantee every record is genuinely extractable in bounded,
-     * paginated form before deletion. It cannot itself provide an "immutable external archive,"
-     * a formal retention policy, or restore-verification tooling -- those are infrastructure and
-     * process decisions belonging to wherever this application is actually operated, not
-     * something this endpoint can fabricate. Whoever owns that process is expected to call this
-     * on a schedule (e.g. a monthly cron pulling everything since the last successful export)
-     * and write the result to their own actual archive storage -- this endpoint is the
-     * extraction primitive that process needs, not the process itself.
+     * Exports broker audit log entries for a date range in bounded, paginated form, so every
+     * record can be extracted before BrokerAuditLog's 730-day TTL deletes it. This is the
+     * extraction primitive; archiving the result to durable external storage on a schedule is
+     * left to whoever operates the deployment.
      */
     @GetMapping("/audit-log/export")
     public ResponseEntity<?> exportAuditLog(
@@ -284,12 +212,10 @@ public class AdminController {
     }
 
     /**
-     * Review finding ("immutable external audit export" -- external review, P3, full context
-     * in AuditChainService's own class javadoc): the actual endpoint making the hash chain
-     * usable -- fetches the given date range (same bounded query the export endpoint above
-     * already uses), reverses it to oldest-first (the order the chain was actually built in),
-     * and verifies it. See AuditChainService.verifyChain's own javadoc for exactly what this
-     * does and does not detect, and this class's own honest concurrent-write limitation.
+     * Verifies the audit log's hash chain over a date range: fetches the range (same bounded
+     * query as the export endpoint), reverses it to oldest-first (the order the chain was built
+     * in), and checks it for tampering or gaps. See AuditChainService.verifyChain for exactly
+     * what this does and does not detect.
      */
     @GetMapping("/audit-log/verify-chain")
     public ResponseEntity<?> verifyAuditChain(
@@ -309,10 +235,9 @@ public class AdminController {
             org.springframework.data.domain.PageRequest.of(0, 2000));
         var oldestFirst = new java.util.ArrayList<>(pageResult.getContent());
         java.util.Collections.reverse(oldestFirst);
-        // P2-7 fix, full context in AuditChainCheckpoint's own class javadoc: passes the durable
-        // checkpoint (if any) so a range whose true earliest records were already trimmed by
-        // BrokerAuditLog's own 730-day TTL is verified against it, rather than always trusting
-        // whatever record happens to be oldest-surviving as an unconditionally valid chain start.
+        // Passes the durable checkpoint (if any) so a range whose true earliest records were
+        // already trimmed by the TTL is verified against it, rather than trusting whatever
+        // record happens to be oldest-surviving as an unconditionally valid chain start.
         var checkpoint = auditChainCheckpointRepo.findById(com.tradevision.model.AuditChainCheckpoint.SINGLETON_ID).orElse(null);
         var result = auditChainService.verifyChain(oldestFirst, checkpoint);
 
@@ -327,15 +252,10 @@ public class AdminController {
     }
 
     /**
-     * Review finding ("full event-sourced order ledger" -- external review, P3, confirmed real
-     * by direct inspection before this fix: TradeEvent already exists -- immutable by
-     * construction, wired into OrderService's own single transition chokepoint, covering every
-     * order-lifecycle state change from ORDER_CREATED through every terminal status -- but
-     * nothing anywhere exposed it. See TradeEvent's own class javadoc for the full, already-
-     * honest scope disclosure -- this covers the order lifecycle specifically, not the earlier
-     * signal-generation/risk-approval stages or position-level events, both tracked separately
-     * elsewhere already): the actual endpoint -- exactly one of orderId or positionId must be
-     * given, returning that entity's own full, ordered event timeline.
+     * Returns the full, ordered lifecycle event timeline for one order or position (exactly one
+     * of orderId/positionId must be given). Covers the order lifecycle from creation through its
+     * terminal status; earlier signal-generation/risk-approval stages and position-level events
+     * are tracked separately.
      */
     @GetMapping("/order-ledger")
     public ResponseEntity<?> orderLedger(
@@ -357,15 +277,10 @@ public class AdminController {
     }
 
     /**
-     * Review finding ("historical replay engine" -- external review, P3, confirmed real by
-     * direct inspection before this fix: ServerSignalEngine.analyze is genuinely pure and
-     * stateless, replayable directly -- but nothing anywhere exposed a way to actually run one):
-     * the actual endpoint. Accepts a raw candle sequence directly in the request body rather
-     * than fetching from a specific broker credential -- keeps this usable from any data source
-     * (a broker's own recent-candle fetch, or a separately-exported historical dataset), not
-     * locked to one specific fetch path. See HistoricalReplayService's own class javadoc for
-     * the honest scope of what this actually replays (strategy decision logic, not real
-     * order-book/fill behavior).
+     * Replays the strategy's signal-decision logic over a given candle sequence, supplied
+     * directly in the request body rather than fetched from a specific broker credential so any
+     * data source (a live fetch or a separately exported historical dataset) can be used. This
+     * replays decision logic only, not real order-book depth, slippage, or fill behavior.
      */
     public record ReplayCandleInput(long time, double open, double high, double low, double close, double volume) {}
     public record ReplayRequest(java.util.List<ReplayCandleInput> candles, int windowSize) {}
@@ -386,13 +301,10 @@ public class AdminController {
     }
 
     // ── Promote first admin via secret header ────────────────
-    // Review finding ("P0 #2" — "You still ship an admin bootstrap secret inside the frontend"):
-    // the frontend leak is fixed (removed entirely, see admin.component.html), but the review's
-    // own fix recommendation went further than that — make bootstrap itself: one-time (refuses
-    // once ANY admin already exists — this should only ever succeed once in a healthy
-    // deployment), rate-limited (a tight global cap on attempts, since brute-forcing the secret
-    // is the actual threat model here), and audited (every attempt, success or failure, logged
-    // with enough context to investigate).
+    // One-time (refuses once any admin already exists -- this should only ever succeed once in
+    // a healthy deployment), rate-limited (brute-forcing the secret is the real threat model
+    // here), and audited (every attempt, success or failure, is logged with enough context to
+    // investigate).
     @PostMapping("/bootstrap")
     public ResponseEntity<?> bootstrap(
             @RequestParam(required = false) String email,
@@ -414,19 +326,10 @@ public class AdminController {
                 .body(ApiResponse.error("Too many bootstrap attempts — try again later."));
         }
 
-        // P2-22 fix ("AdminController.bootstrap: secret compared with String.equals instead of
-        // MessageDigest.isEqual" -- external review, confirmed real by direct inspection):
-        // String.equals short-circuits on the first mismatched character, so how long the
-        // comparison takes leaks (in principle) how many leading characters of a guess were
-        // correct -- exactly the class of side channel MessageDigest.isEqual exists to close via
-        // a constant-time comparison. The per-hour rate limit just above already bounds how many
-        // guesses this endpoint accepts at all, so this is defense-in-depth on top of that, not
-        // the only protection -- still worth closing outright rather than relying solely on the
-        // rate limit. secretsMatch below never short-circuits on the null/blank checks either
-        // (constant-time regardless of which precondition fails), and still runs the actual
-        // constant-time byte comparison against a real byte array of the same length as the
-        // configured secret whenever the caller supplied ANY secret at all, so a request with no
-        // header takes the same code path length as one with a wrong one.
+        // Uses a constant-time comparison rather than String.equals, which short-circuits on the
+        // first mismatched character and so leaks, via timing, how many leading characters of a
+        // guess were correct. The per-hour rate limit above already bounds how many guesses this
+        // endpoint accepts at all; this closes the timing side channel as defense in depth.
         if (!secretsMatch(bootstrapSecret, secret)) {
             log.warn("Admin bootstrap attempt with an incorrect secret. Requested identifier: {}", email != null ? email : mobile);
             return ResponseEntity.status(HttpStatus.FORBIDDEN)
@@ -443,13 +346,12 @@ public class AdminController {
         }
         com.tradevision.model.User u = userOpt.get();
 
-        // Review finding (P1 #7 — full context in BootstrapLock's own javadoc): the actual,
-        // race-proof gate. countByRole above is a fast pre-check for the common case (an
-        // established deployment already has an admin) — this is what closes the real race
-        // window between two simultaneous bootstrap attempts on a genuinely fresh deployment.
-        // MongoDB's own unique _id index makes this atomic: only one concurrent insert of a
-        // document with this exact fixed id can ever succeed, database-side, regardless of how
-        // many application instances (or threads within one) are racing for it.
+        // Race-proof gate: countByRole above is a fast pre-check for the common case (an
+        // established deployment already has an admin), but this insert is what closes the real
+        // race window between two simultaneous bootstrap attempts on a genuinely fresh
+        // deployment. MongoDB's unique _id index makes this atomic -- only one concurrent insert
+        // of a document with this exact fixed id can ever succeed, database-side, regardless of
+        // how many application instances or threads are racing for it.
         try {
             mongoTemplate.insert(new com.tradevision.model.BootstrapLock(u.getId()));
         } catch (org.springframework.dao.DuplicateKeyException e) {
@@ -458,21 +360,13 @@ public class AdminController {
                 .body(ApiResponse.error("Another bootstrap request already succeeded first. This deployment now has an administrator — ask them to promote you instead."));
         }
 
-        // Review finding ("Admin bootstrap is still vulnerable to permanent lockout after DB
-        // failure" -- external review, twenty-sixth pass, P1, confirmed real by direct
-        // inspection before this fix: the BootstrapLock insert above and this save() are two
-        // separate, non-atomic operations -- if save() fails, the lock already exists but no
-        // admin was ever actually promoted, and every future bootstrap attempt would then fail
-        // with a duplicate-key error against a lock that never actually accomplished anything):
-        // the actual fix -- if promotion fails, roll back the lock so a retry can succeed
-        // later, rather than leaving a permanent, silent lockout. A full Mongo transaction
-        // would be the more complete fix, but this application cannot assume transaction
-        // support is available on every deployment (see IndexInitializer.
-        // checkMongoTransactionSupport's own javadoc) -- this rollback-on-failure approach works
-        // regardless of that, at the honest cost of a narrow window (between save() failing and
-        // this rollback completing) where the lock briefly still exists for no reason; that
-        // window is far narrower and far less consequential than the permanent lockout it
-        // replaces.
+        // The BootstrapLock insert above and this save() are two separate, non-atomic
+        // operations, so if the save fails, the lock must be rolled back here -- otherwise it
+        // would sit there permanently, failing every future bootstrap attempt with a duplicate
+        // key error even though no admin was ever actually promoted. A full Mongo transaction
+        // would be the cleaner fix, but this application cannot assume transaction support is
+        // available on every deployment, so rollback-on-failure is used instead, at the cost of
+        // a narrow window where the lock briefly exists for no reason.
         try {
             u.setRole("ADMIN");
             userRepo.save(u);
@@ -497,10 +391,9 @@ public class AdminController {
     }
 
     /**
-     * Review finding ("richer metrics around per-symbol execution latency" -- external review,
-     * P3, full context in latencyMetricsService's own updated field javadoc): the actual
-     * endpoint. symbol is optional -- omit it for an all-symbols report, same behavior
-     * reportForSymbol itself already has for a null symbol.
+     * Reports execution latency (order-entry stages, position lifetime, entry-to-protection
+     * timing, optionally broken out by strategy version). symbol is optional -- omit it for an
+     * all-symbols report.
      */
     @GetMapping("/latency-report")
     public ResponseEntity<?> latencyReport(
@@ -526,26 +419,12 @@ public class AdminController {
     }
 
     /**
-     * Review finding ("exchange rejection taxonomy dashboards" / "automatic broker incident
-     * dashboards" -- external review, P3, confirmed real by direct inspection before this fix:
-     * TradingIncident already carries a real type/severity taxonomy on every record -- see its
-     * own class javadoc for the full type list -- but nothing anywhere aggregated it into a
-     * view an operator could actually use): the actual endpoint. Aggregates real incidents by
-     * type and by severity over a bounded window, plus an unresolved count per type -- the
-     * "what kinds of failures are happening, and how often, and are they still open" view this
-     * review item asks for.
-     */
-    /**
-     * Review finding ("some admin reports are potentially expensive" -- external review,
-     * twenty-sixth pass, P2, confirmed real by direct inspection before this fix: this used to
-     * load every incident in the window into application memory via findByCreatedAtAfter, then
-     * group/count with Java streams -- fine at today's scale, but a real problem once this
-     * collection reaches millions of documents, exactly as the review says): the actual fix --
-     * three real MongoDB aggregation pipelines (byType, bySeverity, unresolvedByType), each
-     * doing its own match+group+count entirely inside the database. Only the already-small,
-     * already-grouped result sets (one row per distinct type/severity, never one row per
-     * incident) are ever pulled into this application's own memory, regardless of how many raw
-     * incidents exist in the window.
+     * Aggregates trading incidents by type and by severity over a bounded window, plus an
+     * unresolved count per type -- the "what kinds of failures are happening, how often, and
+     * are they still open" operator view. Uses three MongoDB aggregation pipelines (byType,
+     * bySeverity, unresolvedByType) that match+group+count entirely inside the database, so
+     * only the small, already-grouped result sets (one row per distinct type/severity) are ever
+     * pulled into application memory, regardless of how many raw incidents exist in the window.
      */
     record GroupCount(String id, long count) {}
 
@@ -598,14 +477,9 @@ public class AdminController {
     }
 
     /**
-     * Review finding ("strategy-versioned execution provenance" -- external review, P3,
-     * confirmed real by direct inspection before this fix: Order.strategyVersion is genuinely
-     * populated on every order, but nothing anywhere let an operator trace which specific orders
-     * a given strategy version produced or how they actually performed): the actual lookup --
-     * every order for the given strategyVersion, joined to its own real, resolved outcome
-     * (where one exists) via signalId. Bounded to the most recent `limit` orders (capped at
-     * 500), same "bounded, paginated, never a raw findAll-style read" discipline this session
-     * has applied everywhere else.
+     * Traces every order produced by a given strategy version, joined to its resolved outcome
+     * (where one exists) via signalId, so an operator can see how that version actually
+     * performed. Bounded to the most recent `limit` orders (capped at 500).
      */
     @GetMapping("/execution-provenance")
     public ResponseEntity<?> executionProvenance(
@@ -641,16 +515,11 @@ public class AdminController {
     }
 
     /**
-     * Review finding ("automated reconciliation reports" -- external review, P3, confirmed real
-     * by direct inspection before this fix: reconciliation itself already runs on a schedule,
-     * already raises real incidents and creates real OrphanedOco records for anything genuinely
-     * wrong -- but nothing anywhere summarized what actually happened across those passes into
-     * something an operator could read at a glance): the actual report -- orphaned-OCO activity
-     * (found/resolved) and reconciliation-relevant incident types, both over a bounded window,
-     * alongside the real timestamp of the last completed reconciliation cycle. This does NOT
-     * instrument doReconcile() itself (a large, already heavily-modified method this session) --
-     * it's built entirely from data reconciliation already durably records elsewhere, the safer
-     * of the two ways to get a real report without risking that core logic.
+     * Summarizes recent reconciliation activity for an operator at a glance: orphaned-OCO
+     * activity (found/resolved) and reconciliation-relevant incident types over a bounded
+     * window, plus the timestamp of the last completed reconciliation cycle. Built entirely from
+     * data reconciliation already durably records elsewhere, rather than instrumenting the
+     * reconciliation pass itself.
      */
     @GetMapping("/reconciliation-report")
     public ResponseEntity<?> reconciliationReport(
@@ -681,13 +550,11 @@ public class AdminController {
     }
 
     /**
-     * User's own explicit architectural request, full context in ExecutionContext's own class
-     * javadoc: "Then if something crashes, executionId is enough to reconstruct the entire
-     * operation." The actual endpoint making that true -- accepts exactly one of executionId,
-     * signalId, or positionId, returning the matching ExecutionContext(s) as a list for
-     * consistency (an executionId lookup can only ever match one document, since it's the
-     * primary key, but signalId/positionId could in principle match more than one -- a signal
-     * re-evaluated after a recovery pass, for instance -- so this never silently picks one).
+     * Looks up execution context by exactly one of executionId, signalId, or positionId, so a
+     * crashed operation can be reconstructed from its recorded context. Always returns a list,
+     * since an executionId lookup can only ever match one document (it's the primary key), but
+     * signalId/positionId could in principle match more than one -- a signal re-evaluated after
+     * a recovery pass, for instance.
      */
     @GetMapping("/execution-context")
     public ResponseEntity<?> executionContext(
@@ -717,16 +584,10 @@ public class AdminController {
     }
 
     /**
-     * Review finding ("Recovery metrics need to be first-class" -- external review, thirty-sixth
-     * pass, P2, the review's own explicit ask: "I want metrics for: ProtectionAttempt age,
-     * OrphanedOco age... recovery action count, manual-escalation rate, critical incidents...
-     * Especially: oldest unresolved protection attempt, oldest unresolved orphan. Those should
-     * appear directly in ops health"): the actual endpoint. Scoped honestly to what's genuinely
-     * derivable from existing, already-queryable data without new instrumentation --
-     * ProtectionAttempt/OrphanedOco ages and counts, escalation counts, and a bounded recent
-     * critical-incident count. Explicitly NOT included here (would need new timing
-     * instrumentation added at the actual event-processing sites, a separate, larger change):
-     * reconciliation lag, WS-to-OMS lag, WS-to-Position lag, and recovery-duration timing.
+     * Snapshot of recovery health: ProtectionAttempt/OrphanedOco ages and counts, manual
+     * escalation rate, and a bounded recent critical-incident count, derived entirely from
+     * existing queryable data. Does not include reconciliation lag or other latency metrics
+     * that would need new timing instrumentation at the event-processing sites.
      */
     @GetMapping("/recovery-health")
     public ResponseEntity<?> recoveryHealth(@AuthenticationPrincipal String userId) {
@@ -764,23 +625,12 @@ public class AdminController {
     }
 
     /**
-     * Review finding ("Incident retry is improved, but external paging still needs production
-     * validation" -- external review, thirty-eighth pass, P1, the review's own explicit ask: "A
-     * Mongo record saying CRITICAL, notificationStatus = PENDING doesn't help if nobody receives
-     * the page. So the production runbook needs: CRITICAL generated -> notification delivered ->
-     * delivery acknowledged -> retry if failed, tested end-to-end"): the actual tool an operator
-     * needs to run that validation against their own real, production notification provider
-     * (Brevo, their own webhook endpoint) -- something this sandbox genuinely cannot do itself,
-     * since it has no network path to any real email/webhook provider and no way to confirm a
-     * human actually received anything. What this endpoint CAN do: raise a real, genuine
-     * CRITICAL incident through the exact same code path every real trading incident uses
-     * (IncidentService.raiseCritical -> attemptDelivery, the same method IncidentRetryService's
-     * own scheduled pass reuses for retries), then report back this application's OWN view of
-     * the outcome (notificationStatus, attempt count) immediately. That's the "delivered" half
-     * of the review's own chain -- the operator's own job is the "acknowledged" half: check the
-     * admin's own real email inbox and webhook endpoint receiver to confirm the test notification
-     * actually arrived. This endpoint deliberately does not, and cannot, do that confirmation
-     * step itself.
+     * Raises a real CRITICAL incident through the same code path every real trading incident
+     * uses (IncidentService.raiseCritical -> attemptDelivery), so an operator can validate
+     * end-to-end delivery against the deployment's real notification provider. Reports back this
+     * application's own view of the delivery outcome (status, attempt count) immediately;
+     * confirming the notification actually arrived in an inbox or webhook receiver is the
+     * operator's own follow-up step.
      */
     @PostMapping("/test-notification")
     public ResponseEntity<?> testNotification(@AuthenticationPrincipal String userId) {

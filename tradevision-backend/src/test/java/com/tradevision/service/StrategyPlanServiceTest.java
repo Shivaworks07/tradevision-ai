@@ -61,7 +61,7 @@ class StrategyPlanServiceTest {
     }
 
     @Test
-    @DisplayName("getOrCreateDefaultPlan: with no default plan yet, creates one that exactly mirrors the credential's existing RiskProfile settings -- the actual migration guarantee (\"make it default\" / \"upgrading is a no-op\")")
+    @DisplayName("getOrCreateDefaultPlan: with no default plan yet, creates one that exactly mirrors the credential's existing RiskProfile settings")
     void getOrCreateDefaultPlan_noneExists_migratesFromRiskProfile() {
         when(strategyPlanRepo.findByCredentialIdAndDefaultPlanTrue("cred1")).thenReturn(Optional.empty());
         RiskProfile profile = new RiskProfile();
@@ -102,7 +102,7 @@ class StrategyPlanServiceTest {
     }
 
     @Test
-    @DisplayName("validateDirectionForMarket: SHORT is rejected for a Binance (spot) credential -- the user's own explicit requirement (\"TradeVision shouldn't generate a SHORT order on an account that cannot actually short\")")
+    @DisplayName("validateDirectionForMarket: SHORT is rejected for a Binance (spot) credential, which cannot actually short")
     void validateDirectionForMarket_shortOnBinance_rejected() {
         assertThatThrownBy(() -> service.validateDirectionForMarket(TradeDirection.SHORT, credential))
             .isInstanceOf(IllegalArgumentException.class);
@@ -276,7 +276,7 @@ class StrategyPlanServiceTest {
     }
 
     @Test
-    @DisplayName("isWithinSession: an invalid timezone string now fails CLOSED (returns false) -- the actual review fix (\"misconfigured session fails OPEN\"), since for a real-money system a malformed session must never accidentally bypass a user's own trading boundary")
+    @DisplayName("isWithinSession: an invalid timezone string fails CLOSED (returns false), since for a real-money system a malformed session must never accidentally bypass a user's own trading boundary")
     void isWithinSession_invalidTimezone_failsClosed() {
         var plan = new StrategyPlan();
         plan.setSessionMode(com.tradevision.model.SessionMode.DAILY);
@@ -288,7 +288,7 @@ class StrategyPlanServiceTest {
     }
 
     @Test
-    @DisplayName("isSessionConfigValid: an invalid timezone is correctly identified as invalid config, distinct from \"valid config, currently outside the window\" -- the actual distinction the review's own end-of-session fix depends on")
+    @DisplayName("isSessionConfigValid: an invalid timezone is correctly identified as invalid config, distinct from \"valid config, currently outside the window\"")
     void isSessionConfigValid_invalidTimezone_false() {
         var plan = new StrategyPlan();
         plan.setSessionMode(com.tradevision.model.SessionMode.DAILY);
@@ -300,7 +300,7 @@ class StrategyPlanServiceTest {
     }
 
     @Test
-    @DisplayName("isSessionConfigValid: CUSTOM_DAYS with an empty sessionDays set is invalid config -- the actual review fix (\"Session configuration validation needs strengthening\")")
+    @DisplayName("isSessionConfigValid: CUSTOM_DAYS with an empty sessionDays set is invalid config")
     void isSessionConfigValid_customDaysEmptySet_false() {
         var plan = new StrategyPlan();
         plan.setSessionMode(com.tradevision.model.SessionMode.CUSTOM_DAYS);
@@ -333,7 +333,7 @@ class StrategyPlanServiceTest {
     }
 
     @Test
-    @DisplayName("isWithinSession: an overnight session (start > end, e.g. 22:00 -> 02:00) is now correctly evaluated as spanning midnight -- the actual review fix (\"midnight-crossing sessions\"). Time-independent by construction: covers 23 of 24 hours, excluding only a 1-minute window, so this passes regardless of when the test actually runs")
+    @DisplayName("isWithinSession: an overnight session (start > end, e.g. 22:00 -> 02:00) is correctly evaluated as spanning midnight. Time-independent by construction: covers 23 of 24 hours, excluding only a 1-minute window, so this passes regardless of when the test actually runs")
     void isWithinSession_overnightSessionCoveringNearlyFullDay_true() {
         var plan = new StrategyPlan();
         plan.setSessionMode(com.tradevision.model.SessionMode.DAILY);
@@ -345,7 +345,7 @@ class StrategyPlanServiceTest {
     }
 
     @Test
-    @DisplayName("validateSessionConfig (via create): rejects a DAILY plan missing sessionStart -- the actual review fix (\"Validate session fields at API boundary\"), catching a broken config before it's ever saved rather than relying on isSessionConfigValid's own runtime fail-closed handling")
+    @DisplayName("validateSessionConfig (via create): rejects a DAILY plan missing sessionStart, catching a broken config before it's ever saved rather than relying on isSessionConfigValid's own runtime fail-closed handling")
     void create_dailyModeMissingSessionStart_rejected() {
         credential.setUserId("user1");
         var req = new com.tradevision.dto.StrategyPlanRequest();
@@ -409,7 +409,7 @@ class StrategyPlanServiceTest {
     }
 
     @Test
-    @DisplayName("getEnabledPlans: when NO plan has ever existed for this credential, creates and returns the default plan -- the genuine migration case")
+    @DisplayName("getEnabledPlans: when NO plan has ever existed for this credential, creates and returns the default plan")
     void getEnabledPlans_noPlanEverExisted_createsDefault() {
         when(strategyPlanRepo.findByCredentialId("cred1")).thenReturn(List.of());
         when(strategyPlanRepo.findByCredentialIdAndDefaultPlanTrue("cred1")).thenReturn(Optional.empty());
@@ -423,7 +423,7 @@ class StrategyPlanServiceTest {
     }
 
     @Test
-    @DisplayName("getEnabledPlans: when plans exist but the user has disabled ALL of them (including a disabled default), returns an EMPTY list -- the actual review fix (\"disabling all plans can still cause the default plan to be returned\"), never silently falling back to a plan the user deliberately turned off")
+    @DisplayName("getEnabledPlans: when plans exist but the user has disabled ALL of them (including a disabled default), returns an EMPTY list, never silently falling back to a plan the user deliberately turned off")
     void getEnabledPlans_allPlansDisabledIncludingDefault_returnsEmpty() {
         StrategyPlan disabledDefault = new StrategyPlan();
         disabledDefault.setId("plan1"); disabledDefault.setDefaultPlan(true); disabledDefault.setEnabled(false);
@@ -434,8 +434,8 @@ class StrategyPlanServiceTest {
         var result = service.getEnabledPlans("cred1");
 
         assertThat(result).isEmpty();
-        // Confirms the actual bug this test targets is closed: getOrCreateDefaultPlan's own
-        // create path must never be reached when plans already exist, even if all disabled.
+        // getOrCreateDefaultPlan's own create path must never be reached when plans already
+        // exist, even if all disabled.
         verify(strategyPlanRepo, never()).save(any());
     }
 
@@ -460,7 +460,7 @@ class StrategyPlanServiceTest {
     }
 
     @Test
-    @DisplayName("authorizeExecution: a plan that no longer exists (deleted) is denied -- the actual review fix, closing the case where planId is trusted as bare metadata")
+    @DisplayName("authorizeExecution: a plan that no longer exists (deleted) is denied -- planId is never trusted as bare metadata")
     void authorizeExecution_planDeleted_denied() {
         when(strategyPlanRepo.findById("plan1")).thenReturn(Optional.empty());
 
@@ -470,7 +470,7 @@ class StrategyPlanServiceTest {
     }
 
     @Test
-    @DisplayName("authorizeExecution: a plan belonging to a DIFFERENT user is denied -- the actual review fix (\"Plan ownership must be verified at execution\"), never trusting signal.planId as a bare security boundary")
+    @DisplayName("authorizeExecution: a plan belonging to a DIFFERENT user is denied -- plan ownership is verified at execution, never trusting signal.planId as a bare security boundary")
     void authorizeExecution_ownershipMismatch_denied() {
         var plan = new StrategyPlan();
         plan.setId("plan1"); plan.setUserId("someone-else"); plan.setCredentialId("cred1"); plan.setEnabled(true);
@@ -494,7 +494,7 @@ class StrategyPlanServiceTest {
     }
 
     @Test
-    @DisplayName("authorizeExecution: a DISABLED plan is denied -- the actual review fix (\"Plan OFF ... is not enforced at the final execution gate\")")
+    @DisplayName("authorizeExecution: a DISABLED plan is denied at the final execution gate")
     void authorizeExecution_disabledPlan_denied() {
         var plan = new StrategyPlan();
         plan.setId("plan1"); plan.setUserId("user1"); plan.setCredentialId("cred1"); plan.setEnabled(false);
@@ -506,7 +506,7 @@ class StrategyPlanServiceTest {
     }
 
     @Test
-    @DisplayName("authorizeExecution: a plan outside its own currently-open session is denied -- the actual review fix (\"session changes are not enforced at the final execution gate\")")
+    @DisplayName("authorizeExecution: a plan outside its own currently-open session is denied at the final execution gate")
     void authorizeExecution_outsideSession_denied() {
         var plan = new StrategyPlan();
         plan.setId("plan1"); plan.setUserId("user1"); plan.setCredentialId("cred1"); plan.setEnabled(true);
@@ -534,7 +534,7 @@ class StrategyPlanServiceTest {
     }
 
     @Test
-    @DisplayName("authorizeExecution: a symbol not in the plan's own fixed universe AND not TIER1 AND with dynamic universe disabled is denied -- the actual review fix (\"Dynamic Universe is disconnected from the execution gate\"), the actual P0: a symbol must be traceable to THIS plan's own real universe")
+    @DisplayName("authorizeExecution: a symbol not in the plan's own fixed universe AND not TIER1 AND with dynamic universe disabled is denied -- a symbol must be traceable to THIS plan's own real universe")
     void authorizeExecution_symbolNotInPlanUniverse_denied() {
         var plan = new StrategyPlan();
         plan.setId("plan1"); plan.setUserId("user1"); plan.setCredentialId("cred1"); plan.setEnabled(true);
@@ -550,7 +550,7 @@ class StrategyPlanServiceTest {
     }
 
     @Test
-    @DisplayName("authorizeExecution: a symbol legitimately discovered by the plan's own dynamic universe IS authorized -- the actual core review fix, closing the exact gap named (\"Dynamic Universe discovers coins, but they still have to be manually present in the legacy Risk Profile symbol list\")")
+    @DisplayName("authorizeExecution: a symbol legitimately discovered by the plan's own dynamic universe IS authorized, even if not manually present in the legacy Risk Profile symbol list")
     void authorizeExecution_symbolInDynamicUniverse_allowed() {
         var plan = new StrategyPlan();
         plan.setId("plan1"); plan.setUserId("user1"); plan.setCredentialId("cred1"); plan.setEnabled(true);
@@ -564,7 +564,7 @@ class StrategyPlanServiceTest {
     }
 
     @Test
-    @DisplayName("P1-6: a TIER1 symbol is authorized when the account's own risk profile has ALSO explicitly enabled it -- TIER1 membership is one candidate source among several, not a free pass on its own")
+    @DisplayName("authorizeExecution: a TIER1 symbol is authorized when the account's own risk profile has ALSO explicitly enabled it -- TIER1 membership is one candidate source among several, not a free pass on its own")
     void authorizeExecution_tier1Symbol_allowed() {
         var plan = new StrategyPlan();
         plan.setId("plan1"); plan.setUserId("user1"); plan.setCredentialId("cred1"); plan.setEnabled(true);
@@ -576,7 +576,7 @@ class StrategyPlanServiceTest {
     }
 
     @Test
-    @DisplayName("P1-6: \"Plan symbol universe always includes BTC/ETH/SOL/BNB/XRP; profile symbol whitelist ignored when a plan exists\" -- a TIER1 symbol the account's own risk profile never explicitly enabled is now DENIED, even though a plan exists and TIER1 is still scanned. This is the actual review fix: a user who configured \"only ADAUSDT\" must never have BTC/ETH/SOL/BNB/XRP execute with real money just because they're TIER1.")
+    @DisplayName("authorizeExecution: a TIER1 symbol the account's own risk profile never explicitly enabled is DENIED, even though a plan exists and TIER1 is still scanned -- a user who configured \"only ADAUSDT\" must never have BTC/ETH/SOL/BNB/XRP execute with real money just because they're TIER1")
     void authorizeExecution_tier1SymbolNotInProfileWhitelist_denied() {
         var plan = new StrategyPlan();
         plan.setId("plan1"); plan.setUserId("user1"); plan.setCredentialId("cred1"); plan.setEnabled(true);
@@ -613,7 +613,7 @@ class StrategyPlanServiceTest {
     }
 
     @Test
-    @DisplayName("claimPlanExecution: when the atomic findAndModify matches (ownership, credential, enabled, and version all still line up), the claim succeeds -- the actual review fix (\"Strategy Plan disable vs execution is still technically non-atomic\")")
+    @DisplayName("claimPlanExecution: when the atomic findAndModify matches (ownership, credential, enabled, and version all still line up), the claim succeeds")
     void claimPlanExecution_findAndModifyMatches_succeeds() {
         var updatedPlan = new StrategyPlan();
         when(mongoTemplate.findAndModify(any(), any(), any(), eq(StrategyPlan.class))).thenReturn(updatedPlan);
@@ -624,7 +624,7 @@ class StrategyPlanServiceTest {
     }
 
     @Test
-    @DisplayName("claimPlanExecution: when the plan's own current version no longer matches (edited/disabled since the signal was generated), findAndModify matches nothing and the claim atomically fails -- this is the actual race the review named, now closed")
+    @DisplayName("claimPlanExecution: when the plan's own current version no longer matches (edited/disabled since the signal was generated), findAndModify matches nothing and the claim atomically fails")
     void claimPlanExecution_versionMismatch_fails() {
         when(mongoTemplate.findAndModify(any(), any(), any(), eq(StrategyPlan.class))).thenReturn(null);
 

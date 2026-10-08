@@ -27,35 +27,26 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
 /**
- * Review finding ("Auth hardening" -- "access token still in localStorage, not HttpOnly
- * cookies"): tests the actual dual-mode cookie fix -- see AuthController's own javadoc for the
- * full design rationale (dual-mode not a hard cutover, why SameSite=Strict is the right choice
- * given this frontend and API share the same site). No test file existed for this controller or
- * for SecurityConfig before this session; this closes that gap for the controller side, in the
- * same plain-Mockito-unit-test style already established throughout this codebase's other tests
- * (no MockMvc/Spring context loading anywhere else here, so none introduced here either).
+ * Tests the dual-mode cookie design -- see AuthController's own javadoc for the full design
+ * rationale (dual-mode not a hard cutover, why SameSite=Strict is the right choice given this
+ * frontend and API share the same site), in the same plain-Mockito-unit-test style already
+ * established throughout this codebase's other tests (no MockMvc/Spring context loading
+ * anywhere else here, so none introduced here either).
  *
- * HONEST LIMITATION, stated rather than left implicit: this test file could not actually be
- * compiled or run against the real Spring Framework in this development sandbox -- Maven
- * Central is blocked here (confirmed earlier this session, same reason pom.xml dependencies
- * can't be downloaded), so there's no real spring-web jar available to produce an actual
- * ResponseCookie instance. To reduce that gap as far as this sandbox allows: built a
- * spec-compliant stand-in of ResponseCookie (matching RFC 6265's own Set-Cookie serialization
- * format, which is Spring's own documented contract for this class) and ran this file's exact
- * setAuthCookies()/clearAuthCookies() logic against it -- every assertion below passed against
- * that realistic output. That's stronger evidence than an untested assumption, but it is still
- * not the same guarantee as running against the real jar, and that distinction is stated here
- * plainly rather than left implicit. Whoever runs this in a real Maven build should confirm it
- * passes before relying on it, the same disclosure OrderFlowService's own javadoc makes about
- * its own unverified live HTTP fetching.
+ * LIMITATION: this test file could not actually be compiled or run against the real Spring
+ * Framework in this development sandbox -- Maven Central is blocked here, so there's no real
+ * spring-web jar available to produce an actual ResponseCookie instance. To reduce that gap as
+ * far as this sandbox allows: built a spec-compliant stand-in of ResponseCookie (matching RFC
+ * 6265's own Set-Cookie serialization format, which is Spring's own documented contract for
+ * this class) and ran this file's exact setAuthCookies()/clearAuthCookies() logic against it --
+ * every assertion below passed against that realistic output. That's stronger evidence than an
+ * untested assumption, but it is still not the same guarantee as running against the real jar.
+ * Whoever runs this in a real Maven build should confirm it passes before relying on it.
  *
- * UPDATED for a second, related regression ("Frontend authentication migration is incomplete
- * and currently breaks authenticated APIs" -- P0): logout() itself was changed from
- * @RequestHeader to @AuthenticationPrincipal (see its own updated javadoc in AuthController for
- * why the request-wrapper design this file's tests originally exercised no longer exists), so
- * its test below now passes an already-resolved userId directly rather than a Bearer-prefixed
- * token string parsed via a mocked JwtUtil -- matching what @AuthenticationPrincipal actually
- * hands the controller at runtime.
+ * logout() uses @AuthenticationPrincipal rather than @RequestHeader, so its test below passes
+ * an already-resolved userId directly rather than a Bearer-prefixed token string parsed via a
+ * mocked JwtUtil -- matching what @AuthenticationPrincipal actually hands the controller at
+ * runtime.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -108,7 +99,7 @@ class AuthControllerTest {
     }
 
     @Test
-    @DisplayName("verifyLogin: after cookies are set, the SAME TokenResponse object that becomes the JSON response body no longer contains the access or refresh token -- the actual review fix (\"Remove dual token issuance (body + cookie) once frontend is fully cookie-only\"), confirmed against the exact object ResponseEntity.ok(result) would serialize, not a separate one")
+    @DisplayName("verifyLogin: after cookies are set, the SAME TokenResponse object that becomes the JSON response body no longer contains the access or refresh token -- dual token issuance (body + cookie) is removed once the frontend is cookie-only, confirmed against the exact object ResponseEntity.ok(result) would serialize, not a separate one")
     void verifyLogin_success_stripsTokensFromResponseBody() {
         OtpVerifyRequest req = new OtpVerifyRequest();
         req.setEmail("trader@example.com");
@@ -137,11 +128,8 @@ class AuthControllerTest {
     }
 
     /**
-     * Review finding ("Current authentication architecture still allows refresh-token
-     * submission through request body" -- external review, twenty-second pass, P1, full context
-     * in AuthController.refresh's own updated javadoc): this test used to verify the body-based
-     * path took precedence over the cookie -- that path no longer exists at all, so this is
-     * rewritten to verify the actual, current, cookie-only behavior instead.
+     * Verifies the current, cookie-only behavior -- refresh tokens are never accepted through
+     * the request body.
      */
     @Test
     @DisplayName("refresh: uses the cookie's refresh token -- the only source this endpoint accepts now")
@@ -207,16 +195,15 @@ class AuthControllerTest {
     }
 
     /**
-     * Audit item P1-6 ("Shared-IP users can be locked out of login/OTP by other users' activity
-     * on the same IP" -- full context in AuthController.maxOtpRequestsPerIpPerWindow's own
-     * updated field javadoc): confirms the per-IP thresholds are now real @Value-injected,
-     * per-deployment-configurable fields (not hardcoded constants) with substantially raised
-     * defaults, so an operator behind a known large shared-IP population can tune them without a
-     * code change, and normal shared-IP traffic volumes don't collaterally trip the old 20/hour
-     * and 30/hour hardcoded limits.
+     * Confirms the per-IP thresholds are real @Value-injected, per-deployment-configurable
+     * fields (not hardcoded constants) with substantially raised defaults, so an operator
+     * behind a known large shared-IP population can tune them without a code change, and
+     * normal shared-IP traffic volumes don't collaterally trip a low hardcoded limit --
+     * avoiding shared-IP users being locked out of login/OTP by other users' activity on the
+     * same IP.
      */
     @Test
-    @DisplayName("P1-6: per-IP OTP and account-check thresholds are @Value-injected fields (configurable per deployment), with raised defaults -- not the old hardcoded 20/hour and 30/hour constants")
+    @DisplayName("per-IP OTP and account-check thresholds are @Value-injected fields (configurable per deployment), with raised defaults")
     void perIpThresholds_areConfigurableFieldsWithRaisedDefaults() throws Exception {
         Field otpField = AuthController.class.getDeclaredField("maxOtpRequestsPerIpPerWindow");
         assertThat(otpField.getAnnotation(org.springframework.beans.factory.annotation.Value.class).value())
@@ -228,10 +215,7 @@ class AuthControllerTest {
     }
 
     /**
-     * Review finding ("Authentication endpoints need stronger abuse controls -- IP-level rate
-     * limiting" -- external review, twenty-third pass, P2, full context in
-     * distributedRateLimitService's own updated field javadoc): the actual tests for the new
-     * check.
+     * Tests for IP-level rate limiting on the authentication endpoints.
      */
     @Test
     @DisplayName("initLogin: within the per-IP rate limit, proceeds normally")
@@ -271,17 +255,13 @@ class AuthControllerTest {
     }
 
     /**
-     * P2-9 fix ("ProxyController.rateLimited / AuthController.clientIp: trust-forwarded-for=false
-     * by default; behind a LB all users share one IP -> 20 OTP/h global" -- external review, full
-     * context in ClientIpResolver's own class javadoc): the actual review-required test -- "Two
-     * IPs behind proxy counted separately." With trustForwardedFor enabled AND the request's real
-     * remote address inside a configured trusted-proxy CIDR, two different X-Forwarded-For client
-     * IPs get their own independent rate-limit buckets, rather than both being collapsed onto the
-     * shared load balancer IP a bare trustForwardedFor=false (or an untrusted remote address)
-     * would report instead.
+     * With trustForwardedFor enabled AND the request's real remote address inside a configured
+     * trusted-proxy CIDR, two different X-Forwarded-For client IPs get their own independent
+     * rate-limit buckets, rather than both being collapsed onto the shared load balancer IP a
+     * bare trustForwardedFor=false (or an untrusted remote address) would report instead.
      */
     @Test
-    @DisplayName("initLogin: two different clients behind the same trusted load balancer are rate-limited by their own X-Forwarded-For IP, not the shared LB IP -- the actual review fix (\"trust-forwarded-for=false by default; behind a LB all users share one IP\")")
+    @DisplayName("initLogin: two different clients behind the same trusted load balancer are rate-limited by their own X-Forwarded-For IP, not the shared LB IP")
     void initLogin_behindTrustedProxy_countsTwoClientIpsSeparately() throws Exception {
         Field trustField = AuthController.class.getDeclaredField("trustForwardedFor");
         trustField.setAccessible(true);
@@ -311,7 +291,7 @@ class AuthControllerTest {
     }
 
     @Test
-    @DisplayName("initLogin: X-Forwarded-For from a remote address OUTSIDE the configured trusted-proxy CIDRs is never honored, even with trustForwardedFor enabled -- the actual fix for the all-or-nothing spoofing gap (\"X-Forwarded-For is potentially spoofable\")")
+    @DisplayName("initLogin: X-Forwarded-For from a remote address OUTSIDE the configured trusted-proxy CIDRs is never honored, even with trustForwardedFor enabled -- closes the all-or-nothing spoofing gap")
     void initLogin_untrustedRemoteAddress_ignoresForwardedForEvenWhenEnabled() throws Exception {
         Field trustField = AuthController.class.getDeclaredField("trustForwardedFor");
         trustField.setAccessible(true);
@@ -335,11 +315,10 @@ class AuthControllerTest {
     }
 
     /**
-     * P2-11 fix ("AuthController.checkEmail/checkMobile: unauthenticated, unthrottled account
-     * enumeration" -- external review, full context in AuthController's own updated javadoc):
-     * the actual review-required "Throttle test" -- confirms both endpoints are now genuinely
-     * rate-limited per IP and reject with 429 once exceeded, never reaching AuthService (and
-     * therefore never leaking the registered:true/false result) once the limit is hit.
+     * Confirms both endpoints are genuinely rate-limited per IP and reject with 429 once
+     * exceeded, never reaching AuthService (and therefore never leaking the
+     * registered:true/false result) once the limit is hit -- closing an unauthenticated,
+     * unthrottled account enumeration gap.
      */
     @Test
     @DisplayName("checkEmail: within the per-IP rate limit, proceeds normally")
@@ -355,7 +334,7 @@ class AuthControllerTest {
     }
 
     @Test
-    @DisplayName("checkEmail: once the per-IP rate limit is exceeded, returns 429 and never even reaches AuthService.checkEmail -- the actual review fix (\"unauthenticated, unthrottled account enumeration\")")
+    @DisplayName("checkEmail: once the per-IP rate limit is exceeded, returns 429 and never even reaches AuthService.checkEmail")
     void checkEmail_rateLimitExceeded_returns429WithoutCallingAuthService() {
         when(distributedRateLimitService.allow(eq("account_check_by_ip"), any(), anyInt(), anyLong())).thenReturn(false);
         when(httpRequest.getRemoteAddr()).thenReturn("1.2.3.4");
@@ -406,10 +385,9 @@ class AuthControllerTest {
     }
 
     /**
-     * Review finding ("OTP resend still deserves IP-level throttling" -- external review,
-     * thirtieth pass, P1, full context in resendOtp's own updated javadoc): the actual tests for
-     * the fix -- both the per-IP limit (matching initLogin/initRegister's own established
-     * protection) and the new per-identifier cooldown this endpoint specifically needed.
+     * Tests for OTP resend's IP-level throttling -- both the per-IP limit (matching
+     * initLogin/initRegister's own established protection) and the per-identifier cooldown this
+     * endpoint specifically needs.
      */
     @Test
     @DisplayName("resendOtp: within both the per-IP limit and the per-identifier cooldown, proceeds normally")

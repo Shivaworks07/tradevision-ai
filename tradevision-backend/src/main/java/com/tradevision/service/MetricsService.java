@@ -9,11 +9,9 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 /**
- * Review finding (P1 — "API metrics are not actually zero-impact"): MetricsFilter used to call
- * metricRepo.save() directly, on the request-handling thread, despite its own comment claiming
- * this was async. @Async only takes effect through a Spring-managed proxy — it does nothing on a
- * plain self-invocation within the same class, which is exactly why this had to move into its
- * own service rather than just adding the annotation in place.
+ * Persists API metrics off the request-handling thread. This lives in its own Spring-managed
+ * bean rather than as a method on the filter that calls it, because @Async only takes effect
+ * through a Spring proxy — it has no effect on a plain self-invocation within the same class.
  */
 @Service
 @RequiredArgsConstructor

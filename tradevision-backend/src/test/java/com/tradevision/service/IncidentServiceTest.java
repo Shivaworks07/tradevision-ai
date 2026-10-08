@@ -22,15 +22,9 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Review finding ("Alerting hooks" -- "Email/SMS/webhook on halt... not end-to-end ops"): this
- * feature was already fully implemented in IncidentService/EmailService/WebhookAlertService
- * (confirmed by reading the actual code directly, not assumed from an earlier summary that
- * turned out to be stale) -- but had no tests at all for any of the three classes. This closes
- * that gap for the orchestration logic (IncidentService itself, fully mockable). EmailService
- * and WebhookAlertService both use an inline-initialized RestTemplate (matching
- * BinanceBrokerAdapter's own established pattern elsewhere in this codebase), so their own HTTP
- * calls aren't unit-testable the same way -- not attempted here for the same reason RestTemplate
- * is never mocked anywhere else in this codebase.
+ * Covers IncidentService's alert orchestration logic, which is fully mockable. EmailService and
+ * WebhookAlertService both use an inline-initialized RestTemplate, so their own HTTP calls are
+ * not unit-testable the same way and are not exercised here.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -60,7 +54,7 @@ class IncidentServiceTest {
     }
 
     @Test
-    @DisplayName("raiseWarning: always durably records the incident but never alerts -- WARNING is dashboard-only, matching the review's own severity distinction")
+    @DisplayName("raiseWarning: always durably records the incident but never alerts -- WARNING is dashboard-only")
     void raiseWarning_recordsButNeverAlerts() {
         service.raiseWarning("user1", "cred1", "pos1", "order1", "BTCUSDT", "SLIPPAGE_HIGH", "Slippage exceeded threshold");
 

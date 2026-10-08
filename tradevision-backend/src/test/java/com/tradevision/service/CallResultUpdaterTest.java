@@ -28,8 +28,8 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * Review finding ("CallResultUpdater can race with real position outcomes" -- P1, full context
- * in CallResultUpdater.updateResult's own comment): this file did not exist before this fix.
+ * Covers CallResultUpdater's atomic conditional update, which avoids racing with a real
+ * position outcome being written concurrently.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -50,9 +50,7 @@ class CallResultUpdaterTest {
         call.setId("call1");
         call.setSymbol("BTCUSDT");
         call.setDirection("LONG");
-        // Review finding ("Financial values still mix double and BigDecimal" -- external
-        // review, twenty-fourth pass, P2, full context in TradeCallRecord's own updated field
-        // comment): these 5 fields are BigDecimal now.
+        // These 5 fields are BigDecimal.
         call.setEntryPrice(java.math.BigDecimal.valueOf(100.0));
         call.setStopLoss(java.math.BigDecimal.valueOf(90.0));
         call.setTarget1(java.math.BigDecimal.valueOf(110.0));
@@ -62,7 +60,7 @@ class CallResultUpdaterTest {
     }
 
     @Test
-    @DisplayName("updateResult: applies the theoretical result via an ATOMIC conditional update (outcome.result still PENDING), not a plain unconditional save -- the actual review fix (\"CallResultUpdater can race with real position outcomes\")")
+    @DisplayName("updateResult: applies the theoretical result via an ATOMIC conditional update (outcome.result still PENDING), not a plain unconditional save")
     void updateResult_appliesViaAtomicConditionalUpdate() {
         when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(TradeCallRecord.class)))
             .thenReturn(com.mongodb.client.result.UpdateResult.acknowledged(1, 1L, null));
@@ -77,7 +75,7 @@ class CallResultUpdaterTest {
     }
 
     @Test
-    @DisplayName("P1-5: updateResult never touches MLWeightService at all, win or lose -- its own ticker-crossing threshold check is a guess against whatever entry/SL/target this call was SAVED with (client-suppliable via POST /api/calls/save), never a real broker fill, so it must never feed the global, unscoped-by-user ML weights every live signal reads from. Only PositionMonitorService.writeRealOutcomeBackToSignal (a genuine, verified fill) may do that now.")
+    @DisplayName("updateResult never touches MLWeightService, win or lose -- its ticker-crossing threshold check is a guess against whatever entry/SL/target this call was saved with (client-suppliable via POST /api/calls/save), never a real broker fill, so it must never feed the global, unscoped-by-user ML weights every live signal reads from. Only PositionMonitorService.writeRealOutcomeBackToSignal (a genuine, verified fill) may do that.")
     void updateResult_neverRecordsMLOutcome_evenOnAppliedResult() {
         when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(TradeCallRecord.class)))
             .thenReturn(com.mongodb.client.result.UpdateResult.acknowledged(1, 1L, null));
@@ -110,11 +108,6 @@ class CallResultUpdaterTest {
         verify(callRepo, never()).save(any());
     }
 
-    /**
-     * Review finding ("Graceful shutdown does not stop @Scheduled work or WebSocket listeners
-     * from starting new work" -- external review, nineteenth pass, P1, confirmed real by direct
-     * inspection: this scheduled method had no shutdown-awareness at all before this fix).
-     */
     @Test
     @DisplayName("updatePendingCalls: does nothing at all when the process is shutting down")
     void updatePendingCalls_shuttingDown_doesNothing() {
@@ -125,14 +118,8 @@ class CallResultUpdaterTest {
         verify(callRepo, never()).findByOutcome_ResultOrderByCalledAtDesc(any(), any());
     }
 
-    /**
-     * P2-19 fix ("CallResultUpdater: ... newest 50 only" -- external review, full context in
-     * TradeCallRepository.findByOutcome_ResultOrderByCalledAtAsc's own updated javadoc): the
-     * actual review-required proof -- the updater now queries OLDEST-first, not newest-first, so
-     * a backlog beyond 50 pending calls actually drains instead of permanently starving.
-     */
     @Test
-    @DisplayName("P2-19: updatePendingCalls queries oldest-pending-first (ASC), not newest-first -- a backlog beyond the page size actually drains")
+    @DisplayName("updatePendingCalls queries oldest-pending-first (ASC), not newest-first -- a backlog beyond the page size actually drains")
     void updatePendingCalls_queriesOldestPendingFirst() {
         when(callRepo.findByOutcome_ResultOrderByCalledAtAsc(eq("PENDING"), any()))
             .thenReturn(java.util.List.of());
@@ -143,10 +130,10 @@ class CallResultUpdaterTest {
         verify(callRepo, never()).findByOutcome_ResultOrderByCalledAtDesc(any(), any());
     }
 
-    // ── P2-19: point-in-time price -> actual high/low range over the elapsed window ─────────
+    // ── point-in-time price -> actual high/low range over the elapsed window ─────────
 
     @Test
-    @DisplayName("P2-19: updateResultFromRange -- a LONG call whose range never touched SL or T1 applies nothing")
+    @DisplayName("updateResultFromRange -- a LONG call whose range never touched SL or T1 applies nothing")
     void updateResultFromRange_long_noThresholdTouched_appliesNothing() {
         updater.updateResultFromRange(call, 108.0, 95.0); // between entry(100) and target1(110)/stopLoss(90)
 
@@ -154,7 +141,7 @@ class CallResultUpdaterTest {
     }
 
     @Test
-    @DisplayName("P2-19: updateResultFromRange -- a LONG call whose range's HIGH touched target1, even though the period's current/closing price never did, still applies HIT_T1 (the actual review fix: a spike-and-revert is no longer invisible)")
+    @DisplayName("updateResultFromRange -- a LONG call whose range's HIGH touched target1, even though the period's current/closing price never did, still applies HIT_T1 (a spike-and-revert is not invisible)")
     void updateResultFromRange_long_highTouchedTargetEvenThoughItReverted_appliesHitTarget() {
         when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(TradeCallRecord.class)))
             .thenReturn(com.mongodb.client.result.UpdateResult.acknowledged(1, 1L, null));
@@ -169,7 +156,7 @@ class CallResultUpdaterTest {
     }
 
     @Test
-    @DisplayName("P2-19: updateResultFromRange -- a LONG call whose range dipped to the stop loss is reported as HIT_SL even if the same window's high also touched a target (conservative: SL always wins when both are ambiguously possible)")
+    @DisplayName("updateResultFromRange -- a LONG call whose range dipped to the stop loss is reported as HIT_SL even if the same window's high also touched a target (conservative: SL always wins when both are ambiguously possible)")
     void updateResultFromRange_long_bothStopAndTargetInRange_stopLossTakesPrecedence() {
         when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(TradeCallRecord.class)))
             .thenReturn(com.mongodb.client.result.UpdateResult.acknowledged(1, 1L, null));
@@ -184,7 +171,7 @@ class CallResultUpdaterTest {
     }
 
     @Test
-    @DisplayName("P2-19: updateResultFromRange -- a SHORT call's stop loss is checked against the period HIGH, and its targets against the period LOW (direction-correct, mirrored from the LONG case)")
+    @DisplayName("updateResultFromRange -- a SHORT call's stop loss is checked against the period HIGH, and its targets against the period LOW (direction-correct, mirrored from the LONG case)")
     void updateResultFromRange_short_usesCorrectSideOfRangeForEachThreshold() {
         call.setDirection("SHORT");
         call.setEntryPrice(java.math.BigDecimal.valueOf(100.0));
@@ -204,7 +191,7 @@ class CallResultUpdaterTest {
     }
 
     @Test
-    @DisplayName("P2-19: fetchPriceRange -- parses a Binance klines array into the actual max-high/min-low across every returned candle, not just the last one")
+    @DisplayName("fetchPriceRange -- parses a Binance klines array into the max-high/min-low across every returned candle, not just the last one")
     void fetchPriceRange_binanceKlines_computesMaxHighMinLowAcrossAllCandles() throws Exception {
         call.setMarket("CRYPTO");
         call.setCalledAt(java.time.LocalDateTime.now().minusHours(2));

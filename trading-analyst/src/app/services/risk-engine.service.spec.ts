@@ -2,14 +2,9 @@ import { TestBed } from '@angular/core/testing';
 import { RiskEngineService } from './risk-engine.service';
 
 /**
- * P3-4 fix ("trading-analyst risk-engine.service.ts -- client 'risk engine' (localStorage, $10k
- * default) unrelated to server limits" -- external review, full context in this service's own
- * updated header javadoc): this file did not exist before this fix -- RiskEngineService had zero
- * test coverage previously. Covers the actual new behavior: accountSize is now genuinely editable
- * via updateParams (closing the "silently stuck at $10k forever" half of the finding), and the
- * dead SessionStats/canTrade/recordTrade/calcDynamicSL/calcTrailingStop surface is confirmed gone
- * (a TypeScript compile of this spec file itself is part of that proof -- referencing any of
- * those removed members would fail to compile).
+ * Covers RiskEngineService's position-sizing calculator: that accountSize is
+ * genuinely editable via updateParams, that it persists across a reload, and
+ * that the resulting position-size math responds correctly.
  */
 describe('RiskEngineService', () => {
   let service: RiskEngineService;
@@ -30,12 +25,12 @@ describe('RiskEngineService', () => {
     expect(params.riskPerTrade).toBe(1.0);
   });
 
-  it('getParams returns only accountSize/riskPerTrade -- the dead maxDailyLoss/maxConsecLosses/maxOpenTrades fields are gone', () => {
+  it('getParams returns only the accountSize/riskPerTrade fields', () => {
     const params = service.getParams();
     expect(Object.keys(params).sort()).toEqual(['accountSize', 'riskPerTrade']);
   });
 
-  it('updateParams actually changes accountSize -- closing the "permanently stuck at $10k, nothing can ever call this" gap the review found', () => {
+  it('updateParams changes accountSize', () => {
     service.updateParams({ accountSize: 25000 });
 
     expect(service.getParams().accountSize).toBe(25000);
@@ -51,7 +46,7 @@ describe('RiskEngineService', () => {
     expect(freshInstance.getParams().riskPerTrade).toBe(2.0);
   });
 
-  it('calculateRisk: a new, larger accountSize (set via onAccountSizeChange -> updateParams) actually changes the resulting position size -- proving the panel is no longer stuck computing against a fixed, unchangeable $10k', () => {
+  it('calculateRisk: a larger accountSize produces a larger resulting position size', () => {
     const before = service.calculateRisk(100, 95, 105, 110, 120, 2, 75, 55);
 
     service.updateParams({ accountSize: 100000 }); // 10x the default

@@ -15,38 +15,33 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Review finding ("UI has no real Position/Execution dashboard" / "No user-facing emergency
- * position action"): the backend side of both. This is deliberately the only place outside
- * PositionMonitorService/PositionSafetyService themselves that touches position state directly —
- * PositionController stays thin and delegates entirely here, same pattern as every other
+ * Backend support for the position/execution dashboard, including user-facing emergency
+ * actions. This is deliberately the only place outside PositionMonitorService/
+ * PositionSafetyService themselves that touches position state directly — PositionController
+ * stays thin and delegates entirely here, the same pattern used by every other
  * controller/service pair in this codebase. Package-private helpers on BrokerCredentialService
- * (ownedCredential, decrypt, adapterForCredential) are reachable from here because this lives in
- * the same package — that's deliberate, not incidental: those helpers are intentionally NOT
- * public, so ownership checks and the LIVE-mode ceremony can't be bypassed by a new controller
- * calling them directly.
+ * (ownedCredential, decrypt, adapterForCredential) are reachable from here because this class
+ * lives in the same package; those helpers are intentionally not public so that ownership
+ * checks and the LIVE-mode ceremony can't be bypassed by a new controller calling them
+ * directly.
  *
- * Honest scope: "Cancel protection" (listed in the review's own mockup) is deliberately NOT
- * exposed as a standalone action. Manually cancelling an OCO without immediately replacing it
- * would leave a real position naked by direct user action — exactly the state every other part
- * of this codebase exists to prevent automatically. Emergency Flatten (close the position
- * outright) and Reconcile Now (re-sync against the exchange) are the two actions exposed because
- * both have a well-defined, safe outcome; a bare "remove protection and leave it" does not.
+ * "Cancel protection" is deliberately not exposed as a standalone action: manually cancelling
+ * an OCO without immediately replacing it would leave a real position naked by direct user
+ * action, which is exactly the state every other part of this codebase exists to prevent
+ * automatically. Emergency Flatten (close the position outright) and Reconcile Now (re-sync
+ * against the exchange) are the two actions exposed because both have a well-defined, safe
+ * outcome; a bare "remove protection and leave it" does not.
  */
 @Service
 @RequiredArgsConstructor
 public class PositionDashboardService {
 
-    // Review finding ("OCO protection logic is better, but dust classification needs one more
-    // invariant" -- external review, second pass): needed now that listPositions's own new
-    // symbol-rules batch fetch logs a non-fatal warning per failed lookup -- this class had no
-    // logger declared at all before this fix.
+    // Used to log non-fatal warnings when a per-symbol rules lookup fails during dashboard assembly.
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(PositionDashboardService.class);
 
     private final PositionRepository positionRepo;
-    // Review finding ("OMS/ExecutedOrder full unification" -- P1, full context in this class's
-    // own updated toSummary comment): migrated from ExecutedOrderRepository to the real Order
-    // (OMS) repository -- same field name, since this file has no other "orderRepo"-named
-    // dependency to collide with.
+    // Repository for the unified Order (OMS) model — the source of entry-order details
+    // (stop-loss/take-profit prices) shown on the dashboard.
     private final com.tradevision.repository.OrderRepository orderRepo;
     private final BrokerCredentialService credentialService;
     private final PositionSafetyService positionSafetyService;
@@ -54,24 +49,17 @@ public class PositionDashboardService {
     private final com.tradevision.repository.TradingIncidentRepository incidentRepo;
 
     /**
-     * Review finding ("Pagination for order history/positions/metrics" -- P2): confirmed real
-     * -- this used to query positionRepo.findByUserIdAndCredentialIdOrderByOpenedAtDesc, which
-     * returns EVERY position ever opened for this credential in one response. A credential open
-     * for months, actively auto-trading, could eventually return thousands of closed positions
-     * on a single request -- a real, growing cost with no bound. Now paginated via
-     * PageRequest, with the same OpenedAt-descending sort as before (most recent first),
-     * explicitly passed via the Pageable's own Sort rather than relied on from the query
-     * method's name.
+     * Returns one page of positions for a credential, most recently opened first. Pagination
+     * bounds the response size for credentials that have been auto-trading for a long time and
+     * may have accumulated thousands of closed positions; the sort order is explicitly passed
+     * via the Pageable's Sort rather than relied on from the query method's name.
      *
-     * HONEST TRADE-OFF, stated plainly: statusFilter is still applied AFTER pagination (to this
-     * page's own results), not before -- pushing the filter into the database query itself
-     * would need a different repository method per filter combination, more scope than this
-     * fix's own bounded goal (capping response size). The practical effect: filtering by a
-     * specific status on a page dominated by other statuses can return noticeably fewer than
-     * `size` results, unlike the old unbounded version, which always filtered the complete set.
-     * A caller that needs a complete, filtered view across all positions (not just the most
-     * recent page) isn't fully served by this endpoint as changed -- flagged here rather than
-     * left as a silent, undocumented behavior change.
+     * Trade-off: statusFilter is applied after pagination, to this page's own results, not
+     * pushed into the database query itself. As a result, filtering by a specific status on a
+     * page dominated by other statuses can return noticeably fewer than `size` results. A
+     * caller that needs a complete, filtered view across all positions (not just the most
+     * recent page) should page through and filter client-side, or a dedicated filtered query
+     * should be added if that need becomes common.
      */
     public List<PositionSummaryDto> listPositions(String userId, String credentialId, String statusFilter, int page, int size) {
         BrokerCredential credential = credentialService.ownedCredential(userId, credentialId); // ownership check — throws if not this user's credential
@@ -82,34 +70,24 @@ public class PositionDashboardService {
             .filter(p -> statusFilter == null || statusFilter.isBlank() || statusFilter.equalsIgnoreCase("ALL") || statusFilter.equalsIgnoreCase(p.getStatus()))
             .toList();
 
-        // Review finding (P1 #17 — "Position dashboard has an N+1 query problem"): confirmed
-        // real — toSummary() used to call orderRepo.findByBrokerOrderId once PER position. One
-        // batch query for every entry order these positions actually reference, then an
-        // in-memory map lookup per position instead of a database round-trip per position.
+        // Entry orders are fetched in one batch query for all positions on this page rather
+        // than one query per position, then looked up from an in-memory map in toSummary().
         List<String> entryOrderIds = filtered.stream().map(Position::getEntryOrderId).filter(java.util.Objects::nonNull).distinct().toList();
-        // Review finding ("OMS/ExecutedOrder full unification" -- P1): migrated off
-        // ExecutedOrderRepository's own identical batch-lookup method.
-        //
-        // P0-5 fix ("Global unique indexes on exchange order IDs collide across
-        // symbols/credentials/testnet" -- full context in Order's own @CompoundIndex javadoc):
-        // this batch is already scoped to a single credentialId (every position in `filtered`
-        // comes from positionRepo.findByUserIdAndCredentialId above), so the DB query itself now
-        // filters by credentialId too, eliminating any risk of matching a same-numbered order id
-        // from a DIFFERENT credential. These positions CAN still span multiple symbols within
-        // this one credential though, so the in-memory map below is keyed by symbol+brokerOrderId
-        // (not brokerOrderId alone) to eliminate the same cross-symbol collision risk too, and
-        // toSummary looks entries up the same way.
+        // The lookup is scoped by credentialId (every position in `filtered` already comes from
+        // this single credential) because broker order IDs are only unique within a credential,
+        // not globally — the same numeric order ID can exist on different credentials or
+        // testnet/live modes. Positions can still span multiple symbols within one credential,
+        // so the map below is keyed by symbol+brokerOrderId rather than brokerOrderId alone,
+        // and toSummary looks entries up the same way.
         Map<String, Order> entryOrdersById = entryOrderIds.isEmpty() ? Map.of()
             : orderRepo.findByCredentialIdAndBrokerOrderIdIn(credentialId, entryOrderIds).stream()
                 .collect(java.util.stream.Collectors.toMap(o -> o.getSymbol() + "|" + o.getBrokerOrderId(), o -> o, (a, b) -> a));
 
-        // Review finding ("OCO protection logic is better, but dust classification needs one
-        // more invariant" -- external review, second pass): same N+1-avoidance principle as the
-        // entry-order batch above -- one getSymbolRules() call per UNIQUE symbol among this
-        // page's own OPEN positions (not one per position), since multiple positions commonly
-        // share a symbol. Closed positions never need this, so they're excluded from the batch
-        // entirely. Each fetch is individually wrapped so one bad/slow symbol can't take down
-        // the rest of this batch or the whole dashboard response.
+        // Symbol rules (used for dust classification) are fetched once per unique symbol among
+        // this page's OPEN positions, since multiple positions commonly share a symbol. Closed
+        // positions never need this and are excluded from the batch. Each fetch is individually
+        // wrapped so one bad or slow symbol can't take down the rest of this batch or the whole
+        // dashboard response.
         var adapter = credentialService.adapterForCredential(credential);
         Map<String, com.tradevision.service.broker.dto.SymbolRules> rulesBySymbol = new java.util.HashMap<>();
         for (String symbol : filtered.stream().filter(p -> "OPEN".equals(p.getStatus())).map(Position::getSymbol).distinct().toList()) {
@@ -125,19 +103,15 @@ public class PositionDashboardService {
     }
 
     /**
-     * Review finding ("OCO protection logic is better, but dust classification needs one more
-     * invariant" -- external review, second pass): the actual classification -- FULL (fully
-     * covered), DUST_RESIDUAL (a real gap, but genuinely below the exchange's own minQty --
-     * dust, not a meaningful naked exposure), PARTIAL (a gap AT OR ABOVE minQty -- a real,
-     * meaningful residual the review's own AutoTradeService-side fix already escalates and
-     * emergency-flattens on the money-moving side, but this dashboard read path can still
-     * observe the position mid-flight before that escalation completes), UNPROTECTED (no OCO
-     * at all), N/A (not OPEN -- protection status is meaningless for a closed position). When
-     * this symbol's minQty couldn't be fetched at all (see listPositions's own try/catch above),
-     * a genuine gap defaults to PARTIAL, never DUST_RESIDUAL -- this session's own established
-     * "never fabricate a reassuring answer when genuinely uncertain" principle: if the real
-     * minQty can't be confirmed, treat an unexplained gap as the more serious classification,
-     * not the more comfortable one.
+     * Classifies how well an open position's quantity is covered by its OCO protection order:
+     * FULL (fully covered), DUST_RESIDUAL (a gap exists but is genuinely below the exchange's
+     * minQty, so it's dust rather than meaningful naked exposure), PARTIAL (a gap at or above
+     * minQty — a real, meaningful residual that the automated safety path separately escalates
+     * and flattens, though this read-only dashboard path can observe the position mid-flight
+     * before that escalation completes), UNPROTECTED (no OCO at all), or N/A (not an open
+     * position, so protection status doesn't apply). When minQty couldn't be fetched for this
+     * symbol, an unexplained gap is classified as PARTIAL rather than DUST_RESIDUAL — without a
+     * confirmed minQty, the more serious classification is the safer default.
      */
     private String classifyProtection(Position p, com.tradevision.service.broker.dto.SymbolRules rules) {
         if (!"OPEN".equals(p.getStatus())) return "N/A";
@@ -150,8 +124,7 @@ public class PositionDashboardService {
 
     private PositionSummaryDto toSummary(Position p, Map<String, Order> entryOrdersById,
                                           Map<String, com.tradevision.service.broker.dto.SymbolRules> rulesBySymbol) {
-        // P0-5 fix: map key now symbol+brokerOrderId (see the batch-build site above for why) --
-        // looked up the same way here.
+        // Map key is symbol+brokerOrderId, matching how the batch above is keyed.
         Optional<Order> entryOrder = p.getEntryOrderId() != null
             ? Optional.ofNullable(entryOrdersById.get(p.getSymbol() + "|" + p.getEntryOrderId())) : Optional.empty();
 
@@ -167,14 +140,10 @@ public class PositionDashboardService {
             p.isAvgEntryPriceUnverified(),
             entryOrder.map(Order::getStopLossTriggerPrice).orElse(null),
             entryOrder.map(Order::getTakeProfitPrice).orElse(null),
-            // Review finding ("Position protection status is not yet a first-class invariant"
-            // -- external review, full context in PositionSummaryDto's own updated header
-            // javadoc): confirmed real -- this used to be true whenever ocoOrderListId was
-            // merely non-null, regardless of whether the OCO actually covers the position's
-            // real quantity. A partially-protected position (a real, known outcome after
-            // exchange step-size rounding -- see Position.protectedQuantity's own field
-            // javadoc) would still show as fully "protected" here. Now requires
-            // protectedQuantity to actually be present and cover the position's real quantity.
+            // "Protected" requires protectedQuantity to be present and to actually cover the
+            // position's real quantity, not just the presence of an OCO order ID — a position
+            // can be only partially protected after exchange step-size rounding, and that case
+            // must not be reported as fully protected.
             p.getOcoOrderListId() != null && "OPEN".equals(p.getStatus())
                 && p.getProtectedQuantity() != null && p.getProtectedQuantity().compareTo(p.getQuantity()) >= 0,
             p.getProtectedQuantity(),
@@ -223,7 +192,7 @@ public class PositionDashboardService {
         positionMonitorService.reconcileCredential(credential);
     }
 
-    /** Review finding (P1 #20): backs the dashboard's "🔴 N CRITICAL" indicator. */
+    /** Returns unresolved trading incidents for a credential, backing the dashboard's "critical" indicator. */
     public java.util.List<com.tradevision.model.TradingIncident> unresolvedIncidents(String userId, String credentialId) {
         credentialService.ownedCredential(userId, credentialId); // ownership check
         return incidentRepo.findByCredentialIdAndResolvedAtIsNullOrderByCreatedAtDesc(credentialId);

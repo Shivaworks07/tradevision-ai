@@ -12,10 +12,9 @@ import org.springframework.test.util.ReflectionTestUtils;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * P2-17 fix ("20x System.out.println, PII in logs, no correlation IDs" -- external review, full
- * context in EmailService's own updated sendOtp comment): this class's own sendOtp() used to log
- * the full, unmasked recipient email address unconditionally, on every call, in every
- * environment. This file did not exist before this fix.
+ * Verifies that sendOtp() never logs the full, unmasked recipient email address, in any
+ * environment -- only a masked address, and only the OTP code itself when console fallback is
+ * explicitly allowed.
  */
 class EmailServiceTest {
 

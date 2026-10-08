@@ -14,19 +14,17 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * Review finding ("Critical alerting is still best-effort" -- external review, thirty-sixth
- * pass, P1, full context in TradingIncident.notificationStatus's own field javadoc): this is the
- * "retry" step of the review's own explicit required chain -- "incident persisted -> notification
- * attempted -> delivery status persisted -> retry -> eventually escalate." IncidentService's own
- * raise() already does the first three steps; this service is the fourth, run on a schedule
- * independent of whatever originally raised the incident (which may itself be long finished by
- * the time a retry is due).
+ * Retries notification delivery for incidents whose last delivery attempt failed. The full chain
+ * is "incident persisted -> notification attempted -> delivery status persisted -> retry ->
+ * eventually escalate"; IncidentService's own raise() already does the first three steps, and
+ * this service is the fourth, run on a schedule independent of whatever originally raised the
+ * incident (which may itself be long finished by the time a retry is due).
  *
- * Deliberately separate from IncidentService itself rather than a self-scheduling retry inside
- * it: a scheduled bean is the natural place for "run this periodically," and keeping it separate
- * means IncidentService's own raise() path stays exactly as simple and synchronous as it already
- * was -- this service is purely additive, re-driving the exact same attemptDelivery() logic
- * raise() already uses, never a second, parallel delivery implementation that could drift from it.
+ * Kept separate from IncidentService rather than a self-scheduling retry inside it: a scheduled
+ * bean is the natural place for "run this periodically," and keeping it separate means
+ * IncidentService's own raise() path stays simple and synchronous. This service is purely
+ * additive, re-driving the exact same attemptDelivery() logic raise() already uses rather than a
+ * second, parallel delivery implementation that could drift from it.
  */
 @Service
 @RequiredArgsConstructor
@@ -49,10 +47,8 @@ public class IncidentRetryService {
 
     @Scheduled(fixedDelay = 120_000, initialDelay = 90_000, scheduler = "maintenanceScheduler")
     public void retryPendingDeliveries() {
-        // Review finding ("Shutdown protection is improved, but not a hard global execution
-        // fence" -- external review, thirty-sixth pass, P1, full context in ShutdownState's own
-        // class javadoc): same "don't start new scheduled work once shutdown has begun"
-        // discipline as PositionMonitorService's own reconciliation loop.
+        // Same "don't start new scheduled work once shutdown has begun" discipline as
+        // PositionMonitorService's own reconciliation loop.
         if (shutdownState.isShuttingDown()) {
             log.info("Shutdown in progress -- skipping this incident-notification-retry cycle.");
             return;

@@ -9,37 +9,25 @@ import java.net.InetAddress;
 import java.net.UnknownHostException;
 
 /**
- * P2-9 fix ("ProxyController.rateLimited / AuthController.clientIp: trust-forwarded-for=false by
- * default; behind a LB all users share one IP -> 60 req/min global, 20 OTP/h global" -- external
- * review, confirmed real by direct inspection before this fix): both controllers already had
- * near-identical, independently-duplicated X-Forwarded-For extraction logic gated by a single
- * app.proxy.trust-forwarded-for boolean. That boolean genuinely does let a real deployment behind
- * a trusted reverse proxy/load balancer key rate limits on the real client IP instead of the
- * proxy's own IP -- but it is all-or-nothing: turning it on trusts X-Forwarded-For from ANY
- * source, including a request that reaches this application directly (bypassing the proxy
- * entirely, e.g. if the proxy's own network isn't otherwise firewalled off, or in a
- * misconfigured/transitional deployment) -- letting an attacker forge the header and get a fresh
- * rate-limit bucket on every request, defeating the very limiter this flag was meant to make
- * effective.
+ * Resolves the real client IP to use as a rate-limit key, for use behind a reverse proxy or load
+ * balancer where every request's TCP peer would otherwise be the proxy itself (collapsing every
+ * user onto one shared rate-limit bucket). app.proxy.trust-forwarded-for alone would be
+ * all-or-nothing: trusting X-Forwarded-For from any source would let a request that reaches this
+ * application directly (bypassing the proxy) forge the header and get a fresh rate-limit bucket
+ * on every request, defeating the limiter entirely.
  *
- * The actual fix, consolidated into one shared, independently-testable place instead of the two
- * near-duplicate copies this codebase had before: X-Forwarded-For is only ever honored when BOTH
- * (a) app.proxy.trust-forwarded-for is true, AND (b) the request's own real TCP peer
- * (HttpServletRequest.getRemoteAddr(), which is never spoofable -- it's the actual socket source
- * address, not a header) is itself inside one of the configured trusted-proxy CIDR ranges. A
- * request whose remote address is NOT a trusted proxy gets its own real remote address used as
- * the rate-limit key regardless of any X-Forwarded-For header it sends, exactly like
- * trustForwardedFor=false already did -- there is no way to opt out of this check by supplying a
- * header alone.
+ * X-Forwarded-For is therefore only honored when both (a) app.proxy.trust-forwarded-for is true,
+ * and (b) the request's real TCP peer (HttpServletRequest.getRemoteAddr(), the actual socket
+ * source address, never spoofable via a header) is itself inside one of the configured
+ * trusted-proxy CIDR ranges. A request whose remote address is not a trusted proxy always uses
+ * its own real remote address as the rate-limit key, regardless of any X-Forwarded-For header it
+ * sends.
  *
- * HONEST SCOPE: if trusted-proxy-cidrs is left blank while trust-forwarded-for is true, this
- * preserves the OLD all-or-nothing behavior (X-Forwarded-For trusted from anywhere) rather than
- * silently disabling the feature a deployment may already depend on -- narrowing that further
- * requires actually configuring the real proxy/LB's own source CIDR(s), which only the operator
- * of a given deployment can correctly supply. IPv4 only (CIDR notation "a.b.c.d/n", or a bare
- * address treated as /32) -- this codebase's own deployment infra (see this class's own
- * surrounding config) has no IPv6 requirement stated anywhere, and a real gap here fails CLOSED
- * (an unparseable/IPv6 remote address is never treated as trusted), not open.
+ * If trusted-proxy-cidrs is left blank while trust-forwarded-for is true, X-Forwarded-For is
+ * trusted from any source — narrowing that further requires configuring the real proxy/LB's
+ * source CIDR(s), which only the deployment's operator can correctly supply. CIDR matching is
+ * IPv4 only ("a.b.c.d/n", or a bare address treated as /32); an unparseable or IPv6 remote
+ * address is never treated as trusted, so a mismatch fails closed, not open.
  */
 public final class ClientIpResolver {
 
@@ -68,9 +56,8 @@ public final class ClientIpResolver {
 
     private static boolean isTrustedProxy(String remoteAddr, String trustedProxyCidrsCsv) {
         if (trustedProxyCidrsCsv == null || trustedProxyCidrsCsv.isBlank()) {
-            // No CIDR restriction configured -- legacy behavior, still gated by trustForwardedFor
-            // itself (a deployment must have explicitly opted in) per this class's own HONEST
-            // SCOPE note above.
+            // No CIDR restriction configured: trust any remote address, still gated by
+            // trustForwardedFor itself requiring an explicit opt-in.
             return true;
         }
         for (String cidr : trustedProxyCidrsCsv.split(",")) {

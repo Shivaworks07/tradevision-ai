@@ -1,19 +1,11 @@
 import { Injectable } from '@angular/core';
 
 /**
- * P3-4 fix ("client 'risk engine' (localStorage, $10k default) unrelated to server limits" --
- * external review, full context in crypto-terminal.component.ts's own onAccountSizeChange
- * javadoc): maxDailyLoss/maxConsecLosses/maxOpenTrades used to exist here too, backing a
- * session-limit tracker (canTrade()/recordTrade()/SessionStats) that had ZERO callers anywhere in
- * this app -- confirmed by grepping the entire trading-analyst source tree before touching
- * anything, not assumed. Removed along with that dead code rather than left in place implying a
- * real daily-loss/consecutive-loss governor exists here: it never did, and the ONLY real,
- * enforced version of these three limits lives entirely server-side (RiskProfile.
- * dailyLossLimitQuote / consecutiveOrderFailures+circuitBreakerThreshold / maxConcurrentTrades in
- * RiskEngineService.java), configured under Settings → Broker & Auto-Trade. accountSize and
- * riskPerTrade remain -- calculateRisk() below is a genuinely used, actively-rendered manual
- * position-sizing calculator (see the crypto-terminal risk panel), now explicitly labeled as an
- * estimate rather than silently implying it's tied to anything the server actually enforces.
+ * Client-side position-sizing calculator for the crypto-terminal risk panel. It only
+ * tracks accountSize and riskPerTrade as manual estimate inputs — daily-loss limits,
+ * consecutive-loss limits and max-open-trades are enforced entirely server-side
+ * (RiskEngineService.java's RiskProfile, configured under Settings → Broker & Auto-Trade),
+ * so this calculator deliberately does not duplicate or imply ownership of them.
  */
 export interface RiskParameters {
   accountSize:      number;    // user's account size in USD -- a manual estimate input, never sent to or read from the server
@@ -56,7 +48,7 @@ export interface TradeRisk {
 }
 
 const DEFAULT_PARAMS: RiskParameters = {
-  accountSize:     10000,   // $10,000 default -- purely a starting point until the user edits it via the risk panel's own account-size input (crypto-terminal.component.ts's onAccountSizeChange)
+  accountSize:     10000,   // starting value until the user edits it via the risk panel's account-size input
   riskPerTrade:    1.0,     // 1% per trade
 };
 

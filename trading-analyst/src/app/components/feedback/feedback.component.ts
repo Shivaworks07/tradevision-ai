@@ -72,11 +72,9 @@ export class FeedbackComponent {
       page:             window.location.pathname,
     };
 
-    // Review finding ("Auth hardening" -- full context in AuthService's own javadoc): the token
-    // itself is no longer readable here (HttpOnly cookie) -- withCredentials sends that cookie
-    // automatically if the user happens to be logged in (this endpoint is public either way --
-    // /api/feedback permits all in SecurityConfig -- so this only affects whether the backend
-    // can optionally identify the submitter, never whether the submission itself succeeds).
+    // withCredentials sends the HttpOnly auth cookie when the user is logged in, so the
+    // backend can optionally identify the submitter. The endpoint itself is public, so a
+    // logged-out submission still succeeds the same way.
     this.http.post<any>(this.API, body, { withCredentials: true }).subscribe({
       next:  () => { this.sending = false; this.sent = true; setTimeout(() => { this.sent = false; this.open = false; this.reset(); }, 2500); },
       error: e  => { this.sending = false; this.error = e?.error?.message || 'Failed to submit. Try again.'; }

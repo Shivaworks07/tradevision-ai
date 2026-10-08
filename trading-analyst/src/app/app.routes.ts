@@ -8,14 +8,10 @@ export const routes: Routes = [
   },
   {
     path: 'app',
-    // Review finding (P1 — "UI routing doesn't actually use the auth guard"): AppShellComponent's
-    // own `if (!this.auth.token) this.router.navigate(['/'])` check ran AFTER the component (and
-    // everything it lazy-loads as children) had already started initializing — weaker than
-    // canActivate, which runs before navigation completes at all. authGuard also checks
-    // isLoggedIn (token AND currentUser()), a stricter condition than the bare token check this
-    // replaces. The backend remains the actual security boundary regardless (this was always UX/
-    // architecture, not an API authorization gap) — this is about not initializing an
-    // authenticated shell before confirming the user actually is one.
+    // canActivate runs before navigation completes, so the authenticated shell and
+    // everything it lazy-loads as children never starts initializing until authGuard has
+    // confirmed isLoggedIn. The backend remains the actual security boundary regardless;
+    // this guard is purely about not showing authenticated UI prematurely.
     canActivate: [authGuard],
     loadComponent: () => import('./components/app-shell/app-shell.component').then(m => m.AppShellComponent),
     children: [
@@ -32,11 +28,10 @@ export const routes: Routes = [
       { path: 'admin',     loadComponent: () => import('./components/admin/admin.component').then(m => m.AdminComponent) },
       { path: 'settings',  loadComponent: () => import('./components/settings/settings.component').then(m => m.SettingsComponent) },
       { path: 'broker',    loadComponent: () => import('./components/broker-settings/broker-settings.component').then(m => m.BrokerSettingsComponent) },
-      // User's own explicit multi-strategy-plan design, full context in the backend's own
-      // StrategyPlan class javadoc: the frontend gap the review named as the biggest remaining
-      // product issue -- reachable at /app/strategy-plans.
+      // Multi-strategy-plan management UI, full context in the backend's StrategyPlan class
+      // javadoc. Reachable at /app/strategy-plans.
       { path: 'strategy-plans', loadComponent: () => import('./components/strategy-plans/strategy-plans.component').then(m => m.StrategyPlansComponent) },
-      // Review finding ("UI has no real Position/Execution dashboard"): reachable at /app/positions.
+      // Position/execution dashboard. Reachable at /app/positions.
       { path: 'positions', loadComponent: () => import('./components/positions/positions.component').then(m => m.PositionsComponent) },
       { path: 'news',      loadComponent: () => import('./components/newsroom/newsroom.component').then(m => m.NewsroomComponent) },
     ]

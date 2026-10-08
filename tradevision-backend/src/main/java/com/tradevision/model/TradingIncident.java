@@ -9,11 +9,10 @@ import org.springframework.data.mongodb.core.mapping.Document;
 import java.time.LocalDateTime;
 
 /**
- * Review finding (P1 #20 — "Need a durable incident model"): confirmed real — critical failures
- * (protection failed, emergency flatten failed, unknown order state, reconciliation mismatch)
- * were only ever visible as audit log lines mixed in with routine activity. This is a dedicated,
- * queryable record for the failure modes that actually need a human's attention, so the UI can
- * show "🔴 1 CRITICAL" instead of someone having to read through an audit log to notice.
+ * A dedicated, queryable record of a trading failure that needs a human's attention —
+ * protection failed, emergency flatten failed, unknown order state, reconciliation mismatch,
+ * and similar critical conditions — kept separate from routine audit-log activity so the UI
+ * can surface outstanding critical incidents directly instead of scanning an audit log for them.
  */
 @Data @NoArgsConstructor
 @Document(collection = "trading_incidents")
@@ -38,24 +37,18 @@ public class TradingIncident {
     private String resolution;
 
     /**
-     * Review finding ("Critical alerting is still best-effort" -- external review, thirty-sixth
-     * pass, P1, confirmed real by direct inspection before this fix: IncidentService's own
-     * webhook/email delivery attempts were fire-and-forget -- a failure was logged, but nothing
-     * about that failure was ever durably recorded on the incident itself, and nothing ever
-     * retried it. If Brevo, the account holder's own webhook endpoint, DNS, or the network were
-     * down at the exact moment a CRITICAL incident fired, the incident stayed durably recorded
-     * in Mongo -- but the actual page never happened, and nothing else would ever know or try
-     * again): the actual fix -- these fields, and IncidentRetryService's own scheduled retry
-     * pass, close the review's own explicit required chain: "incident persisted -> notification
-     * attempted -> delivery status persisted -> retry -> eventually escalate."
+     * Tracks whether this incident's own notification (email/webhook) has actually been
+     * delivered, since delivery is attempted asynchronously and can itself fail — a durable
+     * status here, plus IncidentRetryService's scheduled retry pass, closes the chain of
+     * "incident persisted -> notification attempted -> delivery status persisted -> retry ->
+     * eventually escalate" rather than treating delivery as fire-and-forget.
      *
      * PENDING (delivery not yet attempted, or not applicable -- WARNING severity never pages at
      * all), DELIVERED (at least one channel confirmed success), RETRYING (every channel failed
      * so far, but retries remain), DELIVERY_EXHAUSTED (every channel failed across every retry
-     * attempt -- the review's own "eventually escalate": logged at CRITICAL level with a
-     * distinct, greppable marker precisely because a second notification channel with its own
-     * guaranteed delivery doesn't exist to escalate INTO without becoming circular -- something
-     * that could itself silently fail the same way).
+     * attempt -- logged at CRITICAL level with a distinct, greppable marker, since there is no
+     * second guaranteed-delivery channel to escalate into without the escalation path itself
+     * being able to fail the same way).
      */
     private String notificationStatus = "PENDING";
     private int notificationAttempts = 0;

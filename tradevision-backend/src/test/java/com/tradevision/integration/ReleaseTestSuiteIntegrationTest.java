@@ -31,48 +31,31 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Review finding ("v190 -- RELEASE TEST" -- the user's own explicit, final-release-gating list:
- * kill-after-BUY, kill-after-OCO, OCO auto-attach, OCO auto-cancel, cancel failure -> halt,
- * reservation crash, duplicate concurrent signal, restart + full reconciliation): this session
- * already has real, Testcontainers-backed coverage for TWO of these eight under different file
- * names -- kill-after-BUY is PositionPersistenceRecoveryIntegrationTest (Order FILLED, Position
- * reconstructed against real Mongo), and duplicate concurrent signal is
- * RiskProfileServiceClaimIntegrationTest (many real concurrent threads claiming the same
- * credential, exactly one wins). This file is the real, genuine gap that remained: kill-after-OCO,
- * OCO auto-attach, OCO auto-cancel, cancel failure -> halt, reservation crash, and restart + full
- * reconciliation, all run against a real MongoDB via the same PositionMonitorService.reconcileCredential
- * entry point a real scheduled/WebSocket-triggered reconciliation pass actually calls.
+ * Verifies, against a real MongoDB via the same PositionMonitorService.reconcileCredential
+ * entry point a real scheduled/WebSocket-triggered reconciliation pass calls: kill-after-OCO
+ * recovery, OCO auto-attach, OCO auto-cancel, cancel-failure escalation to a halt, reservation
+ * crash recovery, and a full restart reconciliation across multiple coexisting records.
  *
- * HONEST SCOPING, stated plainly, same convention as every other integration test in this
- * package:
+ * Scope:
  * - The broker adapter is a real Spring bean (BinanceBrokerAdapter) with its own real HTTP call
- *   methods replaced by @MockitoBean, NOT a real Binance Testnet connection. This proves the
- *   RECOVERY LOGIC's own correctness against real MongoDB reads/writes and real distributed-lock/
+ *   methods replaced by @MockitoBean, not a real Binance Testnet connection. This proves the
+ *   recovery logic's own correctness against real MongoDB reads/writes and real distributed-lock/
  *   reconciliation-loop behavior, not that Binance's real API responds exactly as these mocked
- *   stubs assume. Real Testnet validation remains the separate, larger, still-open gap this same
- *   review names elsewhere (P1-4/P1-5's own "chaos tests still need actual execution").
- * - "Kill process, restart" is simulated by constructing the durable records (ProtectionAttempt,
+ *   stubs assume.
+ * - A process kill/restart is simulated by constructing the durable records (ProtectionAttempt,
  *   OrphanedOco, ExposureReservationRecord) directly in the real database exactly as they would
- *   exist after a genuine crash at that point, then calling reconcileCredential fresh -- not by
- *   literally starting and killing a JVM process. The recovery methods' own behavior is identical
- *   either way, since none of them depend on in-memory state from before the "crash."
- * - The @MockitoBean wiring itself (replacing BinanceBrokerAdapter in the real Spring context so
- *   PositionMonitorService's own internal adapterMap picks up the mock) follows this codebase's
- *   standard Spring Boot Test convention, but -- same as every test in this file -- has not
- *   actually been executed, so this specific mechanism is unverified along with everything else.
+ *   exist after a crash at that point, then calling reconcileCredential fresh -- not by literally
+ *   starting and killing a JVM process. The recovery methods' behavior is identical either way,
+ *   since none of them depend on in-memory state from before the "crash."
  *
- * HONEST LIMITATION shared with every other integration test in this package: `docker ps` fails
- * outright in this sandbox -- no Docker daemon is available here, so none of these tests have
- * been executed and none can be confirmed to pass. Run
- * `mvn test -Dtest=ReleaseTestSuiteIntegrationTest` on a machine with Docker available before
- * treating this file as actual proof, exactly as the user's own v190 request requires before
- * calling this a genuine release candidate.
+ * Requires Docker (Testcontainers); run
+ * `mvn test -Dtest=ReleaseTestSuiteIntegrationTest` on a machine with Docker available.
  */
 @Testcontainers(disabledWithoutDocker = true)
-// P1-16 fix: spring.profiles.active now defaults to "prod" (fail-closed), which has no default
-// secrets at all -- without this, this Testcontainers-backed context would fail to start
-// outside a real deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, the
-// same secrets this test always implicitly relied on before that default changed.
+// spring.profiles.active defaults to "prod" (fail-closed), which has no default secrets at all
+// -- without this, this Testcontainers-backed context would fail to start outside a real
+// deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, which has the
+// secrets this test relies on.
 @ActiveProfiles("local")
 @SpringBootTest
 class ReleaseTestSuiteIntegrationTest {
@@ -85,9 +68,7 @@ class ReleaseTestSuiteIntegrationTest {
         registry.add("spring.mongodb.uri", mongo::getReplicaSetUrl);
     }
 
-    // Spring Boot 4 follow-up (full context in pom.xml's own dated parent-version comment):
-    // @MockBean -> @MockitoBean, confirmed against Spring's own OpenRewrite migration recipe for
-    // this exact rename rather than guessed.
+    // Spring Boot 4 replaced @MockBean with @MockitoBean.
     @MockitoBean private BinanceBrokerAdapter adapter;
 
     @Autowired private PositionMonitorService positionMonitorService;
@@ -109,40 +90,18 @@ class ReleaseTestSuiteIntegrationTest {
         credential.setMode(BrokerMode.TESTNET);
         // API keys are encrypted at rest in the real model -- these test values are never
         // actually sent anywhere, since every real HTTP call is mocked via @MockitoBean above.
-        // Review finding, self-caught before this file was trusted: BrokerCredentialService's
-        // own decrypt() (called internally by reconcileCredential's own sub-methods to obtain
-        // real apiKey/apiSecret before every adapter call) delegates to
-        // CredentialEncryptionService's own real AES/GCM decrypt -- a placeholder, non-ciphertext
-        // string here would genuinely throw IllegalStateException("Failed to decrypt credential")
-        // the moment any of these tests actually ran, not merely look wrong. Using the real
-        // encrypt() method here produces genuinely valid ciphertext instead.
+        // BrokerCredentialService's decrypt() (called internally by reconcileCredential's
+        // sub-methods to obtain real apiKey/apiSecret before every adapter call) delegates to
+        // CredentialEncryptionService's real AES/GCM decrypt, so a placeholder, non-ciphertext
+        // string here would throw IllegalStateException("Failed to decrypt credential"). Using
+        // the real encrypt() method produces genuinely valid ciphertext instead.
         //
-        // CI-review fix ("OCO protection lifecycle" -- external review, fifth pass, failures
-        // 6/7/8/9, confirmed real by direct inspection: all four shared this one root cause): the
-        // single-argument encrypt(String) overload used here encrypts under
-        // CredentialEncryptionService's own DEFAULT_CONTEXT ("credential"), an AES-GCM
-        // authenticated-encryption AAD value -- but every real production read path
-        // (BrokerCredentialService.decrypt(BrokerCredential, boolean), the only place this
-        // application ever actually decrypts a stored credential) always decrypts with the
-        // field-specific context "apiKey"/"apiSecret" (see BrokerCredentialService.java's own
-        // encrypt() call sites, e.g. its connectCredential method, which always encrypts with
-        // those same two contexts -- never the default). AES-GCM's authentication tag is bound to
-        // the AAD it was encrypted under, so decrypting under a different context than it was
-        // encrypted with doesn't produce garbage plaintext, it throws AEADBadTagException outright
-        // -- caught by CredentialEncryptionService.decrypt and rethrown as
-        // IllegalStateException("Failed to decrypt credential"). That exception, thrown from
-        // PositionMonitorService.recoverStuckProtectionAttempts's own two decrypt() calls (which
-        // sit BEFORE that method's own per-attempt try/catch), propagated all the way up to
-        // reconcileCredentialLocked's single top-level catch and silently aborted the entire
-        // reconciliation pass for the credential before auto-attach, auto-cancel, or escalation
-        // ever ran -- exactly reproducing all four failures (cancelFailureHalts_realMongo,
-        // killAfterOco_autoAttach_realMongo, ocoAutoCancel_realMongo,
-        // restartFullReconciliation_realMongo), none of which ever got past the first decrypt
-        // call. No production code was at fault: BrokerCredentialService's own context-bound
-        // encrypt/decrypt pair is correct and used consistently everywhere else in this
-        // codebase -- this fixture was the one place still using the context-less legacy
-        // overload to manufacture ciphertext for a flow that is always read back through the
-        // context-bound one. Fixed by encrypting with the exact same contexts production uses.
+        // Every production read path (BrokerCredentialService.decrypt(BrokerCredential,
+        // boolean), the only place this application decrypts a stored credential) decrypts with
+        // the field-specific AES-GCM AAD context "apiKey"/"apiSecret" -- never the default
+        // context. AES-GCM's authentication tag is bound to the AAD it was encrypted under, so
+        // the fixture must encrypt with those same two field-specific contexts to be decryptable
+        // by the code under test.
         credential.setEncryptedApiKey(credentialEncryptionService.encrypt("test-api-key", "apiKey"));
         credential.setEncryptedApiSecret(credentialEncryptionService.encrypt("test-api-secret", "apiSecret"));
         credentialRepo.save(credential);
@@ -241,8 +200,8 @@ class ReleaseTestSuiteIntegrationTest {
         positionMonitorService.reconcileCredential(credential);
 
         var recoveredAttempt = protectionAttemptRepo.findById(attempt.getId()).orElseThrow();
-        // The actual claim under test: NEVER resolved -- stays SUBMITTING against the real
-        // database, since the dangerous condition (a real, untracked OCO) is not actually gone.
+        // Never resolved -- stays SUBMITTING against the real database, since the dangerous
+        // condition (a real, untracked OCO) is not actually gone.
         assertThat(recoveredAttempt.getStatus()).isEqualTo("SUBMITTING");
         verify(incidentService).raiseCritical(any(), eq(credential.getId()), any(), any(), any(),
             eq("PROTECTION_ATTEMPT_STUCK_WITH_REAL_OCO"), any());
@@ -272,8 +231,8 @@ class ReleaseTestSuiteIntegrationTest {
 
         positionMonitorService.reconcileCredential(credential);
 
-        // The actual claim under test: the record still exists (was NOT deleted) against a real
-        // database, even though it's genuinely well past the normal stale-cleanup age.
+        // The record still exists (was not deleted) against a real database, even though it's
+        // well past the normal stale-cleanup age.
         var stillExists = exposureReservationRecordRepo.findById(stalePending.getId());
         assertThat(stillExists).isPresent();
         assertThat(stillExists.get().getStatus()).isEqualTo("PENDING");

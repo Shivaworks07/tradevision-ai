@@ -26,25 +26,20 @@ import org.springframework.web.bind.annotation.*;
 import java.util.Map;
 
 /**
- * Review finding ("Stale documentation" -- P0, full context in BrokerMode's own javadoc):
- * confirmed real and fixed -- this used to claim "no auto-trigger endpoint exists yet," directly
- * contradicted by this SAME file's own risk-profile/auto-trade-configuration and kill-switch
- * sections just below. Broker key connection, balance viewing, manual test orders (TESTNET-only,
- * see OrderExecutionService's own javadoc), autonomous-trading configuration, and the kill
- * switch all genuinely live in this controller today.
+ * Manages a user's exchange broker credentials and the trading actions performed through them:
+ * connecting and rotating API keys, viewing balances and order history, placing manual test
+ * orders on testnet, configuring risk profiles for autonomous trading, and the kill-switch /
+ * emergency-revocation controls for stopping trading quickly.
  *
- * Review finding ("Frontend authentication migration is incomplete and currently breaks
- * authenticated APIs" -- P0): confirmed real and fixed across every endpoint here -- see
- * UserController's own javadoc for the full root-cause explanation. This controller is the
- * highest-stakes instance of the bug (broker connect, kill switch, LIVE authorization all live
- * here), so it mattered most here that the fix was mechanical and complete rather than partial.
+ * Identity for every endpoint here comes from Spring Security's {@code SecurityContext} via
+ * {@code @AuthenticationPrincipal}, populated by the JWT filter from the authenticated session;
+ * all endpoints sit behind {@code .anyRequest().authenticated()} in SecurityConfig.
  */
 @RestController
 @RequestMapping("/api/broker")
 @RequiredArgsConstructor
-// Review finding ("@CrossOrigin still has hardcoded localhost origins" -- external review,
-// thirty-fifth pass, P2, full context in NewsController's own identical fix): removed --
-// CorsConfig's own global CorsFilter already covers this endpoint.
+// CORS is handled centrally by CorsConfig's global CorsFilter; no per-controller
+// @CrossOrigin is needed here.
 public class BrokerController {
 
     private static final Logger log = LoggerFactory.getLogger(BrokerController.class);
@@ -52,7 +47,8 @@ public class BrokerController {
     private final BrokerCredentialService credentialService;
     private final OrderExecutionService orderExecutionService;
     private final RiskProfileService riskProfileService;
-    // Audit item P0-1, full context in LiveCanaryRecord's own class javadoc.
+    // Drives the live-canary order flow: a small real-money probe order used to validate a
+    // LIVE credential end-to-end before autonomous trading is authorized on it.
     private final LiveCanaryService liveCanaryService;
 
     @PostMapping("/connect")
@@ -75,8 +71,8 @@ public class BrokerController {
     }
 
     /**
-     * Review finding ("API-key rotation workflow" -- external review, P3, full context in
-     * BrokerCredentialService.rotateApiKey's own javadoc): the actual endpoint.
+     * Rotates the API key/secret pair on an existing broker credential in place, keeping the
+     * credential's id and linked history (positions, orders) unchanged.
      */
     @PostMapping("/{id}/rotate-key")
     public ResponseEntity<?> rotateApiKey(@AuthenticationPrincipal String userId, @PathVariable String id,
@@ -90,19 +86,11 @@ public class BrokerController {
             var saved = credentialService.rotateApiKey(userId, id, newApiKey, newApiSecret);
             return ResponseEntity.ok(ApiResponse.ok("API key rotated -- this credential's own id and all linked history are unchanged.", saved));
         } catch (IllegalArgumentException e) {
-            // Review finding ("API-key rotation workflow" -- external review, P3, confirmed
-            // real by direct inspection before this fix: my own first draft caught
-            // IllegalArgumentException for BOTH "credential not found" (ownedCredential's own
-            // exception) AND "new key rejected by validation," with no way to tell them apart.
-            // Fixed at the service level -- rotateApiKey now throws IllegalStateException for a
-            // validation refusal specifically, distinct from ownedCredential's own
-            // IllegalArgumentException for a genuinely missing credential): this remains 404,
-            // now correctly scoped to only the "not found" case.
+            // Credential not found for this user.
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
         } catch (IllegalStateException e) {
             // The new key was reachable and real, but rejected on its own merits (withdrawal
-            // enabled, or trading disabled) -- 400, not a server error, and explicitly NOT the
-            // same catch as the 404 above.
+            // enabled, or trading disabled).
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(e.getMessage()));
         }
     }
@@ -115,12 +103,8 @@ public class BrokerController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
         } catch (IllegalStateException e) {
-            // Review finding ("Deactivating a broker credential can abandon live positions" --
-            // external review, twenty-first pass, P0, full context in
-            // BrokerCredentialService.delete's own updated javadoc): the credential exists, but
-            // deletion is refused because it still has positions this application must keep
-            // managing -- 409 Conflict, same mapping this codebase already uses for "exists but
-            // not in a state this action can be performed on" (see resume()'s own catch above).
+            // The credential exists but still has open positions this application must keep
+            // managing, so deletion is refused until those are closed.
             return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.error(e.getMessage()));
         }
     }
@@ -132,10 +116,9 @@ public class BrokerController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
         } catch (Exception e) {
-            // Review finding (P1 — "Global exception handling leaks internal messages"): this
-            // local catch bypassed GlobalExceptionHandler entirely, so its fix alone didn't
-            // cover this — e.getMessage() here could be a raw Binance API error body, a network
-            // exception, or a parsing failure, none of which should reach the client directly.
+            // e.getMessage() here could be a raw Binance API error body, a network exception, or
+            // a parsing failure -- none of which should reach the client directly, so log the
+            // detail server-side and return only an opaque reference id.
             String refId = "TV-" + java.util.UUID.randomUUID().toString().substring(0, 8).toUpperCase();
             log.error("Broker balance request failed [{}]: {}", refId, e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(ApiResponse.error("Broker request failed. Reference ID: " + refId));
@@ -159,13 +142,9 @@ public class BrokerController {
     public ResponseEntity<?> placeTestOrder(@AuthenticationPrincipal String userId,
                                              @Valid @RequestBody PlaceTestOrderRequest req) {
         try {
-            // Review finding ("OMS/ExecutedOrder full unification" -- P1, full context in
-            // OrderExecutionService.placeTestOrder's own updated javadoc): now returns a real
-            // Order (OMS) record, not an ExecutedOrder -- status is OrderStatus (an enum), not a
-            // String, so the comparison below is fixed accordingly. A silent bug this specific
-            // migration step would otherwise have introduced: "REJECTED".equals(anEnumValue) is
-            // always false regardless of the actual status, since it compares different types --
-            // caught and fixed here, not shipped.
+            // placeTestOrder returns an OMS Order record; status is the OrderStatus enum, not a
+            // String, so comparing it with .equals(OrderStatus.REJECTED) below is required --
+            // comparing against a String literal would never match.
             Order result = orderExecutionService.placeTestOrder(userId, req);
             if (OrderStatus.REJECTED.equals(result.getStatus())) {
                 return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(ApiResponse.error(result.getFailureReason()));
@@ -178,13 +157,9 @@ public class BrokerController {
 
     @GetMapping("/orders/history")
     public ResponseEntity<?> history(@AuthenticationPrincipal String userId,
-                                      // Review finding ("Pagination for order history/positions/
-                                      // metrics" -- P2, full context in
-                                      // OrderExecutionService.history's own updated javadoc):
-                                      // same fix, same honest trade-off, as PositionController's
-                                      // own identical change -- a default page size here IS a
-                                      // real behavior change from "return everything," not
-                                      // silently backward-compatible.
+                                      // Paginated to bound response size for accounts with long
+                                      // order histories; callers that relied on getting every
+                                      // record back in one call need to page through explicitly.
                                       @RequestParam(required = false, defaultValue = "0") int page,
                                       @RequestParam(required = false, defaultValue = "50") int size) {
         return ResponseEntity.ok(ApiResponse.ok("OK", orderExecutionService.history(userId, page, size)));
@@ -193,12 +168,9 @@ public class BrokerController {
     // ── Risk profile / auto-trade configuration ──────────────
 
     /**
-     * Audit fix (P1-5 follow-up -- external review, second pass: "Require a step-up OTP for
-     * risk-limit edits" -- full context in RiskProfileService.RISK_PROFILE_STEPUP_PURPOSE's own
-     * javadoc): call this first when editing a LIVE credential's risk profile, then submit the
-     * code you receive as "stepUpOtp" in the upsertRiskProfile request body. A no-op (and
-     * harmless either way) for a TESTNET/PAPER credential, which upsert() never actually checks
-     * the code against.
+     * Sends a step-up verification code required before editing a LIVE credential's risk
+     * profile; call this first, then submit the code as "stepUpOtp" in the upsertRiskProfile
+     * request body. Not required for a TESTNET/PAPER credential, where upsert() never checks it.
      */
     @PostMapping("/risk-profile/{credentialId}/request-otp")
     public ResponseEntity<?> requestRiskProfileStepUpOtp(@AuthenticationPrincipal String userId, @PathVariable String credentialId) {
@@ -253,18 +225,16 @@ public class BrokerController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
         } catch (IllegalStateException e) {
-            // Review finding ("Resume needs safety validation"): distinct from "not found" — the
-            // credential/profile exists, but resuming is refused because of an unresolved unsafe
-            // position. 409 Conflict fits better than 404 for "exists but not in a resumable state".
+            // The credential/profile exists but resuming is refused because of an unresolved
+            // unsafe position.
             return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.error(e.getMessage()));
         }
     }
 
     /**
-     * Audit item P1-5, full context in RiskProfileService.authorizeLiveAutoTrade's own updated
-     * javadoc: issues the fresh step-up verification code authorize-live-autotrade below now
-     * requires, sent to the caller's own on-file email/mobile. Call this first, then submit the
-     * code you receive as "stepUpOtp" in the authorize-live-autotrade request body.
+     * Sends the step-up verification code required to authorize autonomous LIVE trading, to the
+     * caller's on-file email/mobile. Call this first, then submit the code as "stepUpOtp" in the
+     * authorize-live-autotrade request body.
      */
     @PostMapping("/risk-profile/{credentialId}/authorize-live-autotrade/request-otp")
     public ResponseEntity<?> requestLiveAutoTradeStepUpOtp(@AuthenticationPrincipal String userId, @PathVariable String credentialId) {
@@ -289,12 +259,11 @@ public class BrokerController {
     }
 
     /**
-     * Audit item P0-1, full context in LiveCanaryRecord's own class javadoc. Places one real,
-     * minimal LIVE order on the given symbol -- a genuinely real-money action, gated behind the
-     * same explicit confirmation-phrase pattern as authorize-live-autotrade just above. Returns
-     * the PENDING record immediately; the order resolves to PASSED/FAILED asynchronously via
-     * LiveCanaryService's own reconciliation sweep -- poll GET .../live-canary/{credentialId}
-     * for the outcome.
+     * Places one real, minimal LIVE order on the given symbol as a real-money sanity check on a
+     * newly connected credential, gated behind the same explicit confirmation-phrase pattern as
+     * authorize-live-autotrade. Returns the PENDING record immediately; the order resolves to
+     * PASSED/FAILED asynchronously via LiveCanaryService's reconciliation sweep -- poll
+     * GET .../live-canary/{credentialId} for the outcome.
      */
     @PostMapping("/{credentialId}/live-canary")
     public ResponseEntity<?> startLiveCanary(@AuthenticationPrincipal String userId, @PathVariable String credentialId,
@@ -342,13 +311,9 @@ public class BrokerController {
     }
 
     /**
-     * Review finding ("Secrets / encryption key rotation and credential revocation story
-     * incomplete" -- external review, nineteenth pass, P1, full context in
-     * RiskProfileService.emergencyRevokeAll's own javadoc): the reachable endpoint for the
-     * combined emergency response -- distinct from kill-switch above, which only halts
-     * autonomous trading. This also deactivates every credential (closing manual placement too)
-     * and forces re-authentication on every device by invalidating this user's own current
-     * session.
+     * Full emergency response, distinct from the kill switch above (which only halts autonomous
+     * trading): deactivates every broker credential for this user, closing off manual order
+     * placement too, and invalidates the current session to force re-authentication everywhere.
      */
     @PostMapping("/emergency-revoke-all")
     public ResponseEntity<?> emergencyRevokeAll(@AuthenticationPrincipal String userId,
@@ -366,15 +331,12 @@ public class BrokerController {
             + "you must also revoke it directly on Binance's own site; this application cannot do that on your behalf." + positionWarning));
     }
 
-    // ── Review finding ("P0 #1" — "LIVE Binance credential architecture is wrong"): a LIVE
-    // credential is now its own connect flow, not a flag flipped on an existing TESTNET row —
-    // Binance testnet and mainnet keys are genuinely separate credentials, confirmed against
-    // current Binance documentation. Two-step confirmation preserved, now correctly scoped to
-    // the operation that actually matters (saving a credential that can touch real money). The
-    // old /{id}/live-mode/request, /confirm, /revert endpoints are gone — there's no "revert"
-    // when TESTNET and LIVE were never the same row to begin with; deleting a LIVE credential
-    // (existing DELETE /{id}) is the equivalent now, and it never touches the separate TESTNET
-    // credential the user may still have.
+    // Connecting a LIVE credential is its own flow rather than a flag on an existing TESTNET
+    // credential, since Binance testnet and mainnet keys are genuinely separate credentials.
+    // Two-step confirmation (request then confirm within a short window) guards the operation
+    // that can touch real money. There is no "revert to testnet" here -- a LIVE credential never
+    // shares a row with a TESTNET one, so removing LIVE access means deleting the LIVE
+    // credential (DELETE /{id}), which leaves any separate TESTNET credential untouched.
     @PostMapping("/connect/live/request")
     public ResponseEntity<?> requestLiveConnect(@AuthenticationPrincipal String userId,
                                                  @Valid @RequestBody ConnectBrokerRequest req) {
@@ -389,10 +351,8 @@ public class BrokerController {
     }
 
     /**
-     * Audit fix (P1-5 follow-up -- external review, second pass: "Require a step-up OTP for ...
-     * credential changes" -- full context in BrokerCredentialService.CREDENTIAL_CHANGE_STEPUP_PURPOSE's
-     * own javadoc): call this before confirmLiveConnect, then submit the code you receive as
-     * "stepUpOtp" in that request body.
+     * Sends the step-up verification code required before confirming a LIVE connection; call
+     * this before confirmLiveConnect, then submit the code as "stepUpOtp" in that request body.
      */
     @PostMapping("/connect/live/request-otp")
     public ResponseEntity<?> requestCredentialChangeStepUpOtpForConnect(@AuthenticationPrincipal String userId) {
@@ -417,16 +377,10 @@ public class BrokerController {
     }
 
     /**
-     * Review finding (P1 #9 -- "API key rotation doesn't verify it's the same Binance account
-     * (and bypasses LIVE two-step)"): the same two-step ceremony requestLiveConnect/
-     * confirmLiveConnect already apply to a brand-new LIVE credential, now also required to
-     * rotate an EXISTING LIVE credential's key -- full context in
-     * BrokerCredentialService.rotateApiKey's own updated javadoc.
-     *
-     * Audit fix (P1-5 follow-up, full context in BrokerCredentialService.CREDENTIAL_CHANGE_STEPUP_PURPOSE's
-     * own javadoc): call .../rotate-key/request-otp before confirm here too, same ceremony as
-     * the LIVE-connect flow above -- both are "credential changes" sharing the same step-up
-     * purpose.
+     * Sends the step-up verification code required to rotate an existing LIVE credential's API
+     * key, using the same two-step request/confirm ceremony and step-up purpose as the LIVE
+     * connect flow, so the new key is verified against the same Binance account before it
+     * replaces the old one. Call this before .../rotate-key/confirm.
      */
     @PostMapping("/{id}/rotate-key/request-otp")
     public ResponseEntity<?> requestCredentialChangeStepUpOtpForRotation(@AuthenticationPrincipal String userId, @PathVariable String id) {

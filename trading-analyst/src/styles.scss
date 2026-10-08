@@ -1,16 +1,9 @@
-// Review finding ("CSP still uses unsafe-inline" -- external review, twenty-fourth pass, P2,
-// full context in SecurityConfig's own updated CSP comment): the @import of Google Fonts here
-// used to be the reason style-src/font-src needed fonts.googleapis.com/fonts.gstatic.com
-// allowances at all. Removed entirely in favor of real, well-established system font stacks --
-// this genuinely narrows the CSP's third-party surface (those two origins are no longer needed
-// anywhere in this policy), at the honest cost of a visual change: the site no longer renders
-// in Space Grotesk/JetBrains Mono specifically, falling back to whatever font each user's own
-// OS/browser provides for these generic stacks instead. 'unsafe-inline' itself remains in
-// style-src regardless -- that part is Angular's own runtime component-style injection, a
-// separate mechanism entirely from this font import, and eliminating it for real would need a
-// per-request CSP nonce threaded through Angular's ngCspNonce, which requires either Angular
-// SSR or a reverse proxy rewriting index.html on every request -- genuine infrastructure this
-// backend's own SecurityConfig cannot provide by itself, stated honestly rather than faked.
+// Fonts come entirely from system font stacks (ui-sans-serif/ui-monospace below) rather
+// than a Google Fonts @import, so the app needs no fonts.googleapis.com/fonts.gstatic.com
+// allowance in CSP and renders instantly using whatever font each OS/browser already has.
+// style-src still needs 'unsafe-inline' for Angular's runtime component-style injection,
+// which is unrelated to fonts and would require a per-request CSP nonce (Angular SSR or a
+// proxy rewriting index.html) to remove.
 
 :root {
   --bg-primary: #0A0E1A;

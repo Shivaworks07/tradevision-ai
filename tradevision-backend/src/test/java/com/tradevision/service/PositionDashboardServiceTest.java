@@ -26,29 +26,22 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Review finding ("Pagination for order history/positions/metrics" -- P2, full context in
- * PositionDashboardService.listPositions's own updated javadoc): this file did not exist before
- * this fix -- PositionDashboardService.listPositions had zero test coverage previously.
+ * Tests for PositionDashboardService.listPositions, covering pagination bounds and
+ * position protection-status classification.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
 class PositionDashboardServiceTest {
 
     @Mock PositionRepository positionRepo;
-    // Review finding ("OMS/ExecutedOrder full unification" -- P1, full context in
-    // PositionDashboardService's own migration off ExecutedOrderRepository): the field this
-    // mocked no longer exists on the service under test.
     @Mock OrderRepository orderRepo;
     @Mock BrokerCredentialService credentialService;
     @Mock PositionSafetyService positionSafetyService;
     @Mock PositionMonitorService positionMonitorService;
     @Mock TradingIncidentRepository incidentRepo;
-    // Review finding ("OCO protection logic is better, but dust classification needs one more
-    // invariant" -- external review, second pass): needed now that listPositions's own new
-    // symbol-rules batch fetch calls credentialService.adapterForCredential() and
-    // adapter.getSymbolRules() -- without these, @InjectMocks/an unstubbed call would return
-    // null, and this class's own try/catch would silently swallow the resulting NPE rather than
-    // this test file actually exercising the real, intended classification path.
+    // listPositions fetches symbol rules via credentialService.adapterForCredential() and
+    // adapter.getSymbolRules(), so both must be stubbed for the protection-classification
+    // path to run against real values instead of hitting an unstubbed null.
     @Mock com.tradevision.service.broker.BrokerAdapter adapter;
 
     @InjectMocks PositionDashboardService service;
@@ -59,11 +52,9 @@ class PositionDashboardServiceTest {
         credential.setId("cred1");
         when(credentialService.ownedCredential("user1", "cred1")).thenReturn(credential);
         when(positionRepo.findByUserIdAndCredentialId(any(), any(), any(Pageable.class))).thenReturn(List.of());
-        // Review finding ("OCO protection logic is better, but dust classification needs one
-        // more invariant" -- external review, second pass): a realistic default -- BTCUSDT's
-        // own real minQty is 0.00001 on Binance, small enough that this file's own existing
-        // "partially protected" fixture (a 0.1 gap) is correctly classified as PARTIAL, not
-        // DUST_RESIDUAL, matching what that fixture's own test actually means to verify.
+        // BTCUSDT's real minQty on Binance is 0.00001, small enough that the "partially
+        // protected" fixture below (a 0.1 gap) is correctly classified as PARTIAL, not
+        // DUST_RESIDUAL.
         when(credentialService.adapterForCredential(any())).thenReturn(adapter);
         when(adapter.getSymbolRules(any(), any())).thenReturn(
             new com.tradevision.service.broker.dto.SymbolRules("BTCUSDT", "BTC", "USDT",
@@ -72,7 +63,7 @@ class PositionDashboardServiceTest {
     }
 
     @Test
-    @DisplayName("listPositions: bounded via a real Pageable, not the old unbounded query -- the actual review fix (\"Pagination for order history/positions/metrics\")")
+    @DisplayName("listPositions: bounded via a real Pageable, not an unbounded query")
     void listPositions_usesPageableNotUnboundedQuery() {
         service.listPositions("user1", "cred1", null, 0, 50);
 
@@ -85,7 +76,7 @@ class PositionDashboardServiceTest {
     }
 
     @Test
-    @DisplayName("listPositions: a requested page size above the 200 cap is clamped down, not honored as-is -- prevents a caller from defeating the whole point of this fix by just asking for an enormous page")
+    @DisplayName("listPositions: a requested page size above the 200 cap is clamped down, not honored as-is")
     void listPositions_pageSizeAboveCap_clampedTo200() {
         service.listPositions("user1", "cred1", null, 0, 100_000);
 
@@ -126,7 +117,7 @@ class PositionDashboardServiceTest {
     }
 
     @Test
-    @DisplayName("listPositions: protectedByOco is true only when protectedQuantity actually covers the position's full real quantity -- the actual review fix (\"Position protection status is not yet a first-class invariant\"), not merely \"an OCO id happens to be present\"")
+    @DisplayName("listPositions: protectedByOco is true only when protectedQuantity actually covers the position's full quantity, not merely because an OCO id is present")
     void listPositions_protectedByOco_requiresFullCoverage() {
         Position fullyProtected = new Position();
         fullyProtected.setId("pos1");
@@ -148,7 +139,7 @@ class PositionDashboardServiceTest {
     }
 
     @Test
-    @DisplayName("listPositions: a residual gap genuinely at or above the exchange's own real minQty is classified PARTIAL -- a real, meaningful naked exposure, not dust -- the actual review fix (\"dust classification needs one more invariant\")")
+    @DisplayName("listPositions: a residual gap at or above the exchange's minQty is classified PARTIAL, representing meaningful naked exposure rather than dust")
     void listPositions_meaningfulResidual_classifiedPartial() {
         Position p = new Position();
         p.setId("pos-partial"); p.setUserId("user1"); p.setCredentialId("cred1"); p.setSymbol("BTCUSDT");
@@ -164,7 +155,7 @@ class PositionDashboardServiceTest {
     }
 
     @Test
-    @DisplayName("listPositions: a residual gap genuinely BELOW the exchange's own real minQty is classified DUST_RESIDUAL, not PARTIAL -- a real, known outcome of exchange step-size rounding, not a meaningful naked exposure -- the actual review fix")
+    @DisplayName("listPositions: a residual gap below the exchange's minQty is classified DUST_RESIDUAL, not PARTIAL, since it's an artifact of exchange step-size rounding rather than meaningful exposure")
     void listPositions_dustResidual_classifiedDustNotPartial() {
         Position p = new Position();
         p.setId("pos-dust"); p.setUserId("user1"); p.setCredentialId("cred1"); p.setSymbol("BTCUSDT");
@@ -180,7 +171,7 @@ class PositionDashboardServiceTest {
     }
 
     @Test
-    @DisplayName("listPositions: when this symbol's real minQty can't be fetched at all, a genuine gap defaults to PARTIAL, never DUST_RESIDUAL -- this session's own 'never fabricate a reassuring answer when genuinely uncertain' principle applied to protection classification")
+    @DisplayName("listPositions: when a symbol's minQty can't be fetched, a residual gap defaults to PARTIAL rather than DUST_RESIDUAL, so classification never understates risk when uncertain")
     void listPositions_symbolRulesFetchFails_defaultsToSaferPartialClassification() {
         when(adapter.getSymbolRules(any(), any())).thenThrow(new RuntimeException("simulated exchange lookup failure"));
         Position p = new Position();
@@ -197,7 +188,7 @@ class PositionDashboardServiceTest {
     }
 
     @Test
-    @DisplayName("listPositions: an OCO covering only PART of the position -- protectedByOco is FALSE (not silently true, the actual bug this review caught), and the raw protectedQuantity is still exposed so the frontend can show \"partially protected\" instead of a flat unprotected")
+    @DisplayName("listPositions: an OCO covering only part of the position reports protectedByOco as false, while still exposing the raw protectedQuantity so the frontend can show \"partially protected\" instead of a flat unprotected")
     void listPositions_partiallyProtected_notReportedAsFullyProtected() {
         Position partiallyProtected = new Position();
         partiallyProtected.setId("pos2");

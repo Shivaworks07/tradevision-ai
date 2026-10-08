@@ -22,11 +22,11 @@ import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.*;
 
 /**
- * Review items #13/#14: tests the actual query/update construction sent to MongoDB, not just
- * "does it run" — the entire point of this class is that reserve() must be a single atomic
- * findAndModify with a conditional filter, not a separate read-then-write. A test that only
- * checks the method returns something wouldn't catch a regression back to the read-then-write
- * pattern this exists to prevent.
+ * Tests the actual query/update construction sent to MongoDB, not just "does it run" — the
+ * entire point of this class is that reserve() must be a single atomic findAndModify with a
+ * conditional filter, not a separate read-then-write. A test that only checks the method returns
+ * something wouldn't catch a regression back to the read-then-write pattern this exists to
+ * prevent.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -40,11 +40,8 @@ class PositionSlotReservationServiceTest {
 
     @org.junit.jupiter.api.BeforeEach
     void setup() {
-        // Review finding ("Position slot reservations still don't have ownership IDs" --
-        // external review, twenty-eighth pass, P0, full context in
-        // PositionSlotReservationRecord's own class javadoc): reserve() now inserts a real
-        // record as its very first step -- every existing test in this file would NPE without
-        // this stub.
+        // reserve() inserts a real record as its very first step -- every existing test in this
+        // file would NPE without this stub.
         when(reservationRecordRepo.insert(any(com.tradevision.model.PositionSlotReservationRecord.class))).thenAnswer(inv -> {
             com.tradevision.model.PositionSlotReservationRecord r = inv.getArgument(0);
             if (r.getId() == null) r.setId("test-slot-reservation-id");
@@ -85,7 +82,7 @@ class PositionSlotReservationServiceTest {
 
         assertThat(result.reserved()).isFalse();
         assertThat(result.reservationId()).isNull();
-        // The actual fix: the now-unneeded PENDING record is deleted rather than left behind.
+        // The now-unneeded PENDING record is deleted rather than left behind.
         verify(reservationRecordRepo).deleteById("test-slot-reservation-id");
     }
 
@@ -157,7 +154,7 @@ class PositionSlotReservationServiceTest {
     }
 
     @Test
-    @DisplayName("reconcile: does NOT overwrite the counter when a reservation happened within the grace window — 'P0 #4' regression guard")
+    @DisplayName("reconcile: does NOT overwrite the counter when a reservation happened within the grace window")
     void reconcile_skipsOverwriteDuringGraceWindow() {
         when(mongoTemplate.exists(any(Query.class), eq(PositionSlotReservation.class))).thenReturn(true);
         PositionSlotReservation recentlyReserved = new PositionSlotReservation();
@@ -166,8 +163,8 @@ class PositionSlotReservationServiceTest {
         recentlyReserved.setLastReservedAt(java.time.Instant.now().minusSeconds(5)); // reserved 5 seconds ago — well within the grace window
         when(mongoTemplate.findOne(any(Query.class), eq(PositionSlotReservation.class))).thenReturn(recentlyReserved);
 
-        // Simulates the exact race the review found: reconciliation runs and sees 0 OPEN
-        // positions (the order/Position for the recent reservation hasn't been saved yet).
+        // Simulates the race where reconciliation runs and sees 0 OPEN positions (the
+        // order/Position for the recent reservation hasn't been saved yet).
         service.reconcile("cred1", 0);
 
         verify(mongoTemplate, never()).updateFirst(any(Query.class), any(Update.class), eq(PositionSlotReservation.class));
@@ -188,12 +185,10 @@ class PositionSlotReservationServiceTest {
         verify(mongoTemplate).updateFirst(any(Query.class), any(Update.class), eq(PositionSlotReservation.class));
     }
 
-    // ── P0: reservation-identity architecture ──────────────────────────────
+    // ── reservation-identity architecture ──────────────────────────────
 
     /**
-     * Review finding ("Position slot reservations still don't have ownership IDs" -- external
-     * review, twenty-eighth pass, P0, full context in PositionSlotReservationRecord's own class
-     * javadoc): the actual tests for the new lifecycle.
+     * Tests for the reservation record lifecycle.
      */
     @Test
     @DisplayName("reserve: the record is inserted as PENDING before any counter is touched, then flipped to ACTIVE once the counter claim succeeds")
@@ -216,9 +211,8 @@ class PositionSlotReservationServiceTest {
     }
 
     /**
-     * Review finding ("Reservation lifecycle is still not transactionally safe" -- external
-     * review, thirty-eighth pass, P0, full context in ExposureReservationServiceTest's own
-     * identical test): the same fix, proven here for slot reservations.
+     * Same lifecycle guarantee as ExposureReservationServiceTest's own identical test, proven
+     * here for slot reservations.
      */
     @Test
     @DisplayName("reserve: no ClientSession available at all -- falls back to the sequential, non-transactional approach rather than failing outright")
@@ -235,9 +229,8 @@ class PositionSlotReservationServiceTest {
     }
 
     /**
-     * Review finding ("Make LIVE reservation transaction fallback impossible" -- external
-     * review, thirty-ninth pass, full context in ExposureReservationServiceTest's own identical
-     * tests): the same fix, proven here for slot reservations.
+     * Same guarantee as ExposureReservationServiceTest's own identical tests, proven here for
+     * slot reservations: a LIVE reservation never falls back to the non-transactional path.
      */
     @Test
     @DisplayName("reserve: live=true and no ClientSession available -- rejects and halts, NEVER falls back to the sequential path")
@@ -270,10 +263,8 @@ class PositionSlotReservationServiceTest {
     }
 
     /**
-     * Review finding ("v183 still has a dangerous 'PENDING reservation cleanup' window" --
-     * external review, thirty-fifth pass, P0, full context in
-     * ExposureReservationServiceTest's own identical test): the same fix, proven here for slot
-     * reservations.
+     * Same guarantee as ExposureReservationServiceTest's own identical test, proven here for
+     * slot reservations.
      */
     @Test
     @DisplayName("reserve: the final PENDING-to-ACTIVE transition matches zero documents (record deleted concurrently) -- raises a critical incident naming the exact record and key")
@@ -350,9 +341,7 @@ class PositionSlotReservationServiceTest {
     }
 
     /**
-     * Review finding ("v183 still has a dangerous 'PENDING reservation cleanup' window" --
-     * external review, thirty-fifth/thirty-seventh passes, P0, full context in
-     * ExposureReservationServiceTest's own identical tests): the same fix, proven here for
+     * Same guarantee as ExposureReservationServiceTest's own identical tests, proven here for
      * slot reservations.
      */
     @Test
@@ -393,9 +382,7 @@ class PositionSlotReservationServiceTest {
     }
 
     /**
-     * Review finding ("PositionSlotReservationService.reconcile() has the same
-     * stale-reservation issue conceptually" -- external review, twenty-eighth pass, P1, full
-     * context in reconcile()'s own updated javadoc): the actual test for the new signal.
+     * Covers the case where a PENDING record is still in flight.
      */
     @Test
     @DisplayName("reconcile: a PENDING record still in flight skips the counter overwrite entirely, even well outside the time-based grace window")
@@ -415,9 +402,7 @@ class PositionSlotReservationServiceTest {
     }
 
     /**
-     * Review finding ("reservation reconciliation is still fundamentally cache-based" --
-     * external review, twenty-ninth pass, P1, full context in
-     * ExposureReservationServiceTest's own identical test): the same fix, proven here for
+     * Same guarantee as ExposureReservationServiceTest's own identical test, proven here for
      * slot reservations.
      */
     @Test

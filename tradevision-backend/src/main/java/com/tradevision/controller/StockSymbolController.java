@@ -9,9 +9,8 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @RequestMapping("/api/stocks/symbols")
 @RequiredArgsConstructor
-// Review finding ("@CrossOrigin still has hardcoded localhost origins" -- external review,
-// thirty-fifth pass, P2, full context in NewsController's own identical fix): removed --
-// CorsConfig's own global CorsFilter already covers this endpoint.
+// CORS is handled centrally by CorsConfig's global CorsFilter; no per-controller
+// @CrossOrigin is needed here.
 public class StockSymbolController {
 
     private final StockSymbolService symbolService;

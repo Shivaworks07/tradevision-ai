@@ -19,76 +19,44 @@ import java.util.Map;
  * AES-256-GCM at-rest encryption for broker API keys/secrets — same "key from an env var,
  * never committed" pattern as JwtUtil's app.jwt.secret.
  *
- * P2-6 fix ("CredentialEncryptionService: no key id/version, no AAD, no rotation path" --
- * external review, confirmed real by direct inspection before this fix: every ciphertext was a
- * bare base64([12-byte IV][GCM ciphertext+tag]) with no indication of WHICH key encrypted it,
- * no binding to what field/record it belongs to, and no way to introduce a new key without
- * making every existing ciphertext undecryptable overnight): all three addressed below, with a
- * new versioned envelope format that stays able to decrypt every ciphertext this class ever
- * produced under the OLD format, since real BrokerCredential rows already exist in production
- * under it — this fix cannot afford to silently strand them.
+ * Ciphertext format: {@code "v2:<keyId>:<base64(iv+ciphertext)>"}. The literal ':' delimiter is
+ * never a valid character in plain base64 output (the Base64 alphabet is exactly
+ * [A-Za-z0-9+/=]), so decrypt() can tell a versioned envelope apart from a legacy bare-base64
+ * value unambiguously just by checking for it — no separate migration flag or schema change
+ * needed. A legacy value with no ':' is decrypted via the old code path (single fixed key, no
+ * AAD, no keyId); every new encrypt() call always produces the current versioned format, under
+ * the current key.
  *
- * NEW ciphertext format: {@code "v2:<keyId>:<base64(iv+ciphertext)>"}. The literal ':' delimiter
- * is never a valid character in the OLD format's plain base64 output (Base64's own alphabet is
- * exactly [A-Za-z0-9+/=], confirmed before relying on this), so decrypt() can tell the two
- * formats apart unambiguously by checking for it — no separate migration flag or schema change
- * needed. An encoded value with no ':' is decrypted via the untouched OLD code path (single
- * fixed key, no AAD, no keyId) exactly as before this fix; every new encrypt() call always
- * produces the NEW format, under the CURRENT key only.
+ * KEY ID / VERSION: app.encryption.key-id names the currently active key (defaults to "v1" if
+ * unset, so a deployment that only ever set app.encryption.key keeps working unchanged).
+ * app.encryption.previous-keys optionally lists retired keys as
+ * "keyId1=base64key1,keyId2=base64key2" — used only for decrypting ciphertext still under an old
+ * key after a rotation, never for encrypting anything new.
  *
- * KEY ID / VERSION: app.encryption.key-id names the currently ACTIVE key (defaults to "v1" if
- * unset, so an existing deployment that only ever set app.encryption.key keeps working
- * unchanged). app.encryption.previous-keys optionally lists retired keys as
- * "keyId1=base64key1,keyId2=base64key2" — used for DECRYPTING ciphertext still under an old key
- * after a rotation, never for encrypting anything new.
+ * AAD (Associated Additional Data): callers pass a context string (BrokerCredentialService
+ * passes "<credentialId>:apiKey" or "<credentialId>:apiSecret") that GCM authenticates but never
+ * encrypts. Binding the context to both the field name and the owning row's id means a
+ * ciphertext authenticated for one field or row fails decryption outright
+ * (AEADBadTagException) if presented under a different field or a different row's context — so
+ * an apiSecret value can't be read back as an apiKey, and a ciphertext copied into a different
+ * row (a restore from the wrong backup, a copy/paste mistake, a direct-database-access error)
+ * cannot silently decrypt as if it belonged there.
  *
- * AAD (Associated Additional Data): callers now pass a context string (BrokerCredentialService
- * passes "apiKey" or "apiSecret") that GCM authenticates but never encrypts. This is what closes
- * "no AAD" from this finding: a ciphertext GCM-authenticated under context="apiSecret" fails
- * decryption outright (AEADBadTagException) if presented as an apiKey's own ciphertext -- an
- * attacker (or a bug) that swaps which encrypted field ends up in which database column cannot
- * silently succeed, only fail loudly.
+ * ROTATION PATH: reencryptWithCurrentKey() decrypts whatever key/format a ciphertext is
+ * currently under and re-encrypts it with the current active key — a no-op in effect when the
+ * ciphertext is already current, so it is safe to call unconditionally during a migration pass.
+ * It is not wired into an automatic scheduled job; an operator (or a future scheduled task) can
+ * call it once app.encryption.key/-key-id are rotated, to migrate existing rows off a retired
+ * key one credential at a time.
  *
- * ROTATION PATH: reencryptWithCurrentKey() is the actual primitive this finding's "no rotation
- * path" asks for -- decrypts whatever key/format a ciphertext is currently under and re-encrypts
- * it with the CURRENT active key. Deliberately NOT wired into an automatic scheduled job in this
- * pass (that needs its own decision about how to safely iterate every BrokerCredential row
- * without blocking real trading traffic, a materially larger change than this fix attempts) --
- * disclosed here rather than silently left unusable: an operator (or a future scheduled task)
- * can call this once app.encryption.key/-key-id are rotated to migrate existing rows off the
- * retired key, one credential at a time, using BrokerCredentialService's own existing decrypt/
- * re-save machinery.
- *
- * Audit item P2 ("CredentialEncryptionService weak AAD binding"): external review, confirmed
- * real by direct inspection -- the AAD context above (callers pass the literal "apiKey" or
- * "apiSecret") only binds a ciphertext to WHICH FIELD it is, not to WHICH ROW it belongs to.
- * Every apiKey ciphertext across every BrokerCredential, for every user, is authenticated under
- * the exact same AAD. That closes field-confusion (an apiSecret value can't be read back as an
- * apiKey) but does nothing to stop row-substitution: if one credential's encryptedApiKey column
- * value were ever copied into a DIFFERENT credential's row (a restore from the wrong backup, a
- * copy/paste bug, a direct-database-access mistake or compromise), decryption would succeed
- * silently under the old scheme -- GCM has no way to know the ciphertext "belongs" to someone
- * else's row when both rows authenticate under the identical generic context.
- *
- * Fixed by having callers (BrokerCredentialService) bind the AAD context to the owning row's own
- * id as well as the field name -- "<credentialId>:apiKey" instead of a bare "apiKey" -- for every
- * NEW encryption. A ciphertext copied into a different row now fails decryption outright
- * (AEADBadTagException) instead of succeeding, because the context the decrypting row supplies
- * no longer matches the context the ciphertext was actually authenticated under.
- *
- * BACKWARD COMPATIBILITY: every BrokerCredential row that existed before this fix was encrypted
- * under the OLD, generic field-only context -- there is no format marker distinguishing "old
- * context" from "new context" the way the v1/v2 ciphertext envelope above is distinguishable, so
- * this cannot be told apart by inspection alone, only by attempting decryption.
- * decryptWithLegacyFallback(...) below is the actual mechanism: try the new, row-scoped context
- * first; if that specific attempt fails GCM authentication (and only for that reason -- any other
- * failure, like a wrong key or corrupted ciphertext, still fails loudly with no fallback), retry
- * once under the old, generic field-only context and log a warning identifying the row as not yet
- * migrated. This is safe specifically because GCM authentication failure is cheap, deterministic,
- * and side-effect-free to attempt and retry -- it is not a weakening of the new binding for new
- * ciphertext, only a one-time bridge for ciphertext this class produced before the binding
- * existed. reencryptWithCurrentKey remains the real migration primitive to close this gap for a
- * given row permanently, the same as it already does for key rotation.
+ * BACKWARD COMPATIBILITY FOR AAD CONTEXT: rows encrypted before row-scoped AAD context existed
+ * carry no marker distinguishing "old context" from "new context" the way the ciphertext
+ * envelope version does, so this can only be told apart by attempting decryption.
+ * decryptWithLegacyFallback(...) tries the new, row-scoped context first; only if that specific
+ * attempt fails GCM authentication (never for any other failure, such as a wrong key or
+ * corrupted ciphertext) does it retry once under the old, generic field-only context, logging a
+ * warning that the row is not yet migrated. This is safe because GCM authentication failure is
+ * cheap, deterministic, and side-effect-free to attempt and retry.
  */
 @Service
 public class CredentialEncryptionService {
@@ -107,10 +75,10 @@ public class CredentialEncryptionService {
     private String activeKeyId;
 
     /**
-     * P2-6 fix, full context in this class's own header javadoc: optional retired keys, used only
-     * to DECRYPT ciphertext still under an old key after app.encryption.key/-key-id are rotated to
-     * a new value. Format: "keyId1=base64key1,keyId2=base64key2". Empty/unset by default -- a
-     * deployment that has never rotated its key never needs this populated.
+     * Optional retired keys, used only to decrypt ciphertext still under an old key after
+     * app.encryption.key/-key-id are rotated to a new value. Format:
+     * "keyId1=base64key1,keyId2=base64key2". Empty/unset by default — a deployment that has
+     * never rotated its key never needs this populated.
      */
     @Value("${app.encryption.previous-keys:}")
     private String previousKeysRaw;
@@ -123,10 +91,9 @@ public class CredentialEncryptionService {
     }
 
     /**
-     * P2-6 fix, full context in this class's own header javadoc: always produces the NEW,
-     * versioned+keyed+AAD-bound format, under the CURRENT active key only. context is
-     * authenticated (via GCM's AAD) but never encrypted or stored in cleartext elsewhere --
-     * decrypt() must be called with this exact same context to succeed.
+     * Encrypts under the current active key, producing the versioned, keyed, AAD-bound
+     * ciphertext format. context is authenticated (via GCM's AAD) but never encrypted or stored
+     * in cleartext elsewhere — decrypt() must be called with this exact same context to succeed.
      */
     public String encrypt(String plaintext, String context) {
         try {
@@ -152,31 +119,27 @@ public class CredentialEncryptionService {
     }
 
     /**
-     * P2-6 fix, full context in this class's own header javadoc: transparently handles both the
-     * NEW "v2:<keyId>:<payload>" format (this class's own current output) and every OLD, bare
-     * base64 ciphertext this class ever produced before this fix (real BrokerCredential rows
-     * already exist in production under it) -- distinguished by the literal ':' delimiter, which
-     * is never a valid character in plain base64 output.
+     * Transparently handles both the current "v2:<keyId>:<payload>" format and legacy bare
+     * base64 ciphertext — distinguished by the literal ':' delimiter, which is never a valid
+     * character in plain base64 output.
      */
     public String decrypt(String encoded, String context) {
         if (encoded.indexOf(':') >= 0) {
             String[] parts = encoded.split(":", 3);
             if (parts.length != 3 || !FORMAT_VERSION.equals(parts[0])) {
-                // P2-16 fix ("GlobalExceptionHandler.handleBadState returns IllegalStateException
-                // messages to clients" -- external review, full context in
-                // GlobalExceptionHandler's own updated javadoc): decrypt() runs in real request
-                // paths (order placement, risk-profile resume) that end in handleBadState, which
-                // returns this message to the client verbatim -- the raw envelope-version detail
-                // is an internal storage-format implementation detail, not something a caller
-                // needs. Logged in full server-side for whoever operates this deployment.
+                // decrypt() runs in real request paths (order placement, risk-profile resume)
+                // whose exception handling can return this message to the client verbatim, so
+                // the raw envelope-version detail — an internal storage-format implementation
+                // detail — stays out of the thrown message and is logged in full server-side
+                // instead, for whoever operates this deployment.
                 log.error("Unrecognized ciphertext envelope version: '{}' (expected '{}')", parts[0], FORMAT_VERSION);
                 throw new IllegalStateException("Failed to decrypt credential.");
             }
             String keyId = parts[1];
-            // Deliberately OUTSIDE the try/catch below -- resolveKeyForDecryption's own
-            // "no key configured" failure is an actionable, specific operator-facing error (see
-            // its own javadoc) that is logged in full server-side (same P2-16 reasoning as
-            // above), but no longer returned to an HTTP caller verbatim.
+            // Deliberately outside the try/catch below -- resolveKeyForDecryption's own
+            // "no key configured" failure is an actionable, specific operator-facing error that
+            // is logged in full server-side, but should not be returned to an HTTP caller
+            // verbatim.
             SecretKeySpec key = resolveKeyForDecryption(keyId);
             try {
                 byte[] combined = Base64.getDecoder().decode(parts[2]);
@@ -195,10 +158,9 @@ public class CredentialEncryptionService {
             }
         }
 
-        // OLD format: no keyId, no AAD -- always decrypted with the CURRENT key, exactly as
-        // this class behaved before this fix (real production ciphertexts predate key rotation
-        // ever existing, so they can only ever be under the one key that was active when this
-        // class had no rotation concept at all).
+        // Legacy format: no keyId, no AAD -- always decrypted with the current key, since any
+        // ciphertext in this format predates key rotation and can only be under the one key
+        // that was active before rotation existed.
         try {
             byte[] combined = Base64.getDecoder().decode(encoded);
             byte[] iv = new byte[GCM_IV_LENGTH];
@@ -216,24 +178,24 @@ public class CredentialEncryptionService {
     }
 
     /**
-     * P2-6 fix, full context in this class's own header javadoc: the actual rotation primitive --
-     * decrypts under whatever key/format the ciphertext is currently under, then re-encrypts with
-     * the CURRENT active key. A no-op in effect (produces an equivalent, freshly re-encrypted
-     * value) when the ciphertext is already under the current key -- safe to call unconditionally
-     * during a migration pass rather than needing to first check which key a row is under.
+     * The key-rotation primitive: decrypts under whatever key/format the ciphertext is
+     * currently under, then re-encrypts with the current active key. A no-op in effect (produces
+     * an equivalent, freshly re-encrypted value) when the ciphertext is already under the
+     * current key -- safe to call unconditionally during a migration pass rather than needing to
+     * first check which key a row is under.
      */
     public String reencryptWithCurrentKey(String encoded, String context) {
         return encrypt(decrypt(encoded, context), context);
     }
 
     /**
-     * Audit item P2 ("weak AAD binding"), full context in this class's own header javadoc: tries
-     * the new, row-scoped AAD context first; falls back to the old, generic field-only context
-     * ONLY when the strong attempt fails GCM authentication specifically (never for any other
-     * failure -- a bad key, a malformed envelope, or genuine tampering still fails loudly with no
-     * retry). The fallback exists purely so a row encrypted before this fix shipped keeps
-     * decrypting without a forced, synchronous bulk migration; it logs a warning each time so the
-     * gap stays visible rather than silently tolerated forever.
+     * Tries the strong, row-scoped AAD context first; falls back to the legacy, generic
+     * field-only context only when the strong attempt fails GCM authentication specifically
+     * (never for any other failure -- a bad key, a malformed envelope, or genuine tampering still
+     * fails loudly with no retry). The fallback exists purely so a row encrypted before
+     * row-scoped context existed keeps decrypting without a forced, synchronous bulk migration;
+     * it logs a warning each time so the gap stays visible rather than silently tolerated
+     * forever.
      */
     public String decryptWithLegacyFallback(String encoded, String strongContext, String legacyContext) {
         try {
@@ -300,10 +262,10 @@ public class CredentialEncryptionService {
     private SecretKeySpec secretKeyFor(String keyId, String base64KeyValue) {
         byte[] keyBytes = Base64.getDecoder().decode(base64KeyValue);
         if (keyBytes.length != 32) {
-            // P2-16 fix (full context in decrypt()'s own updated comment above): this can reach a
-            // real request's caller through the activeKeyId path in resolveKeyForDecryption
-            // (called outside decrypt()'s own try/catch) if the active key is ever misconfigured
-            // -- logged in full server-side rather than exposed to whoever made the request.
+            // This can reach a real request's caller through the activeKeyId path in
+            // resolveKeyForDecryption (called outside decrypt()'s own try/catch) if the active
+            // key is ever misconfigured -- logged in full server-side rather than exposed to
+            // whoever made the request.
             log.error("Encryption key '{}' must decode to exactly 32 bytes (AES-256); got {}", keyId, keyBytes.length);
             throw new IllegalStateException("Failed to decrypt credential.");
         }

@@ -12,19 +12,15 @@ import org.springframework.test.util.ReflectionTestUtils;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * P2-12 fix ("OtpUtil.sendViaMSG91: Mobile/template concatenated unencoded into URL, authkey in
- * query string, no mobile validation" -- external review, full context in OtpUtil's own updated
- * javadoc): direct tests for the new mobile-format validation and URL-encoding, isolated from the
- * real network call sendViaMSG91 itself makes (this codebase has no injectable HTTP client seam
- * for that method, and this sandbox's own network is allowlisted -- see this file's own honest
+ * Verifies OtpUtil's mobile-format validation and URL-encoding, isolated from the real
+ * network call sendViaMSG91 itself makes (this codebase has no injectable HTTP client seam
+ * for that method, and this sandbox's own network is allowlisted -- see this file's own
  * scope note on the one test that does exercise sendSms end-to-end).
  */
 class OtpUtilTest {
 
-    // P2-17 fix ("20x System.out.println, PII in logs, no correlation IDs" -- external review,
-    // full context in OtpUtil's own header comment): OtpUtil now logs via SLF4J instead of
-    // System.out, so this test's own log-capturing helper attaches a Logback ListAppender
-    // directly to OtpUtil's own logger rather than redirecting System.out.
+    // OtpUtil logs via SLF4J rather than System.out, so this test's log-capturing helper
+    // attaches a Logback ListAppender directly to OtpUtil's own logger.
     private ListAppender<ILoggingEvent> logAppender;
     private Logger otpUtilLogger;
 
@@ -65,8 +61,8 @@ class OtpUtilTest {
         assertThat(OtpUtil.isValidIndianMobile("12345678901")).isFalse(); // too long (11 digits)
         assertThat(OtpUtil.isValidIndianMobile("0123456789")).isFalse();  // leading zero -- not a real Indian mobile
         assertThat(OtpUtil.isValidIndianMobile("98765abcde")).isFalse();  // non-digit characters
-        // The actual review-named attack shape: an attacker-supplied "mobile" value crafted to
-        // inject an extra query parameter into the unencoded URL this method used to build.
+        // An attacker-supplied "mobile" value crafted to inject an extra query parameter
+        // into the unencoded URL this method builds.
         assertThat(OtpUtil.isValidIndianMobile("9876543210&otp=000000")).isFalse();
         assertThat(OtpUtil.isValidIndianMobile("9876543210%26authkey%3Dstolen")).isFalse();
     }
@@ -107,7 +103,7 @@ class OtpUtilTest {
         assertThat(capturedLogText()).doesNotContain("Failed to send SMS"); // never reached the network-attempt path
     }
 
-    // ── P2-17: mobile numbers are masked wherever OtpUtil logs them ─────────────────────────
+    // ── mobile numbers are masked wherever OtpUtil logs them ─────────────────────────
 
     @Test
     @DisplayName("maskMobile: keeps only the last 2 digits of a real mobile number")
@@ -123,7 +119,7 @@ class OtpUtilTest {
     }
 
     @Test
-    @DisplayName("P2-17 fix: a successful MSG91 send logs a masked mobile number, never the full digits")
+    @DisplayName("a successful MSG91 send logs a masked mobile number, never the full digits")
     void sendSms_msg91Provider_successfulSend_logsMaskedMobileOnly() {
         // Deliberately malformed (fails validation) so this stays within the sandbox's own
         // network allowlist while still reaching the log line under test -- the refusal path

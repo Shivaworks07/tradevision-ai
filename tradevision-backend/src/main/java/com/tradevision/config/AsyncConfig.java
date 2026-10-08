@@ -7,30 +7,22 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import java.util.concurrent.Executor;
 
 /**
- * Review item #10: a bounded pool for @Async work (specifically AutoTradeService.evaluateSignal),
- * not the JDK default SimpleAsyncTaskExecutor Spring falls back to with plain @EnableAsync —
- * that creates one new unbounded thread per task with no queue and no ceiling, which under load
- * is its own way to degrade the application.
+ * Supplies bounded thread pools for the application's @Async work, in place of the JDK default
+ * SimpleAsyncTaskExecutor that plain @EnableAsync falls back to — that executor creates one new
+ * unbounded thread per task with no queue and no ceiling, which degrades the application under
+ * load.
  */
 @Configuration
 public class AsyncConfig {
 
     /**
-     * Audit item P1-7 ("AsyncConfig's autoTradeExecutor has no explicit rejection policy" --
-     * external review, confirmed real by direct inspection: unlike metricsExecutor and
-     * commissionBackfillExecutor below, this bean never called setRejectedExecutionHandler, so
-     * its real behavior under saturation was whatever ThreadPoolTaskExecutor's undeclared
-     * default is -- java.util.concurrent.ThreadPoolExecutor.AbortPolicy -- without that choice
-     * ever being a deliberate, documented decision the way the other two pools' DiscardPolicy
-     * is). Deliberately kept as AbortPolicy here, now explicit rather than an accidental default:
-     * unlike metrics or a commission backfill, a trading signal is NOT disposable -- silently
-     * discarding one under load (DiscardPolicy) would be strictly worse than a loud, immediate
-     * RejectedExecutionException, because the signal would vanish with no record and no retry.
-     * AbortPolicy's exception is deliberately NOT silent here, and the two call sites that
-     * submit to this pool (TradeCallService.saveCall, AutoTradeRecoveryService.recoverStuckSignals)
-     * now both catch it explicitly and rely on the existing 2-minute recovery sweep
-     * (AutoTradeRecoveryService.recoverStuckSignals) to retry the signal once the pool has
-     * capacity again, rather than losing it.
+     * Dedicated pool for evaluating incoming trading signals (AutoTradeService.evaluateSignal).
+     * Uses AbortPolicy on saturation, explicitly set rather than left to the executor's default:
+     * a trading signal is not disposable, so silently discarding one under load would be strictly
+     * worse than a loud, immediate RejectedExecutionException. Callers that submit to this pool
+     * (TradeCallService.saveCall, AutoTradeRecoveryService.recoverStuckSignals) catch that
+     * exception explicitly and rely on the existing 2-minute recovery sweep to retry the signal
+     * once the pool has capacity again, rather than losing it.
      */
     @Bean("autoTradeExecutor")
     public Executor autoTradeExecutor() {
@@ -47,15 +39,11 @@ public class AsyncConfig {
     }
 
     /**
-     * Review finding (P1 — "API metrics are not actually zero-impact"): MetricsFilter's own
-     * comment claimed "save async — don't block the response", but the write was a plain
-     * synchronous metricRepo.save() on the request-handling thread itself — at scale, that's a
-     * Mongo write competing for the same thread pool as actual request handling. A dedicated,
-     * separate (not the auto-trade) pool: metrics are naturally high-volume but low-priority —
-     * losing an occasional metric under heavy load is fine, unlike a trading signal, so this
-     * uses DiscardPolicy: if the queue is ever full, extra metrics are silently dropped rather
-     * than blocking the caller or throwing, which would be worse for a side-channel that exists
-     * purely for observability.
+     * Dedicated pool for persisting API metrics off the request-handling thread, separate from
+     * autoTradeExecutor so metrics writes never compete with trading work. Metrics are
+     * high-volume but low-priority, so this uses DiscardPolicy: if the queue is ever full, extra
+     * metrics are silently dropped rather than blocking the caller or throwing, which would be
+     * disproportionate for a side-channel that exists purely for observability.
      */
     @Bean("metricsExecutor")
     public Executor metricsExecutor() {
@@ -71,15 +59,12 @@ public class AsyncConfig {
     }
 
     /**
-     * Review finding ("P&L / commission limitation remains" -- external review, thirteenth pass,
-     * full context in FillLedgerService.backfillHistoricalCommissionConversion's own javadoc):
-     * this method makes a real network call (a historical klines fetch) purely for accounting
-     * accuracy, not trading correctness -- it must never share autoTradeExecutor's own pool
-     * (which would mean competing with actual order-placement work) or delay OCO placement on
-     * the calling thread (the position is genuinely unprotected until that OCO exists, and this
-     * backfill has no bearing on whether it should). A small, dedicated pool, same disposable-
-     * side-channel reasoning as metricsExecutor above but under its own name since this is a
-     * different concern with its own retry/failure semantics.
+     * Dedicated pool for the historical-klines fetch used to backfill commission conversion
+     * rates for accounting accuracy. This work must never share autoTradeExecutor's pool, which
+     * would mean competing with order-placement work, nor run on the calling thread, which would
+     * delay OCO placement while a position sits unprotected. Same disposable-side-channel
+     * reasoning as metricsExecutor, but under its own pool since this has its own retry/failure
+     * semantics.
      */
     @Bean("commissionBackfillExecutor")
     public Executor commissionBackfillExecutor() {

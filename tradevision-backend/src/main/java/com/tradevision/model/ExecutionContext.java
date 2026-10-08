@@ -9,25 +9,16 @@ import org.springframework.data.mongodb.core.mapping.Document;
 import java.time.LocalDateTime;
 
 /**
- * User's own explicit architectural request, given verbatim after this session's own third
- * consecutive review pass finding the same underlying pattern (a reservation/claim with no
- * unifying identity) in a different place each time: "At this point, I would stop creating
- * separate reservation fixes. Build a single concept: ExecutionContext... Then if something
- * crashes, executionId is enough to reconstruct the entire operation."
- *
- * DESIGN DECISION, stated plainly rather than left implicit: this is a TRACEABILITY layer, not a
- * replacement for the reservation/claim mechanisms this session already built and hardened
+ * A single traceability record spanning one signal's entire execution lifecycle. This is a
+ * TRACEABILITY layer, not a replacement for the underlying atomic-claim/reservation mechanisms
  * (ExposureReservationRecord, PositionSlotReservationRecord, FlattenAttempt, ProtectionAttempt,
- * RiskProfileService.ExecutionClaim). Those are real, working, already-tested atomic-claim
- * primitives — ripping them out in favor of a single new abstraction, without a compiler to
- * verify the rewrite, would trade proven correctness for a redesign risk with no real safety
- * upside. Instead, ExecutionContext is created once at the very start of a signal's evaluation
- * and durably records EACH stage's own already-existing id as that stage completes — the single
- * place an operator (or a future automated recovery pass) can query by executionId alone to see
- * the entire lifecycle's real status, then cross-reference into whichever specific record needs
- * closer inspection. The underlying atomic-claim guarantees are exactly as strong as they were
- * before this fix; what's new is that they're now traceable as one story instead of scattered
- * facts an operator has to manually correlate by credentialId/symbol/timestamp.
+ * RiskProfileService.ExecutionClaim) — those remain the real correctness guarantees.
+ * ExecutionContext is created once at the start of a signal's evaluation and durably records
+ * each stage's own already-existing id as that stage completes, giving an operator (or an
+ * automated recovery pass) a single place to query by executionId alone to see the entire
+ * lifecycle's status, then cross-reference into whichever specific record needs closer
+ * inspection — rather than having to manually correlate scattered records by
+ * credentialId/symbol/timestamp.
  *
  * Every write to this document is deliberately best-effort (see ExecutionContextService's own
  * class javadoc) — a failure to record a stage transition here must never block or fail the real

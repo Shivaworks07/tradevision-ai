@@ -6,17 +6,12 @@ import { BrokerSettingsComponent } from './broker-settings.component';
 import { provideHttpClient, withInterceptorsFromDi } from '@angular/common/http';
 
 /**
- * P1-20 fix ("Frontend risk-profile save silently wipes fields" -- external review, confirmed
- * real by direct inspection of RiskProfileService.doUpsert on the backend before any fix was
- * attempted: it unconditionally $sets maxSymbolExposureQuote/correlationGroups/
- * correlationGroupCaps from whatever the request DTO contains, and this component's own
- * saveRiskProfile() used to build that request from only 12 of the profile's own fields --
- * meaning ANY save from this settings page, even one only meant to flip autoTradeEnabled, would
- * silently reset those three fields to the backend's own bare disabled/empty defaults). This is
- * the actual regression test for that bug: load a profile that already has these three
- * configured, save without touching them, and assert the outgoing request still carries their
- * original values -- not the backend's own defaults, and not this component's own initial
- * (pre-load) field values.
+ * Covers saveRiskProfile()'s round-trip of maxSymbolExposureQuote/correlationGroups/
+ * correlationGroupCaps: RiskProfileService.doUpsert on the backend unconditionally $sets
+ * these fields from whatever the request DTO contains, so a save must always echo back
+ * their most recently loaded values, not the backend's bare disabled/empty defaults and
+ * not this component's initial (pre-load) field values — even when the save is only
+ * meant to change an unrelated field like autoTradeEnabled.
  */
 describe('BrokerSettingsComponent', () => {
   let component: BrokerSettingsComponent;
@@ -79,11 +74,7 @@ describe('BrokerSettingsComponent', () => {
     saveReq.flush({ success: true, data: {} });
   });
 
-  // P3-10 fix ("PAPER mode requires 'live authorization' and isn't selectable in UI" -- external
-  // review, confirmed real by direct inspection: connect() always hardcoded mode: 'TESTNET', so
-  // there was no way to ever create a PAPER credential from this settings page, even though the
-  // backend's own /connect endpoint already fully supported it). These two tests are the actual
-  // regression coverage: the connect form's own connectMode field genuinely reaches the outgoing
+  // Covers that the connect form's connectMode field genuinely reaches the outgoing
   // request, for both values it can take.
   it('connect: defaults to TESTNET when the mode selector is left untouched', () => {
     fixture.detectChanges();
@@ -99,7 +90,7 @@ describe('BrokerSettingsComponent', () => {
     http.match(() => true).forEach(r => r.flush({ success: true, data: [] }));
   });
 
-  it('connect: sends mode PAPER when the user selects Paper -- the actual P3-10 fix, since this was previously impossible from the UI at all', () => {
+  it('connect: sends mode PAPER when the user selects Paper', () => {
     fixture.detectChanges();
     http.expectOne(`${environment.apiUrl}/broker/list`).flush({ success: true, data: [] });
 

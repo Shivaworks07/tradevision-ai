@@ -27,16 +27,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 /**
- * Review finding ("Manual LIVE order endpoint is still a dangerous second, parallel trading
- * system" -- P0, full context in OrderExecutionService's own javadoc): verifies the actual fix
- * -- this endpoint is now TESTNET-only, unconditionally. This REPLACES an earlier version of
- * this test file that verified a different design (a per-call LIVE broker-permission re-check
- * that let clean-permission LIVE orders through) -- that design was a real, working safeguard,
- * but it didn't close the actual danger the review named: this endpoint bypasses the risk
- * engine, OMS, fill ledger, and position lifecycle regardless of whether the credential's
- * permissions happen to be clean. Taking the review's own explicitly stated preference
- * ("My recommendation: TESTNET-only") over routing this through the full pipeline, which would
- * be a larger rewrite of a real-money path with no live broker access here to verify it against.
+ * Verifies that the manual order endpoint is TESTNET-only, unconditionally -- it bypasses the
+ * risk engine, OMS, fill ledger, and position lifecycle, so it must never be reachable for LIVE
+ * regardless of whether the credential's permissions happen to be clean.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -45,12 +38,11 @@ class OrderExecutionServiceTest {
     @Mock BrokerCredentialService credentialService;
     @Mock OrderRepository orderRepo;
     @Mock BrokerAdapter adapter;
-    // Review finding ("OMS/ExecutedOrder full unification" -- P1, full context in
-    // OrderExecutionService's own new field comment): needed now that placeTestOrder creates a
-    // real Order (OMS) record via orderService.create/recordBrokerResult instead of an
-    // ExecutedOrder-only one. Without this mock, @InjectMocks would leave the field null, and
-    // the unconditional (no try/catch) call to it would NPE for real, breaking every existing
-    // test that reaches this method's own successful body.
+    // Needed because placeTestOrder creates a real Order (OMS) record via
+    // orderService.create/recordBrokerResult instead of an ExecutedOrder-only one. Without this
+    // mock, @InjectMocks would leave the field null, and the unconditional (no try/catch) call
+    // to it would NPE for real, breaking every existing test that reaches this method's own
+    // successful body.
     @Mock OrderService orderService;
 
     @InjectMocks OrderExecutionService service;
@@ -61,20 +53,19 @@ class OrderExecutionServiceTest {
 
     @BeforeEach
     void setup() {
-        // Review finding ("OMS/ExecutedOrder full unification" -- P1, full context in this
-        // file's own new @Mock field comment): a realistic "order created" default -- an
-        // unstubbed orderService.create() would otherwise return Mockito's own null default,
-        // and this class's own code immediately calls order.setBroker(...) on the result,
-        // which would NPE. A real, mutable Order instance so those field mutations and the
-        // later recordBrokerResult() call both have something real to work with.
+        // A realistic "order created" default -- an unstubbed orderService.create() would
+        // otherwise return Mockito's own null default, and this class's own code immediately
+        // calls order.setBroker(...) on the result, which would NPE. A real, mutable Order
+        // instance so those field mutations and the later recordBrokerResult() call both have
+        // something real to work with.
         when(orderService.create(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
             .thenAnswer(inv -> new com.tradevision.model.Order());
-        // Review finding, same context: recordBrokerResult's own real logic (status transitions,
-        // legality checks) isn't relevant to what this test file's own existing tests actually
-        // verify -- a realistic pass-through default (return the same order it was given,
-        // status left as whatever the test itself set up via the real create() stub above)
-        // keeps this file's own existing assertions meaningful without re-implementing
-        // OrderService's own state machine here a second time.
+        // recordBrokerResult's own real logic (status transitions, legality checks) isn't
+        // relevant to what this test file's own existing tests actually verify -- a realistic
+        // pass-through default (return the same order it was given, status left as whatever the
+        // test itself set up via the real create() stub above) keeps this file's own existing
+        // assertions meaningful without re-implementing OrderService's own state machine here a
+        // second time.
         when(orderService.recordBrokerResult(any(), any())).thenAnswer(inv -> inv.getArgument(0));
         // Same reasoning as recordBrokerResult's own stub above, now that placeTestOrder also
         // persists broker/mode/triggerSource/TP-SL through recordEntryMetadata (see
@@ -114,7 +105,7 @@ class OrderExecutionServiceTest {
     }
 
     @Test
-    @DisplayName("placeTestOrder: LIVE is unconditionally refused, regardless of the credential's own broker permissions -- the actual review fix, closing the second-parallel-trading-system gap rather than only narrowing it")
+    @DisplayName("placeTestOrder: LIVE is unconditionally refused, regardless of the credential's own broker permissions")
     void liveOrder_unconditionallyRefused() {
         when(credentialService.ownedCredential("user1", "cred1")).thenReturn(liveCredential);
 
@@ -135,7 +126,7 @@ class OrderExecutionServiceTest {
     }
 
     @Test
-    @DisplayName("history: uses a bounded Pageable, not the old unbounded query -- the actual review fix (\"Pagination for order history/positions/metrics\")")
+    @DisplayName("history: uses a bounded Pageable, not an unbounded query")
     void history_usesPageableNotUnboundedQuery() {
         when(orderRepo.findByUserId(any(), any(org.springframework.data.domain.Pageable.class))).thenReturn(java.util.List.of());
 
@@ -161,12 +152,10 @@ class OrderExecutionServiceTest {
     }
 
     /**
-     * Real bug, confirmed by the person's own live test ("Illegal order state transition...
-     * CREATED -> UNKNOWN is not a legal transition"): full context in placeTestOrder's own
-     * updated comment. This test proves the actual fix -- markRiskAccepted()/markSubmitting()
-     * are genuinely called, in the correct order, before recordBrokerResult() -- not just that
-     * the method runs without throwing (recordBrokerResult is stubbed as a pass-through in this
-     * file's own @BeforeEach, so a missing call here would not otherwise be caught).
+     * Proves markRiskAccepted()/markSubmitting() are genuinely called, in the correct order,
+     * before recordBrokerResult() -- not just that the method runs without throwing
+     * (recordBrokerResult is stubbed as a pass-through in this file's own @BeforeEach, so a
+     * missing call here would not otherwise be caught).
      */
     @Test
     @DisplayName("placeTestOrder: transitions the OMS order through markRiskAccepted then markSubmitting before recordBrokerResult -- the exact sequence AutoTradeService's own entry-order path uses, without which an ambiguous broker result cannot legally reach markUnknown() (CREATED -> UNKNOWN is not a legal transition)")
@@ -187,11 +176,8 @@ class OrderExecutionServiceTest {
     }
 
     /**
-     * Follow-up fix (ported from an earlier local build, re-verified against this repo's own
-     * current code before applying -- full context in PlaceTestOrderRequest's own field comment
-     * and OrderExecutionService.placeTestOrder's own updated comment): a manual BUY with both TP
-     * and SL now carries them all the way through to the OMS order via recordEntryMetadata,
-     * instead of the fill being discovered later with nothing to protect it.
+     * A manual BUY with both TP and SL carries them all the way through to the OMS order via
+     * recordEntryMetadata, instead of the fill being discovered later with nothing to protect it.
      */
     @Test
     @DisplayName("placeTestOrder: BUY with takeProfitPrice/stopLossTriggerPrice persists both via recordEntryMetadata, as MANUAL trigger source")

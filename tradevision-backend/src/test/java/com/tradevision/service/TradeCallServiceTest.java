@@ -20,14 +20,10 @@ import static org.mockito.Mockito.*;
 class TradeCallServiceTest {
 
     @Mock TradeCallRepository callRepo;
-    // Added when TradeCallService gained AutoTradeService/ExecutedOrderRepository dependencies
-    // (review items #2/#20/#23 work) — without these @InjectMocks leaves the fields null and
-    // every test here throws NullPointerException the moment saveCall/updateResult runs.
+    // TradeCallService depends on AutoTradeService and the Order (OMS) repository;
+    // without these mocks @InjectMocks leaves the fields null and every test here
+    // throws NullPointerException the moment saveCall/updateResult runs.
     @Mock AutoTradeService autoTradeService;
-    // Review finding ("OMS/ExecutedOrder full unification" -- P1, full context in
-    // TradeCallService's own removal of its ExecutedOrderRepository field): migrated to the
-    // real Order (OMS) repository -- same "without this, @InjectMocks leaves the field null"
-    // reasoning as this file's own comment above.
     @Mock OrderRepository orderRepo;
     @Mock org.springframework.data.mongodb.core.MongoTemplate mongoTemplate;
     @InjectMocks TradeCallService callService;
@@ -47,10 +43,8 @@ class TradeCallServiceTest {
     }
 
     /**
-     * Review finding ("'Save Call' can trigger real auto-trading" -- external review,
-     * seventeenth pass, P0, full context in saveCall's own updated javadoc): the review's own
-     * explicitly required test -- a manual save must save the history record and must NEVER
-     * dispatch to AutoTradeService, regardless of auto-trade/LIVE configuration, since the user
+     * A manual save must save the history record and must NEVER dispatch to
+     * AutoTradeService, regardless of auto-trade/LIVE configuration, since the user
      * clicking "Save Call" never took an action that should be interpreted as "execute this."
      */
     @Test
@@ -86,12 +80,10 @@ class TradeCallServiceTest {
     }
 
     /**
-     * Audit item P1-7 ("AsyncConfig's autoTradeExecutor has no explicit rejection policy, and
-     * this call site assumed it couldn't fail" -- full context in this method's own updated
-     * comment): confirms the stated invariant ("Never let auto-trade evaluation break signal
-     * saving for the caller") is now actually enforced against a RejectedExecutionException from
-     * a saturated autoTradeExecutor -- the call still returns success, since the signal itself
-     * was already saved before the dispatch was ever attempted.
+     * Auto-trade evaluation must never break signal saving for the caller: this
+     * verifies that a RejectedExecutionException from a saturated autoTradeExecutor
+     * still leaves the call returning success, since the signal itself was already
+     * saved before the dispatch was ever attempted.
      */
     @Test
     @DisplayName("saveCall(userId, req, true): autoTradeExecutor rejecting the dispatch (RejectedExecutionException) does not break the save -- the signal is already persisted and the response is still success")
@@ -154,7 +146,7 @@ class TradeCallServiceTest {
         r.setOutcome(o); r.setFeatures(new TradeFeatures()); return r;
     }
 
-    // ── cancelSignal ("Signal lifecycle is still partial" — "CANCELLED still unused") ────────
+    // ── cancelSignal ────────────────────────────────────────────────────────────
 
     private TradeCallRecord cancellableSignal(SignalStatus status) {
         TradeCallRecord r = new TradeCallRecord();
@@ -245,9 +237,7 @@ class TradeCallServiceTest {
         assertThat(resp.isSuccess()).isFalse();
     }
 
-    // ── exportCSVPage ("Some analytics are deliberately bounded rather than truly
-    // paginated" -- external review, thirty-sixth pass, P2, full context in
-    // TradeCallRepository.findAllByUserIdOrderByCalledAtDesc's own updated javadoc) ────
+    // ── exportCSVPage ──────────────────────────────────────────────────────────
 
     private TradeCallRecord exportableCall(String symbol) {
         TradeCallRecord r = new TradeCallRecord();

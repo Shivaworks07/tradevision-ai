@@ -22,14 +22,10 @@ class AuthServiceTest {
     @Mock OtpRepository     otpRepo;
     @Mock EmailService      emailService;
     @Mock org.springframework.data.mongodb.core.MongoTemplate mongoTemplate;
-    // Review finding fix: the previous version of this test mocked SmsService, which
-    // AuthService never actually depends on (it calls OtpUtil.sendSms internally) — that mock
-    // was never invoked by anything, so verify(smsService)... could never have passed. Fixed to
-    // mock what AuthService actually calls.
+    // AuthService calls OtpUtil.sendSms internally, not SmsService, so this mocks the
+    // rate limiter that AuthService actually depends on.
     @Mock OtpRateLimitService otpRateLimitService;
-    // P2-14 fix ("WebhookAlertService/User.alertWebhookUrl: no endpoint sets the webhook, feature
-    // is dead" -- full context in AuthService's own webhookAlertService field javadoc): needed
-    // now that setAlertWebhookUrl() calls this to validate a URL before saving it.
+    // Needed because setAlertWebhookUrl() calls this to validate a URL before saving it.
     @Mock WebhookAlertService webhookAlertService;
     @InjectMocks AuthService authService;
 
@@ -45,12 +41,10 @@ class AuthServiceTest {
         // manually, so it needs the same field set directly, or hashOtp() NPEs on a null secret.
         ReflectionTestUtils.setField(otpUtil,     "otpHmacSecret",   "TestOtpHmacSecret_ForJUnit_TradeVision_2025");
         ReflectionTestUtils.setField(otpUtil,     "provider",        "console");
-        // Review finding (P1 — "OTP delivery has a functional production bug"): sendSms now
-        // returns a real success/failure signal instead of void — the console fallback only
-        // "succeeds" when explicitly opted into, matching the safe-by-default behavior. Without
-        // this, sendOtp_savesHashedAndSends would now correctly get an error response (nothing
-        // was actually delivered), which is the fix working as intended — but this test wants to
-        // verify the SUCCESS path, so it opts in explicitly, the same way real local dev would.
+        // sendSms returns a real success/failure signal instead of void — the console fallback
+        // only "succeeds" when explicitly opted into, matching the safe-by-default behavior.
+        // This test wants to verify the SUCCESS path, so it opts in explicitly, the same way
+        // real local dev would.
         ReflectionTestUtils.setField(otpUtil,     "allowConsoleFallback", true);
         ReflectionTestUtils.setField(authService, "otpExpiryMin",    5);
         ReflectionTestUtils.setField(authService, "jwt",             jwt);
@@ -58,13 +52,12 @@ class AuthServiceTest {
 
         when(otpRateLimitService.checkAndRecord(any(), any()))
             .thenReturn(new OtpRateLimitService.RateLimitResult(true, null));
-        // Review finding ("OTP verification has no effective attempt/rate limit" -- P0, full
-        // context in AuthService.verifyOtp's own updated javadoc): realistic "the atomic claim
-        // succeeded" defaults for the two new mongoTemplate calls verifyOtp() now makes -- an
-        // unstubbed updateFirst()/remove() would otherwise NPE on .getModifiedCount()/
-        // .getDeletedCount() (Mockito's own real default for an unstubbed object-returning call
-        // is null), breaking every existing verifyOtp() test in this file. A test that
-        // specifically wants to exercise the lost-the-claim path overrides these explicitly.
+        // Realistic "the atomic claim succeeded" defaults for the two mongoTemplate calls
+        // verifyOtp() makes -- an unstubbed updateFirst()/remove() would otherwise NPE on
+        // .getModifiedCount()/.getDeletedCount() (Mockito's own real default for an unstubbed
+        // object-returning call is null), breaking every existing verifyOtp() test in this file.
+        // A test that specifically wants to exercise the lost-the-claim path overrides these
+        // explicitly.
         when(mongoTemplate.updateFirst(any(), any(org.springframework.data.mongodb.core.query.Update.class), eq(OtpRecord.class)))
             .thenReturn(com.mongodb.client.result.UpdateResult.acknowledged(1, 1L, null));
         when(mongoTemplate.remove(any(), eq(OtpRecord.class)))
@@ -81,7 +74,7 @@ class AuthServiceTest {
         var resp = authService.sendOtp("9000000000", "LOGIN");
 
         assertThat(resp.isSuccess()).isTrue();
-        // Review finding fix (BLOCKER #5): the stored value must be a hash, not a 6-digit code.
+        // The stored value must be a hash, not a 6-digit code.
         String stored = savedCaptor.getValue().getOtpHash();
         assertThat(stored).isNotNull();
         assertThat(stored).doesNotMatch("^\\d{6}$"); // a raw OTP would match this; a hex HMAC digest won't
@@ -100,7 +93,7 @@ class AuthServiceTest {
         verify(otpRepo, never()).save(any());
     }
 
-    @Test @DisplayName("sendOtp: reports failure honestly when delivery didn't actually happen — 'OTP delivery has a functional production bug' regression guard")
+    @Test @DisplayName("sendOtp: reports failure honestly when delivery didn't actually happen")
     void sendOtp_reportsFailureWhenDeliveryDidNotHappen() {
         when(userRepo.findByMobile(any())).thenReturn(Optional.empty());
         when(otpRepo.deleteByMobileAndPurpose(any(),any())).thenReturn(0L);
@@ -111,7 +104,6 @@ class AuthServiceTest {
 
         var resp = authService.sendOtp("9000000005", "LOGIN");
 
-        // Before this fix, this incorrectly returned success even though nothing was delivered.
         assertThat(resp.isSuccess()).isFalse();
         assertThat(resp.getMessage()).containsIgnoringCase("unavailable");
     }
@@ -154,7 +146,7 @@ class AuthServiceTest {
         assertThat(resp.isSuccess()).isTrue();
     }
 
-    @Test @DisplayName("verifyOtp: attempt-limit claim already exhausted (5 wrong guesses already made) rejects immediately, WITHOUT even comparing the submitted code -- the actual review fix (\"OTP verification has no effective attempt/rate limit\")")
+    @Test @DisplayName("verifyOtp: attempt-limit claim already exhausted (5 wrong guesses already made) rejects immediately, WITHOUT even comparing the submitted code")
     void verifyOtp_attemptLimitExhausted_rejectsBeforeComparingCode() {
         var req = new com.tradevision.dto.OtpVerifyRequest();
         req.setMobile("9000000005"); req.setCode("654321"); req.setPurpose("LOGIN"); // the CORRECT code
@@ -195,7 +187,7 @@ class AuthServiceTest {
         verify(userRepo, never()).save(any());
     }
 
-    // ── Audit item P1-5: step-up OTP for mid-session, high-stakes actions ───────────
+    // ── Step-up OTP for mid-session, high-stakes actions ───────────
 
     @Test @DisplayName("sendStepUpOtp: sends to the user's own on-file email, never a caller-supplied destination")
     void sendStepUpOtp_sendsToUsersOwnEmail() {
@@ -308,9 +300,7 @@ class AuthServiceTest {
     }
 
     /**
-     * P2-14 fix ("WebhookAlertService/User.alertWebhookUrl: no endpoint sets the webhook, feature
-     * is dead" -- full context in AuthService's own webhookAlertService field javadoc): the
-     * actual tests for the missing write path.
+     * Tests for setAlertWebhookUrl's write path, including URL validation before save.
      */
     @Test @DisplayName("setAlertWebhookUrl: a valid, SSRF-safe URL is validated then saved onto the user")
     void setAlertWebhookUrl_validUrl_savesOntoUser() {
@@ -369,7 +359,7 @@ class AuthServiceTest {
         verify(userRepo).save(argThat(u -> u.getTokenVersion() == 2L));
     }
 
-    // ── Refresh token rotation atomicity ("P1 — concurrency race") ─────────────
+    // ── Refresh token rotation atomicity ─────────────
 
     @Test
     @DisplayName("refreshToken: rotates atomically when the presented hash still matches — the normal, uncontested case")
@@ -401,7 +391,7 @@ class AuthServiceTest {
     }
 
     @Test
-    @DisplayName("refreshToken: a lost concurrency race (another request already rotated this exact token) returns a clear error, not a silently-broken success — the exact P1 fix")
+    @DisplayName("refreshToken: a lost concurrency race (another request already rotated this exact token) returns a clear error, not a silently-broken success")
     void refreshToken_lostRaceReturnsError() {
         String realRefreshToken = jwt.generateRefreshToken("user1");
         String realHash = jwt.hashToken(realRefreshToken);
@@ -424,7 +414,7 @@ class AuthServiceTest {
     }
 
     @Test
-    @DisplayName("refreshToken: presenting a previously-rotated-away token (not the current one) is detected as reuse, and revokes the user's ENTIRE current session as a precaution -- the actual review fix (\"Authentication still has a few architecture weaknesses\")")
+    @DisplayName("refreshToken: presenting a previously-rotated-away token (not the current one) is detected as reuse, and revokes the user's ENTIRE current session as a precaution")
     void refreshToken_reuseOfPreviousToken_revokesEntireSession() {
         String oldRefreshToken = jwt.generateRefreshToken("user1");
         String oldHash = jwt.hashToken(oldRefreshToken);

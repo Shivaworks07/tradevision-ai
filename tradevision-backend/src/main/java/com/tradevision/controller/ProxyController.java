@@ -12,20 +12,17 @@ import com.tradevision.service.DistributedRateLimitService;
 import lombok.RequiredArgsConstructor;
 
 /**
- * Server-side proxy for external APIs.
- * In production (served from Spring Boot jar), Angular can't use ng proxy.
- * This controller forwards requests to the real APIs and returns responses.
+ * Server-side proxy for external market-data APIs (Binance, Yahoo Finance, Frankfurter/ECB,
+ * Fear & Greed, NSE India, CoinGecko). In production (served from the Spring Boot jar), Angular
+ * can't use the dev-time ng proxy, so this controller forwards the request and returns the
+ * upstream response directly.
  *
- * Review finding ("public proxy endpoints are too open"): this used to be @RequestMapping with
- * no method restriction, forwarding arbitrary HTTP methods and request bodies to hardcoded
- * upstream hosts, completely unauthenticated. Not classic SSRF (destinations are fixed), but
- * still an open, unauthenticated relay — usable for bandwidth consumption, upstream abuse, and
- * potentially getting this server's IP rate-limited/blocked by Binance's own anti-abuse systems
- * (which would then also break this app's own legitimate signed API calls sharing that IP).
- * Restricted to GET (all six destinations are read-only public market data — there's no
- * legitimate reason for this proxy to forward POST/PUT/DELETE), plus a per-IP rate limit,
- * connect/read timeouts, and a response-size cap so this can't be used to tie up a server
- * thread or pull down an oversized payload on this app's behalf.
+ * Restricted to GET only, since all six destinations are read-only public market data with no
+ * legitimate reason to forward POST/PUT/DELETE. Guarded by a per-IP rate limit, connect/read
+ * timeouts, and a response-size cap, so this can't be used to tie up a server thread or pull
+ * down an oversized payload, or to get this server's IP rate-limited/blocked by an upstream
+ * provider's anti-abuse systems (which would also break this app's own legitimate calls sharing
+ * that IP).
  */
 @RestController
 @RequiredArgsConstructor
@@ -33,69 +30,41 @@ public class ProxyController {
 
     private static final Logger log = LoggerFactory.getLogger(ProxyController.class);
     /**
-     * Audit item P2 ("ProxyController size-check-after-full-download"): external review,
-     * confirmed real by direct inspection -- this class's own forward() javadoc already
-     * honestly disclosed the gap (see the comment that used to sit on the MAX_RESPONSE_BYTES
-     * check below, before this fix): RestTemplate's default client buffers the ENTIRE upstream
-     * response into memory before this code ever gets a chance to look at its length, so the
-     * old size check only ever rejected an oversized body AFTER this server had already paid
-     * the full memory and bandwidth cost of downloading it -- exactly the resource-amplification
-     * risk this class's own six proxy endpoints otherwise work to prevent (rate limiting, auth,
-     * timeouts). Fixed by switching from RestTemplate to the JDK's own java.net.http.HttpClient
-     * with a custom streaming BodySubscriber (SizeCappedBodySubscriber, below) that counts bytes
-     * as each chunk arrives and cancels the subscription -- aborting the download mid-flight,
-     * never buffering past the cap -- the instant MAX_RESPONSE_BYTES is exceeded, rather than
-     * after the fact. No new dependency needed: HttpClient has been a JDK-bundled API since
-     * Java 11, and this project targets Java 21.
+     * Uses the JDK's java.net.http.HttpClient with a custom streaming BodySubscriber
+     * (SizeCappedBodySubscriber, below) rather than RestTemplate, so the response-size cap is
+     * enforced as bytes arrive: the download is aborted mid-flight the instant MAX_RESPONSE_BYTES
+     * is exceeded, instead of only checking length after the entire body has already been
+     * buffered into memory. HttpClient has been a JDK-bundled API since Java 11, so no new
+     * dependency is needed.
      */
     private final java.net.http.HttpClient http = buildHttpClient();
 
     private static final int CONNECT_TIMEOUT_MS = 5_000;
     private static final int READ_TIMEOUT_MS = 8_000;
     private static final long MAX_RESPONSE_BYTES = 2_000_000; // 2MB — every real response from these six APIs is tiny by comparison
-    /**
-     * Real compile error, confirmed by the person's own local build (IntelliJ build output,
-     * "cannot find symbol variable MAX_REQUESTS_PER_WINDOW"/"WINDOW_MS") -- these two constants
-     * were referenced in rateLimited() below but never actually declared anywhere in this file.
-     * This means the rate-limiting call in rateLimited() has NEVER compiled -- an earlier claim
-     * in this same conversation that proxy rate limiting was "already implemented" was wrong; it
-     * verified the call site existed but never actually compiled this file to confirm the
-     * constants it depends on were real. 60 requests per 60-second window is a reasonable
-     * starting point for a per-IP limit on these six public, unauthenticated read-only proxy
-     * endpoints -- generous enough for legitimate UI polling, restrictive enough that this
-     * server can't be trivially used as an open proxy/resource amplifier. Tune based on real
-     * traffic once this is actually running.
-     */
+    // 60 requests per 60-second window: a per-IP limit generous enough for legitimate UI
+    // polling, restrictive enough that this server can't be trivially used as an open
+    // proxy/resource amplifier. Tune based on real traffic.
     private static final int MAX_REQUESTS_PER_WINDOW = 60;
     private static final long WINDOW_MS = 60_000;
 
-    // Review finding ("Public proxy endpoints remain abuseable" -- P1, full context in
-    // DistributedRateLimitService's own javadoc): confirmed real and fixed -- this ConcurrentHashMap
-    // only ever enforced the limit per-JVM-instance, meaning at replicas=2+ the effective limit
-    // was multiplied by the replica count. Replaced with DistributedRateLimitService, a genuine
-    // MongoDB-backed atomic counter shared across every replica -- MongoDB is already a real
-    // dependency this codebase has, so this closes the gap without needing new infrastructure
-    // (Redis/Bucket4j) that isn't configured here. HONEST SCOPE: fixed-window, not the original
-    // sliding-window precision -- see DistributedRateLimitService's own javadoc for the real
-    // trade-off this represents and why it was chosen.
+    // Backed by MongoDB so the rate limit is shared across every replica, rather than each
+    // instance enforcing its own independent count (which would multiply the effective limit by
+    // the replica count). Uses a fixed-window counter, trading some precision versus a true
+    // sliding window for simplicity on infrastructure this codebase already has.
     private final DistributedRateLimitService distributedRateLimitService;
 
-    // Review finding ("X-Forwarded-For is potentially spoofable"): trusting this header
-    // unconditionally means an attacker directly hitting this app (no reverse proxy in front)
-    // can set any value they want and get a fresh rate-limit bucket on every request. Defaults
-    // to false — the safer choice when it's unknown whether a trusted proxy is actually in
-    // front of this deployment. Set true only when genuinely deployed behind infra (Render,
-    // Nginx, a load balancer) that sanitizes/sets this header itself.
+    // Trusting X-Forwarded-For unconditionally would let an attacker hitting this app directly
+    // (no reverse proxy in front) set any value and get a fresh rate-limit bucket per request.
+    // Defaults to false; set true only when genuinely deployed behind infra (a load balancer,
+    // Nginx, etc.) that sets this header itself.
     @Value("${app.proxy.trust-forwarded-for:false}")
     private boolean trustForwardedFor;
     /**
-     * P2-9 fix ("trust-forwarded-for=false by default; behind a LB all users share one IP -> 60
-     * req/min global" -- external review, full context in ClientIpResolver's own class javadoc):
-     * without this, enabling trustForwardedFor alone trusts X-Forwarded-For from ANY source, not
-     * just the actual reverse proxy/LB in front of this deployment. Comma-separated CIDRs (e.g.
-     * "10.0.0.0/8,172.16.0.0/12") -- left blank preserves the old all-or-nothing behavior once
-     * trustForwardedFor is explicitly enabled, since only the operator of a given deployment
-     * knows its real proxy/LB source range(s).
+     * Restricts which source IPs X-Forwarded-For is trusted from once trustForwardedFor is
+     * enabled, so that flag alone doesn't trust the header from any source. Comma-separated
+     * CIDRs (e.g. "10.0.0.0/8,172.16.0.0/12"); left blank, any source is trusted once the flag
+     * is on, since only the deployment's operator knows its real proxy/LB source range(s).
      */
     @Value("${app.proxy.trusted-proxy-cidrs:}")
     private String trustedProxyCidrs;
@@ -110,22 +79,13 @@ public class ProxyController {
             .body("{\"error\":\"Too many proxy requests — try again shortly.\"}");
     }
 
-    // Review finding ("Public proxy endpoints remain abuseable" -- P1, continued): the OLD
-    // unbounded-JVM-map cleanup task (cleanupStaleRateLimitEntries) is removed along with the
-    // map it existed to clean up -- the new MongoDB-backed counter (proxy_rate_limit collection,
-    // one document per IP) doesn't grow the same way an in-process map does, but it does need
-    // its own real bound: a TTL index on this collection (see IndexInitializer's own new call)
-    // is that bound, expiring a stale IP's own rate-limit document automatically rather than
-    // needing an application-level periodic sweep to do the same job.
+    // The MongoDB-backed counter (proxy_rate_limit collection, one document per IP) is bounded
+    // by a TTL index on that collection, which expires a stale IP's rate-limit document
+    // automatically rather than needing an application-level periodic sweep.
 
-    // Review finding ("Proxy is still publicly accessible" -- external review, twenty-sixth
-    // pass, P2, full context in this class's own updated header javadoc): confirmed real by
-    // direct inspection of the actual frontend call sites before changing anything -- only
-    // /fng-api/** (the landing page's own Fear & Greed widget, landing.component.ts) is called
-    // before login; every other endpoint here is only ever called from authenticated-area
-    // services (currency, live-data, backtest, option-chain, order-flow). Requiring
-    // authentication on those five closes real anonymous attack surface without breaking the
-    // one genuinely anonymous use case this proxy has.
+    // Only /fng-api/** (the landing page's Fear & Greed widget) is called before login; every
+    // other endpoint here is only called from authenticated-area frontend services (currency,
+    // live-data, backtest, option-chain, order-flow), so those five require authentication.
     private ResponseEntity<String> unauthorized() {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("{\"error\":\"Authentication required.\"}");
     }
@@ -171,24 +131,14 @@ public class ProxyController {
     }
 
     // ── Fear & Greed Index ────────────────────────────────────
-    // Review finding ("Proxy is still publicly accessible" -- external review, twenty-sixth
-    // pass, P2, full context in this class's own header javadoc): deliberately left anonymous --
-    // this is the one endpoint the landing page itself genuinely calls before login.
-    //
-    // P3-2 fix ("ProxyController.fngApi -- unauthenticated relay -- require auth or cache
-    // server-side" -- external review): requiring auth here isn't the right fix -- it's the one
-    // endpoint that genuinely must stay anonymous (see above), so that option would just break
-    // the landing page. Server-side caching is the audit's other named option, and it's a strong
-    // fit: alternative.me's own Fear & Greed value only changes once a day, so every request
-    // within the cache window is, by definition, asking for data that hasn't changed. Caching it
-    // means an unauthenticated caller can no longer trigger a fresh upstream fetch per request --
-    // at most one real upstream call per cache window total, no matter how many anonymous callers
-    // hit this endpoint -- which is the actual substance of "unauthenticated relay" as a risk
-    // (bandwidth amplification / upstream abuse via this server). The per-IP distributed rate
-    // limit above still applies on top of this as defense in depth. Keyed on the full request
-    // path+query (this upstream API takes an optional "limit"/"format" query param) so different
-    // query shapes don't collide; a 60-second TTL keeps the widget feeling live while collapsing
-    // any realistic burst of anonymous traffic to a trickle of real upstream calls.
+    // Deliberately left anonymous, since this is the one endpoint the landing page calls before
+    // login. To avoid an anonymous caller triggering a fresh upstream fetch on every request,
+    // responses are cached server-side: alternative.me's Fear & Greed value only changes once a
+    // day, so at most one real upstream call happens per cache window, no matter how many
+    // anonymous callers hit this endpoint. The per-IP rate limit above still applies on top as
+    // defense in depth. Cache key is the full request path+query (the upstream API takes an
+    // optional "limit"/"format" param) so different query shapes don't collide; a 60-second TTL
+    // keeps the widget feeling live while collapsing bursts of anonymous traffic.
     private static final long FNG_CACHE_TTL_MS = 60_000;
     private final java.util.concurrent.ConcurrentHashMap<String, FngCacheEntry> fngCache = new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -231,13 +181,9 @@ public class ProxyController {
     }
 
     // ── CoinGecko ─────────────────────────────────────────────
-    // Review finding (P1 — "CSP currently breaks some production frontend functionality" /
-    // "Direct CoinGecko calls + CSP need alignment"): confirmed real, and a real gap in my own
-    // earlier CSP verification — I checked index.html for external resources but missed that
-    // three frontend files call api.coingecko.com directly from the browser. Proxied here,
-    // matching the existing pattern for every other external API this app already routes
-    // through the backend — the review's own preferred option ("Best for consistency") over
-    // widening the CSP to allow more third-party domains directly from the browser.
+    // Proxied through the backend, matching the pattern for every other external API this app
+    // routes through here, rather than calling api.coingecko.com directly from the browser and
+    // having to widen the CSP to allow a third-party domain directly.
     @GetMapping("/coingecko-api/**")
     public ResponseEntity<String> coinGeckoApi(@org.springframework.security.core.annotation.AuthenticationPrincipal String userId, HttpServletRequest req) {
         if (userId == null) return unauthorized();
@@ -258,10 +204,9 @@ public class ProxyController {
                 .header("Accept", "application/json")
                 .build();
 
-            // Audit item P2 ("size-check-after-full-download"): the cap is enforced INSIDE the
-            // streaming subscriber below -- by the time send() returns (successfully or not),
-            // either the whole body arrived under MAX_RESPONSE_BYTES, or the download was
-            // already aborted mid-stream and never finished buffering past the cap.
+            // The cap is enforced inside the streaming subscriber below -- by the time send()
+            // returns (successfully or not), either the whole body arrived under
+            // MAX_RESPONSE_BYTES, or the download was already aborted mid-stream.
             java.net.http.HttpResponse<String> resp = http.send(request, new SizeCappedBodyHandler(MAX_RESPONSE_BYTES));
 
             HttpHeaders respHeaders = new HttpHeaders();
@@ -275,10 +220,9 @@ public class ProxyController {
                 return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                     .body("{\"error\":\"Upstream response too large to proxy.\"}");
             }
-            // Review finding (P1 — "Global exception handling leaks internal messages"): this
-            // is a public, unauthenticated endpoint — arguably more sensitive than the
-            // authenticated broker endpoints for the same class of leak, since any anonymous
-            // caller can trigger and observe it. Same fix, logged server-side with a reference id.
+            // This proxy is reachable by anonymous callers for some routes, so the raw upstream
+            // error message is never returned to the client -- only an opaque reference id,
+            // with the real detail logged server-side.
             String refId = "TV-" + java.util.UUID.randomUUID().toString().substring(0, 8).toUpperCase();
             log.error("Proxy request to {} failed [{}]: {}", url, refId, e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
@@ -287,9 +231,7 @@ public class ProxyController {
     }
 
     /** Walks the full cause chain (java.net.http.HttpClient wraps a BodySubscriber failure in
-     *  an IOException) looking for the specific marker thrown by SizeCappedBodySubscriber below,
-     *  the same pattern this codebase already uses elsewhere for recognizing a specific cause
-     *  buried under a generic wrapper (see ExposureReservationService.isStandaloneMongoTransactionError). */
+     *  an IOException) looking for the specific marker thrown by SizeCappedBodySubscriber below. */
     private boolean isResponseTooLarge(Throwable e) {
         Throwable current = e;
         int depth = 0;
@@ -352,8 +294,8 @@ public class ProxyController {
                 int chunkLen = bb.remaining();
                 receivedBytes += chunkLen;
                 if (receivedBytes > maxBytes) {
-                    // Abort mid-stream -- this is the actual fix: never finish buffering (or
-                    // even keep receiving) a response that has already exceeded the cap.
+                    // Abort mid-stream: never finish buffering (or even keep receiving) a
+                    // response that has already exceeded the cap.
                     subscription.cancel();
                     result.completeExceptionally(new ResponseTooLargeException());
                     return;

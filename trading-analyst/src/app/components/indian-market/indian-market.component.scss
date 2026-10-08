@@ -20,7 +20,7 @@
   .idx-chg  { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700;
     &.up { color: #00FF88; } &.dn { color: #FF3B5C; }
   }
-  // Review finding (P1 #10): matches .intraday-unavailable's own warning color for consistency.
+  // Amber matches .intraday-unavailable's warning color for a consistent "needs attention" cue.
   .idx-stale { font-size: 10px; font-weight: 700; color: #FFB800; margin-left: 6px; }
 }
 

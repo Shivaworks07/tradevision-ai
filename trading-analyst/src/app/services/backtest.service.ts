@@ -86,52 +86,22 @@ export interface BacktestConfig {
 }
 
 /**
- * P1-19 fix ("Backtest (frontend) is systematically optimistic and uses a different engine than
- * live" -- external review, confirmed real by direct inspection of simulateTrade/runStrategyAsync
- * below before any fix was attempted: no fees or slippage were modeled at all; when SL and a
- * target both touched within the same candle the code credited the FARTHEST target reached
- * (T3 checked before T2 before T1, before SL) instead of the conservative SL-first assumption any
- * honest backtest must make on an ambiguous bar; trades held all the way to T2/T3 even though this
- * application's real, live exit mechanism is a single OCO order that exits at T1 (or SL) only --
- * see PositionSafetyService's own OCO placement, which never re-arms a second leg past T1; and the
- * equity-curve update `equity *= (1 + trade.pnlPct * (riskPerTrade/100) / 100)` multiplied a raw
- * PRICE-move percentage by a risk-percentage, which is not what real fixed-fractional position
- * sizing does at all (real sizing risks `riskPerTrade%` of equity on a trade whose STOP distance
- * defines quantity, so the equity impact of a completed trade is `riskPerTrade% * pnlR`, not
- * `riskPerTrade% * pnlPct`) -- together these four bugs each independently inflate backtest
- * results, and compound.
+ * Simulates a trading strategy against historical candles to estimate how it would have
+ * performed. It models execution costs (fees and slippage) and restricts a simulated trade's
+ * profit exit to T1 only, since that is all a single live OCO order can ever actually capture
+ * (see PositionSafetyService's own OCO placement, which never re-arms a second leg past T1) —
+ * T2/T3 are still recorded on each BacktestTrade as context, but never credited to the equity
+ * curve or win/loss scoring. Equity updates use real fixed-fractional sizing, scaling by the
+ * trade's own R-multiple (risk-defined by stop distance) rather than its raw price-move
+ * percentage, since that is what risking a fixed % of equity per trade actually computes.
  *
- * The fix actually shipped in this pass, scoped honestly:
- *  1. Fee + slippage modeling on both entry and exit, using the SAME disclosed constants this
- *     codebase's own PaperBrokerAdapter already uses for its simulated fills (taker fee 0.10% per
- *     side, slippage 0.05% against the trade direction) -- see FEE_RATE/SLIPPAGE_RATE below.
- *  2. SL-first on ambiguous bars: if a candle touches BOTH the stop and any target, the stop is
- *     now always credited -- never a target, regardless of which price level the candle's high/low
- *     technically also reached.
- *  3. T1-only exit: simulateTrade now exits at the FIRST of {SL, T1} touched, exactly matching
- *     what this application's live OCO exit mechanism can actually achieve (see
- *     PositionSafetyService's own OCO-placement javadoc) -- T2/T3 are still recorded on the
- *     returned BacktestTrade (useful context for the user), but a trade can no longer be scored,
- *     nor equity impacted, as though it captured a T2/T3 exit that live trading structurally
- *     cannot reach.
- *  4. Equity math corrected to real fixed-fractional sizing: `equity *= (1 + (riskPerTrade/100) *
- *     pnlR)`, using the trade's own R-multiple (already computed correctly elsewhere in this file)
- *     rather than its raw price-percentage move.
- *
- * Deliberately NOT attempted in this pass, disclosed rather than silently skipped (same honesty
- * precedent as this codebase's own backend fixes, e.g. PositionMonitorService's checkDrawdown
- * javadoc): genuine engine parity with the live `ServerSignalEngine` (a large, separate Java
- * class this frontend's TaEngineService/SmcEngineService/MarketRegimeService do not share a single
- * line of code with) is NOT achieved here. Truly closing that gap means either porting
- * ServerSignalEngine's full decision logic to TypeScript and keeping the two in permanent lockstep,
- * or standing up a genuinely new server-side backtest endpoint that replays historical candles
- * through the real Java engine -- either is a materially larger undertaking than a bug-fix pass
- * (new service design, new API surface, and its own test suite), not a fix to the four concrete
- * numerical distortions above. Because this gap remains open, `BacktestResult.summary` now always
- * carries an explicit disclaimer (see calcMetrics/emptyResult below) so a user reading a backtest
- * grade is told, in the result itself, that it approximates but does not guarantee live behavior --
- * directly addressing the audit's own stated danger ("Users will authorize LIVE based on inflated
- * results") even though the underlying engine-parity gap itself is not closed by this pass.
+ * This engine does not share any code with the live `ServerSignalEngine` (a separate Java
+ * class) — TaEngineService/SmcEngineService/MarketRegimeService here are an independent
+ * TypeScript implementation. True engine parity would mean either porting the full Java
+ * decision logic to TypeScript and keeping both in lockstep, or replaying historical candles
+ * through the real engine server-side; neither is attempted here. Because of that gap,
+ * BacktestResult.summary always carries an explicit disclaimer (see calcMetrics/emptyResult
+ * below) so a result is never read as a guarantee of live behavior.
  */
 @Injectable({ providedIn: 'root' })
 export class BacktestService {
@@ -141,11 +111,9 @@ export class BacktestService {
   private vp     = inject(VolumeProfileService);
   private regime = inject(MarketRegimeService);
 
-  // P1-19 fix: the same disclosed simulated-fill constants PaperBrokerAdapter.java already uses
-  // (SIMULATED_TAKER_FEE_RATE / SIMULATED_SLIPPAGE_RATE) -- kept numerically identical so a paper
-  // run and a backtest run of the same strategy are at least modeling execution costs consistently
-  // with each other, even though the signal-generation engines themselves still differ (see this
-  // class's own javadoc above).
+  // Matches PaperBrokerAdapter.java's own simulated-fill constants (SIMULATED_TAKER_FEE_RATE /
+  // SIMULATED_SLIPPAGE_RATE) so a paper run and a backtest run of the same strategy at least
+  // model execution costs consistently, even though their signal-generation engines differ.
   private static readonly FEE_RATE      = 0.001;   // 0.10% taker fee, per side (entry + exit)
   private static readonly SLIPPAGE_RATE = 0.0005;  // 0.05% adverse slippage, per side
 
@@ -200,11 +168,9 @@ export class BacktestService {
           if (!trade) continue;
 
           trades.push(trade);
-          // P1-19 fix (full context in this class's own javadoc above): real fixed-fractional
-          // position sizing risks riskPerTrade% of equity per trade, sized by the STOP distance --
-          // so a completed trade's equity impact is riskPerTrade% * pnlR (the trade's own
-          // R-multiple), never riskPerTrade% * pnlPct (a raw price-move percentage, which was the
-          // pre-fix formula here and is not what position sizing by risk actually computes).
+          // Fixed-fractional position sizing risks riskPerTrade% of equity per trade, sized
+          // by the stop distance — so a completed trade's equity impact is riskPerTrade% times
+          // its R-multiple (pnlR), not its raw price-move percentage.
           equity *= (1 + (config.riskPerTrade / 100) * trade.pnlR);
           peakEquity = Math.max(peakEquity, equity);
           const drawdown = ((peakEquity - equity) / peakEquity) * 100;
@@ -363,10 +329,9 @@ export class BacktestService {
     const isLong   = call.direction === 'LONG';
     const maxHold  = 50; // max candles to hold
 
-    // P1-19 fix (full context in this class's own javadoc above): the entry itself now pays
-    // slippage too, same direction a real market order's slippage moves (a LONG entry fills
-    // slightly WORSE, i.e. higher; a SHORT entry fills slightly lower) -- matching
-    // PaperBrokerAdapter's own SIMULATED_SLIPPAGE_RATE direction convention exactly.
+    // Entry pays slippage in the same direction a real market order would: a LONG entry
+    // fills slightly worse (higher), a SHORT entry fills slightly lower — matching
+    // PaperBrokerAdapter's own SIMULATED_SLIPPAGE_RATE direction convention.
     const entry = isLong
       ? rawEntry * (1 + BacktestService.SLIPPAGE_RATE)
       : rawEntry * (1 - BacktestService.SLIPPAGE_RATE);
@@ -380,16 +345,11 @@ export class BacktestService {
       const c = candles[j];
       holdBars = j - entryIdx;
 
-      // P1-19 fix (full context in this class's own javadoc above): two changes from the
-      // pre-fix version here, both making this loop match what this application's real, live
-      // exit mechanism (a single OCO order) can actually achieve --
-      //  (a) SL-first on an ambiguous bar: if the candle touches BOTH the stop and T1 (the only
-      //      target a live OCO can ever capture), the stop is credited, full stop. No more
-      //      checking T3/T2 first regardless of whether SL was also touched.
-      //  (b) T1 is now the only reachable profit exit -- once T1 is touched (and SL was not, or
-      //      was touched on a later, separate candle), the trade exits at T1; T2/T3 are no longer
-      //      treated as reachable results, since the live OCO this backtest is supposed to
-      //      approximate never re-arms past T1.
+      // Matches what a single live OCO order can actually achieve: if a candle touches both
+      // the stop and T1 (the only target a live OCO can capture), the stop is credited — never
+      // a target, regardless of which level the candle's high/low also reached. T1 is the only
+      // reachable profit exit; T2/T3 are not treated as reachable results here since the live
+      // OCO this backtest approximates never re-arms past T1.
       if (isLong) {
         const hitSL = c.low <= sl;
         const hitT1 = c.high >= t1;
@@ -403,10 +363,10 @@ export class BacktestService {
       }
     }
 
-    // P1-19 fix: exit slippage too, same direction convention as entry above -- a LONG exit
-    // (a sell) fills slightly WORSE (lower); a SHORT exit (a buy-to-cover) fills slightly higher.
-    // An EXPIRED exit (closed at the maxHold candle's own close, not a stop/target level) still
-    // pays this same cost, since it is still a real market order in live trading.
+    // Exit pays slippage with the same direction convention as entry: a LONG exit (a sell)
+    // fills slightly worse (lower); a SHORT exit (a buy-to-cover) fills slightly higher. An
+    // EXPIRED exit (closed at the maxHold candle's close) still pays this cost, since it is
+    // still a real market order in live trading.
     const exitPrice = isLong
       ? rawExitPrice * (1 - BacktestService.SLIPPAGE_RATE)
       : rawExitPrice * (1 + BacktestService.SLIPPAGE_RATE);
@@ -414,7 +374,7 @@ export class BacktestService {
     const grossPnlPct = isLong
       ? (exitPrice - entry) / entry * 100
       : (entry - exitPrice) / entry * 100;
-    // P1-19 fix: taker fee charged on both legs (entry + exit), in percentage-of-notional terms --
+    // Taker fee charged on both legs (entry + exit), in percentage-of-notional terms --
     // matching PaperBrokerAdapter's own per-side FEE_RATE.
     const feePct = BacktestService.FEE_RATE * 100 * 2;
     const pnlPct = grossPnlPct - feePct;
@@ -561,12 +521,10 @@ export class BacktestService {
       + BacktestService.PARITY_DISCLAIMER;
   }
 
-  // P1-19 fix (full context in this class's own javadoc above): this backtest runs a different
-  // signal-generation engine than live trading (this app's own TypeScript indicator/SMC/regime
-  // engines here, vs. the Java ServerSignalEngine live trading actually uses), so it can approximate
-  // but never guarantee live behavior -- appended to every result's summary so a user reading a
-  // grade sees this in the result itself, directly addressing the audit's own named danger
-  // ("Users will authorize LIVE based on inflated results").
+  // This backtest runs a different signal-generation engine than live trading (this app's own
+  // TypeScript indicator/SMC/regime engines, vs. the Java ServerSignalEngine live trading
+  // actually uses), so it can approximate but never guarantee live behavior — appended to
+  // every result's summary so that context is visible wherever a grade is read.
   private static readonly PARITY_DISCLAIMER =
     'Note: this backtest approximates live trading (fees, slippage, and a single T1-only exit are modeled) '
     + 'but runs a different signal engine than live trading and is not a guarantee of live results -- '

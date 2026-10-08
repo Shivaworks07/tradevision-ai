@@ -12,40 +12,35 @@ import java.time.Duration;
 import java.util.Map;
 
 /**
- * Review finding ("Alerting hooks" — "Email/SMS/webhook on halt, unprotected position,
- * consecutive failures... not end-to-end ops"): see IncidentService's own updated javadoc for
- * the full context — email delivery already existed and worked; this is the genuinely missing
- * piece, wired in alongside it, not replacing it.
+ * Posts an alert to a user-configured webhook URL on halt, unprotected position, consecutive
+ * failures, and other safety-relevant events — see IncidentService's own javadoc for how this
+ * fits alongside email delivery, which it complements rather than replaces.
  *
  * Deliberately generic rather than provider-specific: posts a plain JSON payload to whatever URL
  * the account holder configured (User.alertWebhookUrl). Slack, Discord, Telegram (via a bot's
  * webhook proxy), PagerDuty (via its own "Events API" webhook URL), and Microsoft Teams all
- * accept an incoming webhook this way — building a bespoke integration for each one is real,
- * separate scope this pass doesn't attempt, and a generic POST covers all of them without it.
+ * accept an incoming webhook this way, so a generic POST covers all of them without a bespoke
+ * integration per provider.
  *
  * Same "best-effort, never blocks the real safety action" design as EmailService's own alert
  * delivery — a webhook failing to send (wrong URL, unreachable service, non-2xx response) is
  * logged, never thrown, and never prevents the incident from being durably recorded or the
  * triggering safety action (halt, emergency-flatten) from completing.
  *
- * Review finding ("Webhook SSRF protection isn't completely closed" -- external review,
- * thirtieth pass, P1, confirmed real by direct inspection before this fix: the previous
- * RestTemplate-based client had no control over its own redirect behavior at all -- a
- * genuinely safe, validated public URL could respond with a 3xx to an internal address, and
- * whatever RestTemplate's own underlying client did with that was never something this code
- * controlled or checked): switched to java.net.http.HttpClient specifically because it lets
- * this class disable redirect-following outright (Redirect.NEVER) -- a 3xx response is
- * returned as-is, never automatically followed, closing that gap completely rather than hoping
- * a library default is safe. DNS-rebinding note, stated honestly rather than left implied: this
- * does NOT pin the HTTP connection to the exact IP address validated by isDestinationSafe --
- * doing that correctly (while still presenting the right SNI/Host for TLS and certificate
- * validation to succeed) needs a custom DNS resolver wired into the HTTP client, which is a
- * real, separate undertaking with genuine risk of a subtle TLS/certificate-validation bug if
- * gotten wrong without a compiler to verify it against. What this fix DOES do is call
- * isDestinationSafe() immediately before the actual request (not once at save-time, already
- * true before this fix, and unchanged here) -- narrowing the rebinding window to the gap
- * between this validation's own DNS lookup and the HTTP client's own separate one, rather than
- * closing it to zero.
+ * Uses java.net.http.HttpClient specifically because it lets this class disable redirect-
+ * following outright (Redirect.NEVER) — a 3xx response is returned as-is, never automatically
+ * followed, which matters because a genuinely safe, validated public URL could otherwise respond
+ * with a 3xx to an internal address with no control over what a library's own default redirect
+ * handling would then do with it.
+ *
+ * DNS-rebinding note, stated honestly: this does NOT pin the HTTP connection to the exact IP
+ * address validated by isDestinationSafe — doing that correctly (while still presenting the
+ * right SNI/Host for TLS and certificate validation to succeed) needs a custom DNS resolver
+ * wired into the HTTP client, a real, separate undertaking with genuine risk of a subtle TLS/
+ * certificate-validation bug if gotten wrong. What this class does instead is call
+ * isDestinationSafe() immediately before the actual request (not once at save-time), narrowing
+ * the rebinding window to the gap between this validation's own DNS lookup and the HTTP
+ * client's own separate one, rather than closing it to zero.
  */
 @Service
 public class WebhookAlertService {
@@ -58,15 +53,13 @@ public class WebhookAlertService {
 
     public boolean send(String webhookUrl, String type, String severity, String symbol, String message) {
         if (webhookUrl == null || webhookUrl.isBlank()) return false;
-        // Review finding ("Webhook alert feature is an SSRF surface" -- P1): confirmed real --
-        // webhookUrl is entirely user-supplied (User.alertWebhookUrl) and was posted to
-        // completely unvalidated. An account holder (or anyone who compromised one account)
-        // could point this at an internal service this server can reach but a genuine outside
-        // attacker couldn't -- a cloud metadata endpoint (169.254.169.254), this application's
-        // own internal admin/actuator endpoints, or any other internal-only host -- and this
-        // server would make that request on their behalf, from inside whatever network
-        // perimeter it's deployed in. Validated fresh on every send (not just once when the URL
-        // is saved) specifically to also cover DNS rebinding -- a hostname that resolved to a
+        // webhookUrl is entirely user-supplied (User.alertWebhookUrl), so it's validated before
+        // every send rather than trusted outright. An account holder (or anyone who compromised
+        // one account) could otherwise point this at an internal service this server can reach
+        // but a genuine outside attacker couldn't -- a cloud metadata endpoint
+        // (169.254.169.254), this application's own internal admin/actuator endpoints, or any
+        // other internal-only host. Validated fresh on every send (not just once when the URL is
+        // saved) specifically to also cover DNS rebinding -- a hostname that resolved to a
         // public IP when saved but a private one by the time this actually runs.
         if (!isDestinationSafe(webhookUrl)) {
             log.warn("Refusing to send webhook alert -- destination failed SSRF safety validation (must be HTTPS, and must not resolve to a "
@@ -92,11 +85,9 @@ public class WebhookAlertService {
             HttpResponse<Void> response = http.send(request, HttpResponse.BodyHandlers.discarding());
             int status = response.statusCode();
             if (status >= 300 && status < 400) {
-                // Review finding, same context as this class's own updated class javadoc: a
-                // redirect response is exactly the second gap the review names -- returned here
-                // as-is (never automatically followed, per this client's own Redirect.NEVER
-                // configuration), and treated as a failed delivery rather than silently chasing
-                // it to an unvalidated destination.
+                // A redirect response is returned here as-is (never automatically followed, per
+                // this client's own Redirect.NEVER configuration) and treated as a failed
+                // delivery rather than silently chasing it to an unvalidated destination.
                 log.warn("Webhook alert destination returned a redirect ({}) -- not following it (unvalidated destination), treating as "
                     + "failed delivery: {}", status, webhookUrl);
                 return false;
@@ -118,8 +109,8 @@ public class WebhookAlertService {
     }
 
     /**
-     * Review finding ("Webhook alert feature is an SSRF surface" -- P1, full context in send's
-     * own comment): the actual validation. Package-private (not private) specifically so this
+     * SSRF safety validation for a user-supplied webhook URL — see send's own comment for why
+     * this is called fresh on every send. Package-private (not private) specifically so this
      * can be unit-tested directly without needing DNS to actually be mockable, which it isn't
      * through a real InetAddress.getAllByName() call.
      *

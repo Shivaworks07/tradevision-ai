@@ -11,11 +11,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * P2-6 fix ("CredentialEncryptionService: no key id/version, no AAD, no rotation path" --
- * external review, full context in that class's own updated header javadoc): the actual tests
- * proving the three things this fix adds, PLUS the one thing it must never break -- every
- * ciphertext this class produced before this fix must still decrypt correctly (real
- * BrokerCredential rows already exist in production under the old, bare-base64 format).
+ * Covers key id/version, AAD binding and the key rotation path, plus the one thing these must
+ * never break -- older ciphertext produced in the bare-base64 format must still decrypt
+ * correctly (real BrokerCredential rows already exist in production under that format).
  */
 class CredentialEncryptionServiceTest {
 
@@ -41,7 +39,7 @@ class CredentialEncryptionServiceTest {
     }
 
     @Test
-    @DisplayName("P2-6 fix: new ciphertext is versioned and carries the active keyId, not a bare base64 blob")
+    @DisplayName("new ciphertext is versioned and carries the active keyId, not a bare base64 blob")
     void encrypt_producesVersionedEnvelopeWithKeyId() {
         String encrypted = service.encrypt("my-secret-value", "apiKey");
 
@@ -49,7 +47,7 @@ class CredentialEncryptionServiceTest {
     }
 
     @Test
-    @DisplayName("P2-6 fix (\"no AAD\"): decrypting with the WRONG context fails outright, never silently returns the wrong plaintext or succeeds")
+    @DisplayName("decrypting with the WRONG context fails outright, never silently returns the wrong plaintext or succeeds")
     void decrypt_wrongContext_fails() {
         String encrypted = service.encrypt("my-api-key-value", "apiKey");
 
@@ -58,20 +56,19 @@ class CredentialEncryptionServiceTest {
     }
 
     @Test
-    @DisplayName("P2-6 fix (\"no AAD\"): a ciphertext encrypted under one context cannot be swapped into another field's own decrypt call and succeed -- the actual cross-field-swap protection this finding asks for")
+    @DisplayName("a ciphertext encrypted under one context cannot be swapped into another field's own decrypt call and succeed")
     void decrypt_ciphertextSwappedBetweenFields_fails() {
         String apiKeyCiphertext = service.encrypt("real-api-key", "apiKey");
         String apiSecretCiphertext = service.encrypt("real-api-secret", "apiSecret");
 
-        // Simulates exactly the bug this fix defends against: an apiKey's own ciphertext ending
-        // up read back as if it were the apiSecret column (a swapped assignment, a migration
-        // bug, or a database row copied incorrectly).
+        // Simulates an apiKey's own ciphertext ending up read back as if it were the apiSecret
+        // column (a swapped assignment, a migration bug, or a database row copied incorrectly).
         assertThatThrownBy(() -> service.decrypt(apiKeyCiphertext, "apiSecret")).isInstanceOf(IllegalStateException.class);
         assertThatThrownBy(() -> service.decrypt(apiSecretCiphertext, "apiKey")).isInstanceOf(IllegalStateException.class);
     }
 
     @Test
-    @DisplayName("Two encryptions of the same plaintext produce different ciphertext (random IV per call), same behavior as before this fix")
+    @DisplayName("Two encryptions of the same plaintext produce different ciphertext (random IV per call)")
     void encrypt_sameInputTwice_producesDifferentCiphertext() {
         String first = service.encrypt("same-value", "apiKey");
         String second = service.encrypt("same-value", "apiKey");
@@ -82,7 +79,7 @@ class CredentialEncryptionServiceTest {
     }
 
     @Test
-    @DisplayName("P2-6 fix: a ciphertext in the OLD, pre-fix bare-base64 format (no version, no keyId, no AAD) still decrypts correctly -- real production BrokerCredential rows already exist under this exact format and must never be stranded by this fix")
+    @DisplayName("a ciphertext in the OLD, bare-base64 format (no version, no keyId, no AAD) still decrypts correctly -- real production BrokerCredential rows already exist under this exact format and must never be stranded")
     void decrypt_legacyFormatCiphertext_stillDecryptsCorrectly() throws Exception {
         String legacyCiphertext = encryptUsingOldFormat("legacy-plaintext-value", KEY_V1);
         assertThat(legacyCiphertext).doesNotContain(":"); // confirms this really is the old, bare-base64 shape
@@ -93,7 +90,7 @@ class CredentialEncryptionServiceTest {
     }
 
     @Test
-    @DisplayName("P2-6 fix (\"no rotation path\"): after rotating to a new active key, a ciphertext still under the OLD (now \"previous\") key decrypts correctly when that key is listed in app.encryption.previous-keys")
+    @DisplayName("after rotating to a new active key, a ciphertext still under the OLD (now \"previous\") key decrypts correctly when that key is listed in app.encryption.previous-keys")
     void decrypt_afterKeyRotation_stillDecryptsCiphertextUnderPreviousKey() {
         String encryptedUnderV1 = service.encrypt("value-from-before-rotation", "apiKey");
 
@@ -109,7 +106,7 @@ class CredentialEncryptionServiceTest {
     }
 
     @Test
-    @DisplayName("P2-6 fix (\"no rotation path\"): reencryptWithCurrentKey migrates a ciphertext from a retired key to the current active key, and the result decrypts to the same plaintext")
+    @DisplayName("reencryptWithCurrentKey migrates a ciphertext from a retired key to the current active key, and the result decrypts to the same plaintext")
     void reencryptWithCurrentKey_migratesToActiveKey() {
         String encryptedUnderV1 = service.encrypt("value-to-migrate", "apiKey");
 
@@ -125,7 +122,7 @@ class CredentialEncryptionServiceTest {
     }
 
     @Test
-    @DisplayName("P2-6 fix: decrypting a ciphertext under a keyId this instance has no key configured for (neither active nor previous) fails clearly, without leaking the keyId to the caller")
+    @DisplayName("decrypting a ciphertext under a keyId this instance has no key configured for (neither active nor previous) fails clearly, without leaking the keyId to the caller")
     void decrypt_unknownKeyId_failsClearly() {
         String encrypted = service.encrypt("some-value", "apiKey");
         // Rotate away from v1 entirely, without ever listing it in previous-keys -- simulates an
@@ -135,15 +132,11 @@ class CredentialEncryptionServiceTest {
         ReflectionTestUtils.setField(service, "previousKeysRaw", "");
         ReflectionTestUtils.setField(service, "previousKeysById", null);
 
-        // P2-16 fix ("GlobalExceptionHandler.handleBadState returns IllegalStateException
-        // messages to clients" -- external review, full context in CredentialEncryptionService's
-        // own updated resolveKeyForDecryption comment): this test previously asserted the thrown
-        // message CONTAINED the missing keyId ("v1") -- exactly the kind of internal detail that
-        // finding flagged, since this decrypt() call runs in real request paths (order placement,
-        // risk-profile resume) that end in a handler returning IllegalStateException's message to
-        // the client verbatim. The "clear, actionable error" this test's own name promises is now
-        // delivered via the server-side log line resolveKeyForDecryption emits instead of via the
-        // client-visible exception message, which is intentionally generic.
+        // This decrypt() call runs in real request paths (order placement, risk-profile resume)
+        // that end in a handler returning IllegalStateException's message to the client
+        // verbatim, so the message must stay generic. The "clear, actionable error" this test's
+        // own name promises is delivered via the server-side log line resolveKeyForDecryption
+        // emits instead of via the client-visible exception message.
         assertThatThrownBy(() -> service.decrypt(encrypted, "apiKey"))
             .isInstanceOf(IllegalStateException.class)
             .hasMessage("Failed to decrypt credential.")
@@ -151,15 +144,14 @@ class CredentialEncryptionServiceTest {
     }
 
     // ---------------------------------------------------------------------------------------
-    // Audit item P2 ("CredentialEncryptionService weak AAD binding"), full context in this
-    // class's own header javadoc: the old scheme bound AAD to a field name only ("apiKey"), the
-    // same for every row -- these tests prove the new row-scoped binding actually closes the
+    // The AAD binding must be row-scoped, not just bound to a field name ("apiKey") the same
+    // for every row -- these tests prove the row-scoped binding actually closes the
     // row-substitution gap, and that decryptWithLegacyFallback bridges already-persisted
     // ciphertext (old, generic context) without weakening the new binding for anything else.
     // ---------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("P2 fix (weak AAD binding): a ciphertext encrypted under one row's context cannot be read back under a DIFFERENT row's context, even for the identical field name -- the actual row-substitution protection this finding asks for")
+    @DisplayName("a ciphertext encrypted under one row's context cannot be read back under a DIFFERENT row's context, even for the identical field name")
     void decrypt_rowScopedContext_rejectsCiphertextFromADifferentRow() {
         String credentialAApiKey = service.encrypt("real-api-key-for-credential-A", "credA:apiKey");
 
@@ -180,7 +172,7 @@ class CredentialEncryptionServiceTest {
     }
 
     @Test
-    @DisplayName("decryptWithLegacyFallback: a row encrypted before this fix shipped (old, generic field-only context) still decrypts via the legacy fallback, without a forced bulk migration")
+    @DisplayName("decryptWithLegacyFallback: a row encrypted under the old, generic field-only context still decrypts via the legacy fallback, without a forced bulk migration")
     void decryptWithLegacyFallback_legacyCiphertext_fallsBackSuccessfully() {
         // Simulates a real, already-persisted BrokerCredential row from before the row-scoped
         // AAD binding existed -- encrypted under the bare field name, not a row-scoped context.
@@ -204,7 +196,7 @@ class CredentialEncryptionServiceTest {
             .isInstanceOf(IllegalStateException.class);
     }
 
-    /** Reproduces exactly what CredentialEncryptionService.encrypt() produced before this fix, to prove the old format is still decryptable. */
+    /** Reproduces the old, bare-base64 ciphertext format, to prove it is still decryptable. */
     private static String encryptUsingOldFormat(String plaintext, String base64Key) throws Exception {
         byte[] iv = new byte[12];
         new java.security.SecureRandom().nextBytes(iv);

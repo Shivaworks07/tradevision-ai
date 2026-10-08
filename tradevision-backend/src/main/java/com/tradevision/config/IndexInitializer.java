@@ -18,25 +18,18 @@ import org.springframework.stereotype.Component;
 import java.time.Duration;
 
 /**
- * Review finding (this doc, "Mongo unique indexes may not be created automatically" — flagged
- * P0 for distributed correctness): @Indexed(unique = true) annotations alone don't guarantee
- * anything unless something actually creates the index in MongoDB. This is especially dangerous
- * for PositionSlotReservation, whose entire correctness as a distributed atomic counter (review
- * items #13/#14) depends on there being exactly one document per credentialId — if the unique
- * index was never created, two documents for the same credential could silently exist, and the
- * "atomic reservation" stops meaning anything.
+ * Explicitly creates the MongoDB indexes this application's correctness and query performance
+ * depend on. @Indexed annotations on the model classes alone don't create anything in MongoDB;
+ * this is what actually does. This matters most for the unique indexes: PositionSlotReservation's
+ * entire correctness as a distributed atomic counter depends on there being exactly one document
+ * per credentialId, and OtpRateLimit's concurrency-safety depends on its key index existing for
+ * real — without the index, two documents for the same key could silently exist.
  *
- * Explicit index creation at startup (rather than the blanket spring.data.mongodb.auto-index-
- * creation=true property) is deliberate: that property affects every @Document collection,
+ * Explicit index creation at startup, rather than the blanket spring.data.mongodb.auto-index-
+ * creation=true property, is deliberate: that property affects every @Document collection,
  * including ones that may grow large, and index creation on a large existing collection can be
- * slow/locking. This only ensures the specific indexes this application's correctness actually
- * depends on, and logs plainly if any creation fails rather than assuming it silently worked.
- *
- * Review finding ("Mongo indexes are incomplete" — this doc): extended to cover the remaining
- * indexes this application's correctness/behavior actually depends on but had only annotated,
- * never explicitly ensured — same gap, same fix, applied consistently rather than left partial.
- * OtpRateLimit.key is the most important addition here: its entire concurrency-safety story
- * (review items on OTP rate-limit races) depends on this unique index existing for real.
+ * slow or locking. This only ensures the specific indexes this application actually depends on,
+ * and logs plainly if any creation fails rather than assuming it silently worked.
  */
 @Component
 @RequiredArgsConstructor
@@ -46,15 +39,12 @@ public class IndexInitializer {
 
     private final MongoTemplate mongoTemplate;
     /**
-     * Review finding ("Performance indexes are treated as non-fatal" -- external review,
-     * twenty-third pass, P2, confirmed real by direct inspection before this fix: a failed
-     * compound/TTL index was logged and nothing more -- correctly non-fatal for correctness
-     * (queries still work, just slower, and TTL-less collections still function, just don't
-     * auto-expire), but genuinely invisible to an operator unless they were actively watching
-     * logs at the exact moment of failure): the actual fix -- these failures are still
-     * deliberately non-fatal (this does NOT gate startupState.markCriticalIndexesResult the way
-     * a genuinely safety-critical unique-index failure does), but they're now tracked and
-     * surfaced as visible operational state, not just a log line that scrolls away.
+     * Names of performance-only indexes (compound or TTL) that failed to be created. These
+     * failures are deliberately non-fatal — they do not gate startupState.markCriticalIndexesResult
+     * the way a safety-critical unique-index failure does, since queries still work (just
+     * slower) and TTL-less collections still function (just don't auto-expire) — but tracking
+     * them here makes the failure visible operational state instead of a log line that scrolls
+     * away.
      */
     private final java.util.List<String> failedPerformanceIndexes = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
 
@@ -63,10 +53,8 @@ public class IndexInitializer {
     }
 
     /**
-     * Review finding ("Performance/TTL index failures remain non-fatal" -- external review,
-     * twenty-fourth pass, P2, full context in TradingWorkerHealthIndicator's own updated
-     * javadoc): needed so the health indicator can measure elapsed time since this one-time
-     * startup check actually ran, to decide whether a still-failed performance index has been
+     * When this one-time startup index check ran. Lets the health indicator measure elapsed
+     * time since the check, to decide whether a still-failed performance index has been
      * outstanding long enough to escalate past a short startup grace period.
      */
     private volatile java.time.Instant indexCheckCompletedAt;
@@ -75,224 +63,134 @@ public class IndexInitializer {
         return indexCheckCompletedAt;
     }
     /**
-     * Review finding ("Critical Mongo unique-index failures do not stop the application" --
-     * external review, twenty-first pass, P0, full context in ensureCriticalIndexes' own
-     * updated comment): needed to report critical-index success/failure to the same readiness
-     * gate that already governs whether autonomous trading is allowed to start at all.
+     * Readiness gate that this class reports critical-index success/failure to, so autonomous
+     * trading cannot start until the safety-critical unique indexes have been confirmed.
      */
     private final com.tradevision.config.StartupState startupState;
 
     @EventListener(ApplicationReadyEvent.class)
     public void ensureCriticalIndexes() {
-        // Review finding ("Critical Mongo unique-index failures do not stop the application" --
-        // external review, twenty-first pass, P0, confirmed real by direct inspection: every
-        // ensureUniqueIndex() failure below was caught and only logged -- the application
-        // continued regardless, meaning a duplicate-data-driven index failure on, say,
-        // Order.clientOrderId could leave this application trading with NO actual enforcement of
-        // its own exchange-idempotency invariant, silently): the actual fix -- every safety-
-        // critical unique index's own success/failure is now tracked (TTL and compound indexes
-        // below remain deliberately non-fatal/performance-only, unchanged, per this same
-        // review's own explicit classification), and reported to StartupState, which already
-        // gates AutoTradeService.evaluateSignal on trading readiness for exactly this kind of
-        // "don't start until this application's own correctness guarantees are confirmed" reason
-        // -- see StartupState.markCriticalIndexesResult's own javadoc for why this is tracked as
-        // an independent flag rather than folded into the existing reconciliation-based
-        // phase directly (both fire on the same ApplicationReadyEvent with no guaranteed
-        // ordering between them).
+        // Tracks the success/failure of every safety-critical unique index (TTL and compound
+        // indexes below remain deliberately non-fatal/performance-only) and reports the combined
+        // result to StartupState, which gates AutoTradeService.evaluateSignal on trading
+        // readiness. See StartupState.markCriticalIndexesResult's javadoc for why this is
+        // tracked as an independent flag rather than folded into the reconciliation-based phase
+        // directly — both fire on the same ApplicationReadyEvent with no guaranteed ordering
+        // between them.
         boolean allCriticalIndexesOk = true;
         allCriticalIndexesOk &= ensureUniqueIndex(PositionSlotReservation.class, "credentialId", false);
-        // Review finding (P1 #7 — "Mongo unique indexes for optional email/mobile are wrong"):
-        // confirmed real — User.email/mobile are @Indexed(unique=true, sparse=true) on the
-        // model (correct, since a user can sign up with only one of the two), but the explicit
-        // index creation here didn't set sparse — meaning a NON-sparse unique index actually got
-        // created, which treats every document missing the field as colliding on the same
-        // implicit null value. A second mobile-only signup would fail outright once a first
-        // mobile-only user existed. Fixed to match the model's own annotation.
+        // User.email/mobile are both optional, so these unique indexes must be sparse —
+        // otherwise every document missing the field would collide on the same implicit null
+        // value, and a second mobile-only signup would fail once a first mobile-only user
+        // existed. This matches User's own @Indexed(unique=true, sparse=true) annotations.
         allCriticalIndexesOk &= ensureUniqueIndex(User.class, "email", true);
         allCriticalIndexesOk &= ensureUniqueIndex(User.class, "mobile", true);
         allCriticalIndexesOk &= ensureUniqueIndex(RiskProfile.class, "credentialId", false);
-        // Real bug: this critical unique index was missing entirely -- without it, two concurrent
-        // requests for the same credential could both insert an ExposureReservation document
-        // (ensureDocumentExists's exists()-then-insert race), leaving two exposure-tracking rows
-        // for one credential and silently letting real exposure caps be bypassed.
+        // Without this unique index, two concurrent requests for the same credential could both
+        // insert an ExposureReservation document (ensureDocumentExists's exists()-then-insert
+        // race), leaving two exposure-tracking rows for one credential and letting real exposure
+        // caps be bypassed.
         allCriticalIndexesOk &= ensureUniqueIndex(com.tradevision.model.ExposureReservation.class, "credentialId", false);
         allCriticalIndexesOk &= ensureUniqueIndex(OtpRateLimit.class, "key", false);
-        // Review finding ("Fill Ledger also lacks proper idempotency"): the entire correctness
-        // of FillLedgerService's duplicate-fill handling depends on this index actually existing
-        // — see FillRecord's own javadoc for how fillIdentity is derived.
+        // FillLedgerService's duplicate-fill handling depends on this index actually existing —
+        // see FillRecord's own javadoc for how fillIdentity is derived.
         allCriticalIndexesOk &= ensureUniqueIndex(com.tradevision.model.FillRecord.class, "fillIdentity", false);
-        // Review finding ("Order.clientOrderId needs a unique DB constraint" -- P0): same gap,
-        // same fix -- the model's own @Indexed annotations (see Order.java's own comments for
-        // why clientOrderId is plain-unique and brokerOrderId is unique+sparse) don't create
-        // anything by themselves in this codebase's deliberate explicit-index-creation design;
-        // this is what actually makes them real.
+        // Enforces exchange order-idempotency: see Order.java for why clientOrderId is
+        // plain-unique and brokerOrderId is unique+sparse.
         allCriticalIndexesOk &= ensureUniqueIndex(com.tradevision.model.Order.class, "clientOrderId", false);
-        // P0-5 fix ("Global unique indexes on exchange order IDs collide across
-        // symbols/credentials/testnet" -- full context in Order's own @CompoundIndex javadoc):
-        // was a single-field unique(sparse) index on brokerOrderId alone, which treated Binance's
-        // own per-(account,symbol) order-id numbering as globally unique -- it isn't. Replaced
-        // with the real, scoped constraint: unique per {credentialId, symbol, brokerOrderId}.
+        // brokerOrderId is only unique per (credentialId, symbol) in the real world — Binance's
+        // own order-id numbering is scoped per account and symbol, not global — so this is a
+        // compound unique constraint on {credentialId, symbol, brokerOrderId} rather than a
+        // single-field one. A genuine partial index (rather than sparse=true) is used to exclude
+        // brokerOrderId=null documents: on a compound index, sparse only excludes a document when
+        // EVERY indexed field is absent, and credentialId/symbol are always set, so sparse alone
+        // would still index every null-brokerOrderId Order and collide them all on the same key.
         //
-        // P3-11 fix ("The new order-ID index will block trading on a symbol after one rejected
-        // order" -- external review, second pass, re-audit, full context in Order's own updated
-        // @CompoundIndex javadoc): sparse=true on this COMPOUND index did not actually exclude
-        // brokerOrderId=null documents (credentialId/symbol are always set, so MongoDB's own
-        // "sparse = include if ANY indexed field present" semantics kept every null-brokerOrderId
-        // Order in the index, all colliding on the same key) -- switched to a genuine partial
-        // index instead, which only indexes a document when brokerOrderId itself holds a value.
-        //
-        // Migration for existing deployments, part 1 of 2 (P3-11 second re-audit, item #1 --
-        // "Old unique indexes are never removed"): confirmed real by direct inspection -- BEFORE
-        // this compound-index fix ever existed, this codebase's own earlier revision created a
-        // single-field unique(sparse) index directly on Order.brokerOrderId (MongoDB's own
-        // default name for that shape, "brokerOrderId_1"). Any database this application has ever
-        // actually run against still has that OLD index sitting there, completely untouched by
-        // dropIndexIfExists below -- that call only ever knew the NEW compound index's own name,
-        // never the old single-field one, so it never had anything to drop on that database. That
-        // OLD index enforces GLOBAL uniqueness of brokerOrderId (across every credential and
-        // symbol) all on its own, regardless of whether the new, correctly-scoped compound index
-        // also exists alongside it -- reproducing the exact P0-5 collision bug this whole fix
-        // exists to close, silently, on every database that ran a build old enough to have created
-        // it. Migrated by inspecting this collection's REAL indexes (via getIndexInfo(), not a
-        // guessed name) and dropping only a genuine single-field unique match on this exact field
-        // -- a one-time, self-limiting migration (nothing left to find once it's run once), not an
-        // unconditional per-startup drop.
+        // migrateLegacySingleFieldUniqueIndex below removes an older, single-field unique(sparse)
+        // index that an earlier revision created directly on this field (MongoDB's default name
+        // "brokerOrderId_1"). That old index enforces GLOBAL uniqueness of brokerOrderId across
+        // every credential and symbol, independent of whether the new, correctly-scoped compound
+        // index also exists, so any database that ever created it needs this one-time migration
+        // to actually get the scoped guarantee. It inspects the collection's real indexes via
+        // getIndexInfo() and drops only a genuine single-field unique match on this exact field,
+        // so it is a no-op once already migrated.
         migrateLegacySingleFieldUniqueIndex(com.tradevision.model.Order.class, "brokerOrderId");
-        // Migration for existing deployments, part 2 of 2: MongoDB's createIndex refuses to
-        // silently redefine an existing index of the same name with different options
-        // (IndexOptionsConflict). Rather than unconditionally dropping and recreating this index
-        // by name on every single startup (churn with no benefit once a database is already
-        // correctly migrated), ensureUniquePartialCompoundIndex below now reads this index's own
-        // actual current definition first and only drops+recreates it when that definition is
-        // genuinely wrong -- a real, idempotent migration, not a blind drop.
+        // MongoDB's createIndex refuses to silently redefine an existing index of the same name
+        // with different options (IndexOptionsConflict). ensureUniquePartialCompoundIndex below
+        // reads this index's current definition first and only drops+recreates it when that
+        // definition is wrong, so an already-correct deployment sees no churn on every startup.
         allCriticalIndexesOk &= ensureUniquePartialCompoundIndex(com.tradevision.model.Order.class,
             "credential_symbol_brokerOrderId_unique",
             new org.bson.Document("credentialId", 1).append("symbol", 1).append("brokerOrderId", 1),
             new org.bson.Document("brokerOrderId", new org.bson.Document("$type", "string")));
         // A plain (non-unique) index on brokerOrderId alone is still needed for the few callers
-        // that intentionally can't supply credentialId/symbol (see OrderRepository's own
-        // findByBrokerOrderId javadoc) -- performance-only, so non-fatal like every other plain
-        // index in this file. migrateLegacySingleFieldUniqueIndex above runs BEFORE this, so by
-        // the time this call is reached, any old unique-index definition MongoDB might otherwise
-        // have refused to silently redefine under this exact default name has already been
-        // cleared, and this can actually create the plain version it's always been meant to be.
+        // that intentionally can't supply credentialId/symbol (see OrderRepository's
+        // findByBrokerOrderId javadoc) — performance-only, so non-fatal like every other plain
+        // index in this file. migrateLegacySingleFieldUniqueIndex above runs before this, so any
+        // old unique-index definition under this exact default name is already cleared by the
+        // time this call is reached, letting this create the plain version it's meant to be.
         ensureIndex(com.tradevision.model.Order.class, "brokerOrderId");
-        // Review finding ("Entry/position uniqueness is weaker than order uniqueness" -- P1,
-        // full context in Position.entryOrderId's own field comment): the real index creation
-        // this codebase's own explicit-index-creation design requires -- the annotation alone
-        // does nothing by itself.
-        //
-        // P0-5 fix: same real bug and same scoped-compound-index fix as Order.brokerOrderId
-        // above -- entryOrderId alone is only unique per (credentialId, symbol) in the real world.
-        //
-        // P3-11 fix: same sparse-compound-index bug and same partial-index fix as
-        // Order.brokerOrderId immediately above.
-        //
-        // Second re-audit fix (this method's own updated comment above, same reasoning applied
-        // consistently): same OLD single-field unique(sparse) index migration as
-        // Order.brokerOrderId above -- Position.entryOrderId had the identical earlier revision,
-        // default-named "entryOrderId_1", with the identical leftover-global-uniqueness bug on
-        // any database that ever ran it.
+        // Same scoped-uniqueness, partial-index, and legacy-migration reasoning as
+        // Order.brokerOrderId above applies to Position.entryOrderId: it is only unique per
+        // (credentialId, symbol) in the real world, not globally.
         migrateLegacySingleFieldUniqueIndex(com.tradevision.model.Position.class, "entryOrderId");
         allCriticalIndexesOk &= ensureUniquePartialCompoundIndex(com.tradevision.model.Position.class,
             "credential_symbol_entryOrderId_unique",
             new org.bson.Document("credentialId", 1).append("symbol", 1).append("entryOrderId", 1),
             new org.bson.Document("entryOrderId", new org.bson.Document("$type", "string")));
         ensureIndex(com.tradevision.model.Position.class, "entryOrderId");
-        // Review finding ("Scanner deduplication is JVM-local" -- external review, twenty-
-        // second pass, P1, full context in ScannedCandle's own class javadoc): the real,
-        // cross-instance, cross-restart uniqueness guarantee this fix depends on -- without this
-        // index actually existing, ScannedCandleRepository.save() would just insert duplicate
-        // claimKey documents freely, silently defeating the whole point of the fix.
+        // Cross-instance, cross-restart dedup for the scanner relies on this unique index:
+        // without it, ScannedCandleRepository.save() would insert duplicate claimKey documents
+        // freely across replicas.
         allCriticalIndexesOk &= ensureUniqueIndex(com.tradevision.model.ScannedCandle.class, "claimKey", false);
         startupState.markCriticalIndexesResult(allCriticalIndexesOk);
-        // Review finding ("OMS/ExecutedOrder full unification" -- P1, full context in
-        // ExecutedOrder.omsOrderId's own field javadoc, and OrderRepository's own updated
-        // findByCredentialIdAndStatusInOrderByCreatedAtAsc javadoc): both the omsOrderId index
-        // below and the compound (credentialId,status,placedAt) index further down USED to be
-        // genuinely needed here -- ExecutedOrder is no longer actively written to at all by
-        // this codebase (both former write sites, AutoTradeService's entry path and
-        // OrderExecutionService's manual test-order path, now create real Order (OMS) records
-        // instead), so no new ExecutedOrder document will ever populate either field these
-        // indexes existed for. Removed rather than left as dead weight indexing a collection
-        // nothing writes to anymore. The equivalent query this codebase's own reconciliation
-        // loop now runs is already covered by the Order.(credentialId,status,createdAt)
-        // compound index further down in this same method (added earlier for a different,
-        // unrelated P2 reason) -- no new index was needed to replace what's removed here.
+        // ExecutedOrder is no longer actively written to by this codebase — AutoTradeService's
+        // entry path and OrderExecutionService's manual test-order path both create real Order
+        // (OMS) records instead — so no indexes are created for its omsOrderId or
+        // (credentialId,status,placedAt) shapes. The equivalent reconciliation query is already
+        // covered by the Order.(credentialId,status,createdAt) compound index further below.
         ensureTtlIndex(OtpRecord.class, "expiresAt", Duration.ofSeconds(300));
-        // Review finding ("Single-instance assumption for autonomous trading/reconciliation --
-        // no distributed lock, unsafe to scale replicas" -- P0, full context in
-        // DistributedLockService's own javadoc): Duration.ZERO here reuses ensureTtlIndex's own
-        // existing implementation to get MongoDB's documented expireAfterSeconds=0 behavior --
-        // expire each document at the exact absolute time stored in ITS OWN expiresAt field,
-        // rather than a fixed duration after this index confirmation ran (checked directly
-        // against MongoDB's own docs before using Duration.ZERO for this, not assumed).
+        // Duration.ZERO reuses ensureTtlIndex's implementation to get MongoDB's
+        // expireAfterSeconds=0 behavior: each document expires at the absolute time stored in
+        // its own expiresAt field, rather than a fixed duration after this index confirmation
+        // ran. This is how DistributedLockService's locks expire without a background sweep.
         ensureTtlIndex(com.tradevision.model.ReconciliationLock.class, "expiresAt", Duration.ZERO);
-        // P2-5 fix ("BrokerCredentialService.pendingLiveConnects -- in-memory map, no eviction,
-        // lost on restart, breaks with >1 replica" -- external review, full context in
-        // PendingLiveConnect's own class javadoc): same Duration.ZERO "expire at this document's
-        // own absolute expiresAt" mechanism as ReconciliationLock just above -- an unconfirmed
-        // LIVE-connect token is now durably evicted by MongoDB itself once its own confirmation
-        // window passes, closing the "no eviction" half of this finding.
+        // Same Duration.ZERO "expire at this document's own absolute expiresAt" mechanism as
+        // ReconciliationLock above — an unconfirmed LIVE-connect token is durably evicted by
+        // MongoDB itself once its own confirmation window passes.
         ensureTtlIndex(com.tradevision.model.PendingLiveConnect.class, "expiresAt", Duration.ZERO);
-        // Review finding ("Audit log retention policy" -- P2): confirmed real -- BrokerAuditLog
-        // had no retention mechanism at all, and this session alone has added a large number of
-        // new audit() call sites (every halt, every position-safety event, every risk-profile
-        // change), meaningfully accelerating this collection's own growth. 2 years is a
-        // deliberately conservative choice for compliance-adjacent financial audit data -- this
-        // does NOT conflict with the class's own "Immutable audit trail" comment, since
-        // immutability is about rejecting modification of an existing record, not about
-        // deletion under an intentional, policy-driven retention window.
+        // 2 years is a deliberately conservative retention window for compliance-adjacent
+        // financial audit data. This does not conflict with BrokerAuditLog's own "immutable
+        // audit trail" guarantee, since immutability is about rejecting modification of an
+        // existing record, not about deletion under an intentional, policy-driven retention
+        // window.
         ensureTtlIndex(com.tradevision.model.BrokerAuditLog.class, "timestamp", Duration.ofDays(730));
-        // P2-7 fix ("IndexInitializer: BrokerAuditLog TTL 730 days conflicts with
-        // AuditChainService's hash chain" -- full context in AuditChainCheckpoint's own class
-        // javadoc): AuditChainCheckpoint is DELIBERATELY given no TTL index at all here -- it is
-        // the durable anchor that survives BrokerAuditLog's own TTL sweep specifically so the
-        // hash chain's tamper-detection still works across it. Giving this collection its own TTL
-        // would silently recreate the exact bug this fix exists to close.
+        // AuditChainCheckpoint deliberately has no TTL index: it is the durable anchor that must
+        // survive BrokerAuditLog's own TTL sweep so the hash chain's tamper-detection still works
+        // across entries that have since expired.
         ensureIndex(com.tradevision.model.AuditChainCheckpoint.class, "recordTimestamp");
         ensureTtlIndex(ApiMetric.class, "recordedAt", Duration.ofDays(7));
-        // Review finding, same context as the new unique index above: a candle from more than a
-        // day ago is irrelevant for this dedup purpose -- without this, the collection would
-        // grow by one document per credential/symbol/timeframe combination on every single
-        // closed candle, forever.
+        // A candle from more than a day ago is irrelevant for scanner dedup purposes; without
+        // this TTL, the collection would grow by one document per credential/symbol/timeframe
+        // combination on every closed candle, forever.
         ensureTtlIndex(com.tradevision.model.ScannedCandle.class, "scannedAt", Duration.ofDays(1));
-        // Review finding ("OMS/ExecutedOrder full unification" -- P1, full context in this
-        // method's own updated comment above): this compound index used to back
-        // ExecutedOrderRepository.findByCredentialIdAndStatusInOrderByPlacedAtAsc -- removed for
-        // the same reason as the omsOrderId index above. The equivalent Order-collection query
-        // is already covered by Order.(credentialId,status,createdAt) further down.
 
-        // Review finding ("Database indexes need expansion for high-frequency queries
-        // (Position/Order/Fill compound indexes)" -- P2): confirmed real and fixed, same
-        // CompoundIndexDefinition mechanism as ExecutedOrder's own index just above -- these are
-        // exactly the query shapes this codebase's own reconciliation, position-monitoring, and
-        // dashboard code actually runs repeatedly. A failure here is logged but non-fatal in the
-        // same way -- the application remains fully correct without these, just slower as the
-        // underlying collections grow with every trade this application ever makes.
+        // Compound indexes backing the query shapes reconciliation, position-monitoring, and
+        // dashboard code run repeatedly. A failure here is logged but non-fatal — the
+        // application remains correct without these, just slower as the underlying collections
+        // grow with every trade.
         ensureCompoundIndex(com.tradevision.model.Position.class, new org.bson.Document("credentialId", 1).append("status", 1));
         ensureCompoundIndex(com.tradevision.model.Position.class, new org.bson.Document("credentialId", 1).append("symbol", 1).append("status", 1));
         ensureCompoundIndex(com.tradevision.model.Order.class, new org.bson.Document("credentialId", 1).append("status", 1).append("createdAt", 1));
         ensureCompoundIndex(com.tradevision.model.FillRecord.class, new org.bson.Document("positionId", 1).append("executedAt", 1));
         ensureCompoundIndex(com.tradevision.model.FillRecord.class, new org.bson.Document("credentialId", 1).append("brokerTradeId", 1));
-        // Review finding ("There is still no authoritative event ledger" -- P1, full context in
-        // TradeEvent's own javadoc): TradeEvent's own @CompoundIndexes annotations don't create
-        // anything by themselves in this codebase's deliberate explicit-index-creation design --
-        // same gap already caught and fixed for Order.clientOrderId/brokerOrderId (P0 #14), not
-        // repeated here.
+        // Backs TradeEvent's authoritative event-ledger query shapes.
         ensureCompoundIndex(com.tradevision.model.TradeEvent.class, new org.bson.Document("orderId", 1).append("occurredAt", 1));
         ensureCompoundIndex(com.tradevision.model.TradeEvent.class, new org.bson.Document("positionId", 1).append("occurredAt", 1));
-        // Review finding ("Missing indexes for the new ExecutionContext/reservation
-        // collections" -- external review, twenty-ninth pass, P2, confirmed real by direct
-        // inspection before this fix: ExecutionContext, ExposureReservationRecord, and
-        // PositionSlotReservationRecord all had @Indexed annotations on individual fields, but
-        // this codebase deliberately doesn't treat automatic index creation as the correctness
-        // mechanism -- same gap already caught and fixed for every other collection in this
-        // method, not repeated here). Matches the review's own explicitly named query shapes:
-        // credentialId+status+createdAt (the PENDING-in-flight/stale-cleanup queries this
-        // session's own P1-3/P1-4 fix added), positionId (the cross-class lookup
-        // ExecutionContextService's own positionId-based methods use), and signalId+createdAt
-        // (findBySignalIdOrderByCreatedAtDesc).
+        // Matches the query shapes actually used against ExecutionContext/reservation
+        // collections: credentialId+status+createdAt (the PENDING-in-flight/stale-cleanup
+        // queries), positionId (the cross-class lookup ExecutionContextService's positionId-based
+        // methods use), and signalId+createdAt (findBySignalIdOrderByCreatedAtDesc).
         ensureCompoundIndex(com.tradevision.model.ExecutionContext.class, new org.bson.Document("credentialId", 1).append("createdAt", 1));
         ensureCompoundIndex(com.tradevision.model.ExecutionContext.class, new org.bson.Document("signalId", 1).append("createdAt", 1));
         ensureIndex(com.tradevision.model.ExecutionContext.class, "positionId");
@@ -300,71 +198,44 @@ public class IndexInitializer {
             new org.bson.Document("credentialId", 1).append("status", 1).append("createdAt", 1));
         ensureCompoundIndex(com.tradevision.model.PositionSlotReservationRecord.class,
             new org.bson.Document("key", 1).append("status", 1).append("createdAt", 1));
-        // Review finding ("Recovery queries are missing important indexes" -- external review,
-        // thirty-fifth pass, P1, confirmed real by direct inspection before this fix:
-        // ProtectionAttempt and OrphanedOco are both queried on every single reconciliation
-        // cycle by recoverStuckProtectionAttempts/recoverOrphanedOcos -- findByStatusAndCreatedAtBefore
-        // and findByCredentialIdAndResolvedFalse respectively -- but neither had an explicit
-        // index for its own real query shape. As these collections accumulate historical
-        // records, an unindexed recovery-critical query run every reconciliation cycle turns
-        // into a full collection scan on the exact hot path this whole recovery architecture
-        // depends on running quickly and reliably): the actual fix -- both the review's own
-        // exact named indexes, plus the credentialId-prefixed compound variant the review itself
-        // flags as depending on the final query shape, added since recoverStuckProtectionAttempts
-        // already filters its own status+createdAt result set down to one credential's own
-        // records afterward in application code (a real, if secondary, opportunity for the
-        // database itself to do that filtering instead).
+        // ProtectionAttempt and OrphanedOco are both queried on every reconciliation cycle
+        // (recoverStuckProtectionAttempts / recoverOrphanedOcos). Without these indexes, that
+        // hot-path query turns into a full collection scan as the collections accumulate
+        // historical records. The credentialId-prefixed compound variant additionally lets the
+        // database do the per-credential filtering that recoverStuckProtectionAttempts currently
+        // does in application code after fetching by status+createdAt.
         ensureCompoundIndex(com.tradevision.model.ProtectionAttempt.class,
             new org.bson.Document("status", 1).append("createdAt", 1));
         ensureCompoundIndex(com.tradevision.model.ProtectionAttempt.class,
             new org.bson.Document("credentialId", 1).append("status", 1).append("createdAt", 1));
         ensureCompoundIndex(com.tradevision.model.OrphanedOco.class,
             new org.bson.Document("credentialId", 1).append("resolved", 1));
-        // Review finding ("Public proxy endpoints remain abuseable" -- P1, and "Admin bootstrap
-        // rate limiter is JVM-local" -- P1, full context in ensureRawCollectionTtlIndex's own
-        // javadoc): a document only ever grows stale if its own IP/window genuinely stops being
-        // active (an actively-hit key gets its own windowStart reset well before this TTL would
-        // ever fire) -- 2x each collection's own window duration as a safety margin against
+        // Bounds the growth of each rate-limit collection, keyed by raw Document on windowStart.
+        // A document only grows stale if its own IP/window genuinely stops being active (an
+        // actively-hit key gets its windowStart reset well before this TTL would fire), so each
+        // TTL is set to 2x the collection's own window duration as a safety margin against
         // exactly-on-the-boundary timing, not a tight bound.
         ensureRawCollectionTtlIndex("proxy_rate_limit", "windowStart", Duration.ofSeconds(120));
         ensureRawCollectionTtlIndex("bootstrap_rate_limit", "windowStart", Duration.ofSeconds(7200));
-        // P2-10 fix ("DistributedRateLimitService.allow: ... OTP collections have no TTL" --
-        // external review, full context in DistributedRateLimitService's own updated javadoc):
-        // confirmed real -- AuthController's own two OTP rate-limit collections
-        // (otp_initiate_by_ip, keyed per client IP; otp_resend_by_identifier, keyed per
-        // email/mobile) were never given the same TTL treatment as proxy_rate_limit/
-        // bootstrap_rate_limit above, despite using the exact same raw-Document,
-        // windowStart-keyed shape -- left to grow completely unbounded, one document per distinct
-        // IP or identifier ever seen. Same 2x-window-duration safety margin convention as the
-        // other two collections: otp_initiate_by_ip's own window is
-        // AuthController.OTP_IP_WINDOW_SECONDS (3600s); otp_resend_by_identifier's own is
-        // OTP_RESEND_IDENTIFIER_COOLDOWN_SECONDS (30s).
+        // AuthController's two OTP rate-limit collections (otp_initiate_by_ip, keyed per client
+        // IP; otp_resend_by_identifier, keyed per email/mobile), same 2x-window-duration
+        // convention: otp_initiate_by_ip's window is AuthController.OTP_IP_WINDOW_SECONDS
+        // (3600s); otp_resend_by_identifier's is OTP_RESEND_IDENTIFIER_COOLDOWN_SECONDS (30s).
         ensureRawCollectionTtlIndex("otp_initiate_by_ip", "windowStart", Duration.ofSeconds(7200));
         ensureRawCollectionTtlIndex("otp_resend_by_identifier", "windowStart", Duration.ofSeconds(60));
-        // P2-11 fix ("AuthController.checkEmail/checkMobile: unauthenticated, unthrottled account
-        // enumeration" -- external review, full context in AuthController's own updated javadoc):
-        // same TTL treatment as this new rate-limit collection's own siblings above --
-        // AuthController.ACCOUNT_CHECK_IP_WINDOW_SECONDS is 3600s, so 2x that here.
+        // AuthController.checkEmail/checkMobile rate-limit collection; AuthController.ACCOUNT_CHECK_IP_WINDOW_SECONDS
+        // is 3600s, so 2x that here.
         ensureRawCollectionTtlIndex("account_check_by_ip", "windowStart", Duration.ofSeconds(7200));
-        // P2-13 fix ("FeedbackController.submit: Public, CSRF-exempt, unthrottled, stores 2.8 MB
-        // base64 per request" -- external review, full context in FeedbackController's own
-        // updated javadoc): same TTL treatment as this new rate-limit collection's own siblings
-        // above -- FeedbackController.FEEDBACK_SUBMIT_IP_WINDOW_SECONDS is 60s, so 2x that here.
+        // FeedbackController.submit rate-limit collection; FeedbackController.FEEDBACK_SUBMIT_IP_WINDOW_SECONDS
+        // is 60s, so 2x that here.
         ensureRawCollectionTtlIndex("feedback_submit_by_ip", "windowStart", Duration.ofSeconds(120));
-        // Review finding ("Mongo standalone deployment still weakens the plan/profile execution
-        // atomicity guarantee" -- external review, twenty-fourth pass, P1, confirmed real by
-        // direct inspection before this fix: RiskProfileService.claimExecutionAtomicWithPlan
-        // already detects and falls back gracefully when transactions aren't supported -- a
-        // genuinely correct, honest fallback -- but nothing verified this ONCE, up front, to let
-        // LIVE authorization refuse outright on a deployment that will always need that weaker
-        // fallback path. The review's own reasoning: a standalone Mongo instance narrows but
-        // does not close the plan-disable-vs-execution race this transactional path exists to
-        // close -- for LIVE specifically, that gap should be a startup-time refusal, not a
-        // silently-accepted downgrade discovered only when it happens to fire): the actual
-        // check -- attempts a real, genuinely harmless test transaction (started, then
-        // immediately aborted, no actual write) once at startup, recording the result so
-        // authorizeLiveAutoTrade can refuse LIVE authorization outright on a deployment that
-        // will never support the stronger guarantee.
+        // Attempts a harmless test transaction (started, then immediately aborted, no write) once
+        // at startup, recording whether this MongoDB deployment supports multi-document
+        // transactions. RiskProfileService.claimExecutionAtomicWithPlan falls back gracefully
+        // when transactions aren't supported, but for LIVE trading specifically that fallback is
+        // a weaker guarantee against the plan-disable-vs-execution race, so
+        // authorizeLiveAutoTrade uses this result to refuse LIVE authorization outright on a
+        // deployment that will never support the stronger guarantee.
         startupState.markMongoTransactionsResult(checkMongoTransactionSupport());
         indexCheckCompletedAt = java.time.Instant.now();
     }
@@ -378,18 +249,12 @@ public class IndexInitializer {
             return false;
         }
         try {
-            // Review finding ("Mongo transaction capability check should be proven with an
-            // actual transaction operation" -- external review, twenty-sixth pass, P1,
-            // confirmed real by direct inspection before this fix: this used to call
-            // startTransaction() immediately followed by abortTransaction(), with no actual
-            // database operation in between -- the real requirement isn't "can the driver
-            // create a ClientSession," it's "can this deployment successfully execute a
-            // MongoDB transaction," and a standalone deployment's own real failure mode is
-            // typically the OPERATION inside the transaction failing, not session creation
-            // itself): the actual fix -- a genuinely harmless read (a count against the
-            // BootstrapLock collection, which every deployment already has and is always small)
-            // actually executed inside the transaction, via the session-bound MongoOperations
-            // instance, before aborting.
+            // Proves transaction support with an actual operation inside the transaction (a
+            // harmless count against the small BootstrapLock collection, via the session-bound
+            // MongoOperations instance), rather than just creating and immediately aborting a
+            // session. A standalone deployment's real failure mode is typically the operation
+            // inside the transaction failing, not session creation itself, so session creation
+            // alone would not reliably detect lack of support.
             var result = new boolean[]{false};
             try {
                 var sessionScoped = mongoTemplate.withSession(session);
@@ -407,9 +272,9 @@ public class IndexInitializer {
             }
             return result[0];
         } catch (com.mongodb.MongoException e) {
-            // Same detection this codebase's own claimExecutionAtomicWithPlan already uses --
-            // code 20 ("IllegalOperation") is MongoDB's own documented signal for "this
-            // deployment doesn't support transactions at all" (standalone, not a replica set).
+            // Code 20 ("IllegalOperation") is MongoDB's documented signal that this deployment
+            // doesn't support transactions at all (standalone, not a replica set) — the same
+            // detection RiskProfileService.claimExecutionAtomicWithPlan uses.
             if (e.getCode() == 20 || (e.getMessage() != null && e.getMessage().contains("Transaction numbers"))) {
                 log.error("MongoDB transactions are NOT supported by this deployment (standalone, not a replica set/mongos) -- LIVE "
                     + "autonomous trading authorization will be refused until this is resolved (configure a MongoDB replica set). "
@@ -438,33 +303,16 @@ public class IndexInitializer {
         }
     }
 
-    /**
-     * Review finding ("Order lifecycle is still split between OMS and ExecutedOrder" -- P1,
-     * full context in ExecutedOrder.omsOrderId's own field javadoc): a plain, non-unique index
-     * helper -- this codebase's own auto-index-creation is off by Spring Boot's own default (no
-     * app.properties override found), same as every other index this codebase's own
-     * IndexInitializer has needed to create explicitly this session, not just the unique ones.
-     */
+    /** Creates a plain, non-unique index on the given field, for query performance only. */
     private void ensureIndex(Class<?> entityClass, String field) {
         try {
-            // CI-review fix ("Legacy order/position index migration" -- external review, fifth
-            // pass, failures 4 & 5, confirmed real by direct inspection: LegacyIndexMigrationIntegrationTest
-            // genuinely failed, not a flaky/stale assertion): this plain index used to be created
-            // with NO explicit name via `new Index().on(field, ASC)`, so MongoDB assigned its own
-            // default name, "<field>_1" -- for Order.brokerOrderId and Position.entryOrderId,
-            // THAT IS THE EXACT SAME NAME the legacy single-field unique index being migrated away
-            // in migrateLegacySingleFieldUniqueIndex above already has. So the migration's own
-            // drop-by-real-name ("brokerOrderId_1"/"entryOrderId_1") succeeded, but this very call,
-            // a few lines later in the same startup method, immediately recreated an index under
-            // that identical default name (now non-unique, which does fix the actual P0-5
-            // collision bug) -- so the OLD index's NAME silently came right back, even though its
-            // broken uniqueness semantics genuinely did not. A plain "ensureIndex" call elsewhere
-            // in this file that reuses a name no legacy index ever had is unaffected by this --
-            // this is specific to the two fields that happen to collide with a prior revision's
-            // own default-named unique index. Fixed by giving this plain index its own explicit,
-            // never-previously-used name, so dropping the legacy index by name is a REAL,
-            // permanent migration rather than a drop immediately undone by this method's own next
-            // few lines.
+            // Uses an explicit, never-previously-used name rather than letting MongoDB assign
+            // its default "<field>_1". For Order.brokerOrderId and Position.entryOrderId, that
+            // default name is identical to the legacy single-field unique index
+            // migrateLegacySingleFieldUniqueIndex removes above — creating this plain index under
+            // the same default name would silently recreate that name immediately after the
+            // migration drops it, even though the broken unique semantics would not come back.
+            // An explicit name keeps the legacy-index removal a real, permanent migration.
             mongoTemplate.indexOps(entityClass).ensureIndex(
                 new Index().on(field, org.springframework.data.domain.Sort.Direction.ASC).named(field + "_plain_idx"));
             log.info("Confirmed index on {}.{}", entityClass.getSimpleName(), field);
@@ -475,24 +323,13 @@ public class IndexInitializer {
     }
 
     /**
-     * P3-11 fix ("The new order-ID index will block trading on a symbol after one rejected order"
-     * -- external review, second pass, re-audit, full context at this method's two call sites
-     * above): the compound equivalent of ensureUniqueCompoundIndex, but with a genuine
-     * partialFilterExpression instead of sparse=true -- see Order.java's own @CompoundIndex
-     * javadoc for exactly why sparse doesn't do what it looks like it does on a compound index.
-     *
-     * Second re-audit fix ("Old unique indexes are never removed... Don't drop and recreate on
-     * every start" -- external review, third pass): this used to unconditionally dropIndex(name)
-     * every single startup before calling ensureIndex, regardless of whether the existing index
-     * (if any) already had the correct definition -- harmless in the common case (a drop of a
-     * nonexistent index is a documented no-op) but real, pointless churn against a live database
-     * on a hot path every process restart runs, and it obscured what should be a genuine,
-     * self-limiting one-time migration behind a call that looks identical whether it's migrating
-     * something real or doing nothing at all. Now reads this collection's REAL current indexes
-     * first (getIndexInfo(), never a guessed/assumed state) and only drops+recreates when a
-     * same-named index already exists with the WRONG definition (not unique, wrong key fields, or
-     * a different/missing partial filter) -- an index that's already correct is left completely
-     * untouched, and a genuinely missing index is simply created, no drop involved either way.
+     * Creates (or migrates in place) a unique compound index with a genuine partial filter
+     * expression rather than sparse=true — see Order.java's @CompoundIndex javadoc for why
+     * sparse does not behave the way it looks like it should on a compound index. Reads the
+     * collection's real current indexes first (getIndexInfo(), never an assumed state) and only
+     * drops and recreates a same-named index when its definition is actually wrong (not unique,
+     * wrong key fields, or a different/missing partial filter), leaving an already-correct index
+     * untouched instead of dropping and recreating it on every startup.
      */
     private boolean ensureUniquePartialCompoundIndex(Class<?> entityClass, String indexName,
                                                        org.bson.Document keys, org.bson.Document partialFilterExpression) {
@@ -535,9 +372,9 @@ public class IndexInitializer {
     }
 
     /**
-     * True only when an existing same-named index already matches every property that actually
-     * matters for this fix's own correctness guarantee: unique, the exact key fields in the exact
-     * order (compound index key order is semantically significant in MongoDB, not cosmetic), and
+     * True only when an existing same-named index already matches every property that matters for
+     * the uniqueness guarantee: unique, the exact key fields in the exact order (compound index
+     * key order is semantically significant in MongoDB, not cosmetic), and
      * an equivalent partial filter expression (compared as parsed documents, not raw strings --
      * MongoDB can round-trip the same filter with different key ordering/whitespace).
      */
@@ -561,20 +398,14 @@ public class IndexInitializer {
     }
 
     /**
-     * P3-11 second re-audit fix ("Old unique indexes are never removed" -- external review, third
-     * pass, item #1 of its own "before real money" list, full context at this method's two call
-     * sites above): migrates a genuinely OLD single-field unique index this codebase's own earlier
-     * revision created directly on `field` (before the scoped compound-index fix existed at all),
-     * which any database that has ever run that earlier build still carries today, completely
-     * untouched by anything that only ever knew the NEW compound index's own name. That old index
-     * enforces uniqueness of `field` GLOBALLY, on its own, regardless of whether the new, correctly
-     * -scoped compound index also exists alongside it -- reproducing the exact cross-
-     * symbol/credential collision bug the compound-index fix exists to close, silently, for as
-     * long as it remains. Reads this collection's REAL current indexes (never a guessed name) and
-     * drops only a genuine single-field unique match on this exact field -- a real, one-time,
-     * self-limiting migration: on a database that's already been migrated (or a fresh one that
-     * never had the old index at all), this finds nothing and does nothing, not an unconditional
-     * drop-by-guessed-name attempt every single startup.
+     * Drops a legacy single-field unique index on `field`, if one exists, that an earlier schema
+     * revision created before the scoped compound-index constraint existed. Such an index
+     * enforces global uniqueness of `field` on its own, regardless of whether the new,
+     * correctly-scoped compound index also exists, reproducing a cross-symbol/credential
+     * collision bug for as long as it remains. Reads the collection's real current indexes
+     * (never a guessed name) and drops only a genuine single-field unique match, so this is a
+     * one-time, self-limiting migration: on an already-migrated or fresh database, it finds
+     * nothing and does nothing.
      */
     private void migrateLegacySingleFieldUniqueIndex(Class<?> entityClass, String field) {
         try {
@@ -638,16 +469,13 @@ public class IndexInitializer {
     }
 
     /**
-     * Review finding ("Public proxy endpoints remain abuseable" -- P1, and "Admin bootstrap rate
-     * limiter is JVM-local" -- P1, full context in DistributedRateLimitService's own javadoc):
-     * both new rate-limit collections are raw (org.bson.Document, not a @Document-annotated
-     * entity class), so they need this collection-name variant rather than ensureTtlIndex's own
-     * Class<?>-based one. Uses the single-argument indexOps(String) overload specifically --
-     * checked directly against Spring Data MongoDB's own source before using it, not assumed --
-     * since the two-argument indexOps(collectionName, type) has a real, reported bug
+     * TTL-index helper for rate-limit collections stored as raw org.bson.Document rather than a
+     * @Document-annotated entity class, used in place of ensureTtlIndex's Class<?>-based variant.
+     * Deliberately calls the single-argument indexOps(String) overload rather than the
+     * two-argument indexOps(collectionName, type): the latter has a reported bug
      * (spring-projects/spring-data-mongodb#4698) where a non-null type silently overrides the
-     * given collectionName; indexOps(String) itself calls indexOps(collectionName, null)
-     * internally, which is exactly what avoids that bug.
+     * given collection name, and indexOps(String) avoids it by calling
+     * indexOps(collectionName, null) internally.
      */
     private void ensureRawCollectionTtlIndex(String collectionName, String field, Duration ttl) {
         try {

@@ -28,13 +28,9 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Review finding ("P0 #1" — "LIVE Binance credential architecture is wrong"): replaces
- * LiveModeServiceTest, since that whole service was deleted — its entire purpose (flipping a
- * mode flag on an existing credential) was the bug. These test BrokerCredentialService's new
- * two-step LIVE connect flow directly: a genuinely separate credential row, validated against
- * Binance's actual LIVE endpoint, never inheriting a TESTNET-validated key. Every scenario
- * traced by hand against the actual source before being trusted, same discipline as every other
- * test this session.
+ * Tests BrokerCredentialService's two-step LIVE connect flow: a genuinely separate credential
+ * row, validated against Binance's actual LIVE endpoint, never inheriting a TESTNET-validated
+ * key.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -50,26 +46,20 @@ class BrokerCredentialServiceTest {
     @Mock com.tradevision.repository.PositionRepository positionRepo;
     @Mock com.tradevision.repository.OrderRepository orderRepo;
     @Mock com.tradevision.repository.TradingIncidentRepository tradingIncidentRepo;
-    // P2-5 fix, full context in BrokerCredentialService's own updated pendingLiveConnectRepo
-    // field javadoc: requestLiveConnect/confirmLiveConnect now go through this repo instead of
-    // an instance-local map -- backed here by a real in-memory map (see setup() below) so this
-    // mock behaves statefully across the two calls, exactly like the map it replaces used to.
+    // requestLiveConnect/confirmLiveConnect go through this repo instead of an instance-local
+    // map -- backed here by a real in-memory map (see setup() below) so this mock behaves
+    // statefully across the two calls, exactly like a real repository would.
     @Mock com.tradevision.repository.PendingLiveConnectRepository pendingLiveConnectRepo;
-    // Audit fix (P1-1 follow-up, full context in AlertChannelStartupGuard's own
-    // requireAlertChannelCoverage javadoc): confirmLiveConnect now calls this synchronously
-    // before persisting -- an unstubbed mock's void method already no-ops (Mockito's own real
-    // default), so every existing confirmLiveConnect test here continues to represent "this user
-    // has an alert channel configured" exactly as it implicitly did before this fix existed. A
-    // test that specifically wants to exercise the "no alert channel" refusal stubs this to
-    // throw instead.
+    // confirmLiveConnect calls this synchronously before persisting -- an unstubbed mock's void
+    // method already no-ops (Mockito's own real default), so every existing confirmLiveConnect
+    // test here continues to represent "this user has an alert channel configured". A test that
+    // specifically wants to exercise the "no alert channel" refusal stubs this to throw instead.
     @Mock com.tradevision.config.AlertChannelStartupGuard alertChannelStartupGuard;
-    // Audit fix (P1-5 follow-up, full context in BrokerCredentialService.CREDENTIAL_CHANGE_STEPUP_PURPOSE's
-    // own javadoc): confirmLiveConnect/confirmApiKeyRotation now call verifyStepUpOtp
-    // synchronously before doing anything else -- an unstubbed mock's void method already
-    // no-ops (Mockito's own real default), so every existing confirm test here continues to
-    // represent "this OTP check passed" exactly as it implicitly did before this fix existed.
-    // A test that specifically wants to exercise the "bad step-up OTP" refusal stubs this to
-    // throw instead.
+    // confirmLiveConnect/confirmApiKeyRotation call verifyStepUpOtp synchronously before doing
+    // anything else -- an unstubbed mock's void method already no-ops (Mockito's own real
+    // default), so every existing confirm test here continues to represent "this OTP check
+    // passed". A test that specifically wants to exercise the "bad step-up OTP" refusal stubs
+    // this to throw instead.
     @Mock AuthService authService;
     private final java.util.Map<String, com.tradevision.model.PendingLiveConnect> fakePendingLiveConnectStore = new java.util.HashMap<>();
 
@@ -93,7 +83,7 @@ class BrokerCredentialServiceTest {
         return req;
     }
 
-    /** P1-10: a safe apiRestrictions response -- IP-restricted, no withdrawal/transfer rights, spot trading enabled. */
+    /** A safe apiRestrictions response -- IP-restricted, no withdrawal/transfer rights, spot trading enabled. */
     private static com.tradevision.service.broker.dto.ApiKeyRestrictions safeApiKeyRestrictions() {
         return new com.tradevision.service.broker.dto.ApiKeyRestrictions(true, false, false, false, true);
     }
@@ -103,16 +93,15 @@ class BrokerCredentialServiceTest {
         when(adapter.getType()).thenReturn(BrokerType.BINANCE);
         org.springframework.test.util.ReflectionTestUtils.setField(service, "adapters", List.of(adapter));
         when(encryption.encrypt(any())).thenAnswer(i -> "enc(" + i.getArguments()[0] + ")");
-        // P2-6 fix, full context in CredentialEncryptionService's own header javadoc:
-        // BrokerCredentialService now calls the AAD-context-aware 2-arg overload for every real
+        // BrokerCredentialService calls the AAD-context-aware 2-arg overload for every real
         // apiKey/apiSecret encryption -- stubbed the same way as the legacy 1-arg overload above.
         when(encryption.encrypt(any(), any())).thenAnswer(i -> "enc(" + i.getArguments()[0] + ")");
         when(credentialRepo.save(any())).thenAnswer(i -> i.getArguments()[0]);
-        // P1-10: every LIVE-flow test below now also passes through the real, key-level
-        // apiRestrictions check -- default it to a safe response so only the tests that actually
-        // care about apiRestrictions need to override it.
+        // Every LIVE-flow test below also passes through the real, key-level apiRestrictions
+        // check -- default it to a safe response so only the tests that actually care about
+        // apiRestrictions need to override it.
         when(adapter.getApiKeyRestrictions(any(), any(), eq(BrokerMode.LIVE))).thenReturn(safeApiKeyRestrictions());
-        // P2-5 fix, full context in the pendingLiveConnectRepo field's own comment above.
+        // See the pendingLiveConnectRepo field's own comment above.
         when(pendingLiveConnectRepo.save(any())).thenAnswer(i -> {
             com.tradevision.model.PendingLiveConnect p = i.getArgument(0);
             fakePendingLiveConnectStore.put(p.getToken(), p);
@@ -137,13 +126,12 @@ class BrokerCredentialServiceTest {
     }
 
     // ---------------------------------------------------------------------------------------
-    // Audit item P2 ("CredentialEncryptionService weak AAD binding"), full context in that
-    // class's own header javadoc: proves BrokerCredentialService's own side of the fix -- the
-    // context strings it actually passes to encrypt()/decryptWithLegacyFallback are bound to
-    // the specific credential row, not just the field name, and the row id used is the SAME one
-    // the saved credential itself ends up with (so the ciphertext and the row it's bound to
-    // never drift apart). The cryptographic half of the fix (that a mismatched context really
-    // does fail decryption) is covered directly against the real CredentialEncryptionService in
+    // Proves BrokerCredentialService's own side of AAD binding -- the context strings it
+    // actually passes to encrypt()/decryptWithLegacyFallback are bound to the specific
+    // credential row, not just the field name, and the row id used is the SAME one the saved
+    // credential itself ends up with (so the ciphertext and the row it's bound to never drift
+    // apart). The cryptographic half (that a mismatched context really does fail decryption) is
+    // covered directly against the real CredentialEncryptionService in
     // CredentialEncryptionServiceTest; this mock-based test is about call-site correctness.
     // ---------------------------------------------------------------------------------------
 
@@ -169,7 +157,7 @@ class BrokerCredentialServiceTest {
     }
 
     @Test
-    @DisplayName("P2 fix (weak AAD binding): the package-private decrypt(credential, ...) helper asks for the row-scoped context first, with the bare field name only as CredentialEncryptionService's own legacy fallback -- never the other way around")
+    @DisplayName("the package-private decrypt(credential, ...) helper asks for the row-scoped context first, with the bare field name only as CredentialEncryptionService's own legacy fallback -- never the other way around")
     void decrypt_requestsRowScopedContext_withBareFieldNameAsLegacyFallbackOnly() {
         BrokerCredential credential = new BrokerCredential();
         credential.setId("cred-123");
@@ -185,9 +173,8 @@ class BrokerCredentialServiceTest {
     }
 
     /**
-     * Real bug, confirmed by the person's own live test against Binance's actual Spot Testnet:
-     * this check used to apply unconditionally to both LIVE and TESTNET, rejecting every genuine
-     * testnet key -- full context in BrokerCredentialService's own updated doConnect comment.
+     * The withdrawal-permission check must apply only to LIVE, not TESTNET, since testnet
+     * accounts commonly report canWithdraw=true and have no real funds to protect.
      */
     @Test
     @DisplayName("connect: mode=TESTNET succeeds even when the broker reports canWithdraw=true -- testnet has no real funds to protect, and reportedly cannot even have this permission restricted, so this check must not apply there")
@@ -211,7 +198,7 @@ class BrokerCredentialServiceTest {
     }
 
     @Test
-    @DisplayName("requestLiveConnect: validates against Binance's actual LIVE endpoint, not TESTNET — the literal P0 #1 fix")
+    @DisplayName("requestLiveConnect: validates against Binance's actual LIVE endpoint, not TESTNET")
     void requestLiveConnect_validatesAgainstLiveEndpoint() {
         when(adapter.getAccountPermissions("live-key", "live-secret", BrokerMode.LIVE))
             .thenReturn(new AccountPermissions(true, false, true));
@@ -219,18 +206,17 @@ class BrokerCredentialServiceTest {
         String token = service.requestLiveConnect("user1", liveReq());
 
         assertThat(token).isNotBlank();
-        // Confirms the call actually targeted LIVE, not TESTNET — this is the exact bug: the old
-        // code sent a TESTNET-stored key to the LIVE endpoint. Here, the correct key/mode pairing
-        // is used from the start since there's no pre-existing stored credential involved at all.
+        // Confirms the call actually targeted LIVE, not TESTNET — a TESTNET-stored key must
+        // never be sent to the LIVE endpoint. Here, the correct key/mode pairing is used from
+        // the start since there's no pre-existing stored credential involved at all.
         verify(adapter).getAccountPermissions("live-key", "live-secret", BrokerMode.LIVE);
         verify(credentialRepo, never()).save(any()); // nothing persisted yet — step 1 only
     }
 
     /**
-     * P1-10: the withdrawal check here no longer looks at the account-level
-     * getAccountPermissions().canWithdraw() flag (an account can report canWithdraw=true
-     * regardless of what THIS key is restricted to) -- it now looks at the real, key-level
-     * apiRestrictions response instead.
+     * The withdrawal check must look at the real, key-level apiRestrictions response, not the
+     * account-level getAccountPermissions().canWithdraw() flag, since an account can report
+     * canWithdraw=true regardless of what THIS key is restricted to.
      */
     @Test
     @DisplayName("requestLiveConnect: refuses a key with withdrawal permission enabled on LIVE, per the real key-level apiRestrictions check")
@@ -246,7 +232,7 @@ class BrokerCredentialServiceTest {
     }
 
     @Test
-    @DisplayName("requestLiveConnect: refuses a key that is NOT IP-restricted on Binance -- the literal P1 #10 IP-whitelist requirement")
+    @DisplayName("requestLiveConnect: refuses a key that is NOT IP-restricted on Binance")
     void requestLiveConnect_refusesMissingIpRestriction() {
         when(adapter.getAccountPermissions(any(), any(), eq(BrokerMode.LIVE)))
             .thenReturn(new AccountPermissions(true, false, true));
@@ -291,7 +277,7 @@ class BrokerCredentialServiceTest {
     }
 
     @Test
-    @DisplayName("P2-5 fix (\"breaks with >1 replica\"): confirmLiveConnect succeeds for a token this exact service instance never issued -- proving retrieval goes through the durable repo, not any instance-local state, exactly the case a real load-balanced confirm call lands on a different replica than the one that issued the token")
+    @DisplayName("confirmLiveConnect succeeds for a token this exact service instance never issued -- proving retrieval goes through the durable repo, not any instance-local state, exactly the case where a real load-balanced confirm call lands on a different replica than the one that issued the token")
     void confirmLiveConnect_succeedsForTokenNeverIssuedByThisInstance_provingNoInstanceLocalState() {
         // Simulates a token that "another replica" issued -- written straight into the fake
         // durable store this test's own pendingLiveConnectRepo mock is backed by, never through
@@ -335,11 +321,8 @@ class BrokerCredentialServiceTest {
     }
 
     /**
-     * Audit fix (P1-1 follow-up -- external review, second pass: "check it when a LIVE
-     * credential is connected" -- full context in AlertChannelStartupGuard's own
-     * requireAlertChannelCoverage javadoc). This is the runtime check's own test: a user with no
-     * alert channel at all must not be allowed to end up with a LIVE credential, even though
-     * every other validation (key permissions, token, user match) passes cleanly.
+     * A user with no alert channel at all must not be allowed to end up with a LIVE credential,
+     * even though every other validation (key permissions, token, user match) passes cleanly.
      */
     @Test
     @DisplayName("confirmLiveConnect: refuses to persist a LIVE credential for a user with no alert channel configured, and consumes the one-time token regardless")
@@ -357,11 +340,8 @@ class BrokerCredentialServiceTest {
     }
 
     /**
-     * Audit fix (P1-5 follow-up -- external review, second pass: "Require a step-up OTP for ...
-     * credential changes" -- full context in BrokerCredentialService.CREDENTIAL_CHANGE_STEPUP_PURPOSE's
-     * own javadoc). confirmLiveConnect must refuse outright on a bad/missing step-up OTP, before
-     * the token itself is ever even looked up -- a real token with no valid OTP must not be
-     * consumable.
+     * confirmLiveConnect must refuse outright on a bad/missing step-up OTP, before the token
+     * itself is ever even looked up -- a real token with no valid OTP must not be consumable.
      */
     @Test
     @DisplayName("confirmLiveConnect: refuses a genuinely valid token when the step-up OTP itself is wrong/missing, and never persists the credential")
@@ -379,12 +359,11 @@ class BrokerCredentialServiceTest {
     }
 
     /**
-     * Review finding ("No pure paper-trading mode with full isolation" -- external review,
-     * eighteenth pass, P0, full context in PaperBrokerAdapter's own class javadoc): the single
-     * most important test for this entire feature -- a PAPER credential's own connect-time
-     * validation call must NEVER reach the real, injected BrokerAdapter mock (which stands in
-     * for BinanceBrokerAdapter here). If this ever regressed, a PAPER credential's placeholder
-     * keys would be sent to Binance as a genuine authenticated request.
+     * The single most important test for PAPER mode isolation -- a PAPER credential's own
+     * connect-time validation call must NEVER reach the real, injected BrokerAdapter mock
+     * (which stands in for BinanceBrokerAdapter here). If this ever regressed, a PAPER
+     * credential's placeholder keys would be sent to Binance as a genuine authenticated
+     * request.
      */
     @Test
     @DisplayName("connect: mode=PAPER never calls the real adapter's own getAccountPermissions -- routed entirely to the simulated PaperBrokerAdapter instead")
@@ -403,10 +382,8 @@ class BrokerCredentialServiceTest {
     }
 
     /**
-     * Review finding ("Secrets / encryption key rotation and credential revocation story
-     * incomplete" -- external review, nineteenth pass, P1, full context in
-     * RiskProfileService.emergencyRevokeAll's own javadoc): the actual test proving every one of
-     * a user's active credentials -- not just one -- gets deactivated and audited.
+     * Proves every one of a user's active credentials -- not just one -- gets deactivated and
+     * audited.
      */
     @Test
     @DisplayName("deactivateAll: deactivates and audits every one of the user's active credentials, not just one")
@@ -424,9 +401,8 @@ class BrokerCredentialServiceTest {
     }
 
     /**
-     * Review finding ("Deactivating a broker credential can abandon live positions" -- external
-     * review, twenty-first pass, P0, full context in BrokerCredentialService.delete's own
-     * updated javadoc): the actual tests proving the new guard.
+     * Proves deactivating a credential is refused while it still has an open position, rather
+     * than abandoning that position.
      */
     @Test
     @DisplayName("delete: refuses to deactivate a credential with an OPEN position -- throws rather than silently abandoning it")
@@ -461,9 +437,8 @@ class BrokerCredentialServiceTest {
     }
 
     /**
-     * Review finding ("Credential deactivation also bypasses WebSocket and reconciliation
-     * safety" -- external review, twenty-second pass, P1, full context in delete's own updated
-     * javadoc): the actual tests proving the two additional checks.
+     * Proves deactivation also checks for non-terminal orders and active WebSocket/
+     * reconciliation state, not just open positions.
      */
     @Test
     @DisplayName("delete: refuses to deactivate a credential with a non-terminal order (e.g. still SUBMITTING) even with no Position yet at all")
@@ -523,17 +498,13 @@ class BrokerCredentialServiceTest {
     }
 
     /**
-     * Review finding ("API-key rotation workflow" -- external review, P3, full context in
-     * rotateApiKey's own javadoc): the actual tests.
-     *
-     * Review finding (P1 #9 -- "API key rotation doesn't verify it's the same Binance account
-     * (and bypasses LIVE two-step)"): rotateApiKey now also refuses while any open position/order
+     * Covers the API-key rotation workflow. rotateApiKey refuses while any open position/order
      * exists (refuseIfCredentialHasOpenWork), so every non-LIVE scenario below stubs
      * positionRepo/orderRepo to return empty lists -- exactly what a credential with nothing
-     * outstanding looks like. rotateApiKey itself now immediately refuses for LIVE credentials
-     * (redirecting to requestApiKeyRotation/confirmApiKeyRotation), so the old
-     * rotateApiKey_withdrawalEnabled_rejected scenario -- which used to run under LIVE -- is
-     * exercised against requestApiKeyRotation instead, below.
+     * outstanding looks like. rotateApiKey itself refuses outright for LIVE credentials
+     * (redirecting to requestApiKeyRotation/confirmApiKeyRotation), so the
+     * withdrawal-permission-rejected scenario is exercised against requestApiKeyRotation
+     * instead, below.
      */
     @Test
     @DisplayName("rotateApiKey: a valid new key updates the SAME credential's own encrypted fields in place, preserving its id")
@@ -599,7 +570,7 @@ class BrokerCredentialServiceTest {
     }
 
     @Test
-    @DisplayName("rotateApiKey: refuses while an open position still needs this credential's own management -- the P1 #9 open-work guard")
+    @DisplayName("rotateApiKey: refuses while an open position still needs this credential's own management")
     void rotateApiKey_openPosition_rejected() {
         var credential = new BrokerCredential();
         credential.setId("cred1"); credential.setUserId("user1"); credential.setActive(true);
@@ -616,7 +587,7 @@ class BrokerCredentialServiceTest {
     }
 
     @Test
-    @DisplayName("rotateApiKey: refuses a new key that reports a DIFFERENT Binance account uid than this credential was originally connected under -- the literal P1 #9 fix")
+    @DisplayName("rotateApiKey: refuses a new key that reports a DIFFERENT Binance account uid than this credential was originally connected under")
     void rotateApiKey_accountUidMismatch_rejected() {
         var credential = new BrokerCredential();
         credential.setId("cred1"); credential.setUserId("user1"); credential.setActive(true);
@@ -656,18 +627,12 @@ class BrokerCredentialServiceTest {
     }
 
     /**
-     * Review finding (P1 #9, full context in requestApiKeyRotation's own javadoc): the LIVE
-     * two-step rotation flow, mirroring requestLiveConnect/confirmLiveConnect's own test coverage
-     * above. This is also where the old rotateApiKey_withdrawalEnabled_rejected scenario now
+     * Covers the LIVE two-step rotation flow, mirroring requestLiveConnect/confirmLiveConnect's
+     * own test coverage above. This is also where the withdrawal-permission-rejected scenario
      * lives -- rotateApiKey itself refuses outright for LIVE before ever reaching a permission
-     * check, so that scenario is only reachable through this entry point now.
-     */
-    /**
-     * P1-10: as with requestLiveConnect, the withdrawal check here is now the real, key-level
-     * apiRestrictions check, not the old account-level getAccountPermissions().canWithdraw()
-     * flag validateRotationPermissions used to look at (which meant this scenario had to run
-     * under LIVE in the old rotateApiKey to even be reachable -- now it's exercised the same way
-     * every other LIVE key-restriction rejection is, via apiRestrictions).
+     * check, so that scenario is only reachable through this entry point. As with
+     * requestLiveConnect, the withdrawal check here is the real, key-level apiRestrictions
+     * check, not the account-level getAccountPermissions().canWithdraw() flag.
      */
     @Test
     @DisplayName("requestApiKeyRotation: refuses a new key with withdrawal permission enabled on LIVE, per the real key-level apiRestrictions check")
@@ -755,8 +720,8 @@ class BrokerCredentialServiceTest {
     }
 
     /**
-     * Audit fix (P1-5 follow-up, full context in confirmLiveConnect_refusesOnBadStepUpOtp's own
-     * javadoc): the same step-up requirement, same reasoning, for the rotation flow.
+     * The same step-up requirement, same reasoning, as confirmLiveConnect_refusesOnBadStepUpOtp,
+     * for the rotation flow.
      */
     @Test
     @DisplayName("confirmApiKeyRotation: refuses a genuinely valid token when the step-up OTP itself is wrong/missing, and never persists the rotation")
@@ -821,9 +786,8 @@ class BrokerCredentialServiceTest {
     }
 
     /**
-     * Review finding ("Paper trading remains shared between users" -- external review,
-     * thirtieth pass, P2, full context in BrokerCredentialService's own updated field javadoc):
-     * the actual tests for the fix.
+     * Covers PAPER adapter isolation between users: each credential must get its own
+     * PaperBrokerAdapter instance, not a shared one.
      */
     @Test
     @DisplayName("adapterForCredential: two different PAPER credentials get two genuinely different PaperBrokerAdapter instances -- real isolation, not a shared one")

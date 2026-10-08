@@ -18,31 +18,29 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Review finding ("#7 — Unified Portfolio Risk", agreed sequencing 4 -> 6 -> 5 -> 9 -> 7, final
- * step: "After the position/fill infrastructure is authoritative, combine: exposure, unrealized
- * P&L, realized P&L, drawdown, correlation, reservations into one portfolio-risk engine/view"):
- * this is that combination — genuinely just aggregation, not a new data source. Every number
- * below is computed from data this codebase already tracks authoritatively: open/closed
- * Position records, RiskProfile's own limits and peak-equity tracking, and real broker balance
- * and price lookups. Nothing here is a new source of truth.
+ * Aggregates exposure, P&L, drawdown, correlation and limit-utilization into a single
+ * portfolio-level risk view. This is purely a read/aggregation layer: every number is
+ * computed from data this codebase already tracks authoritatively — open/closed
+ * {@link Position} records, {@link RiskProfile} limits and peak-equity tracking, and
+ * live broker balance/price lookups. It introduces no new source of truth.
  *
- * HONEST SCOPE:
- * - Exposure (gross/net/per-symbol/correlation-group) is computed directly from OPEN Position
- *   records, not read from ExposureReservationService's own reservation state — the reservation
- *   is a concurrency-safety mechanism (see its own javadoc), not meant to be the read model for
- *   a portfolio view, and Positions are the same authoritative source its own reconcile() method
- *   already self-heals against.
- * - Gross and net exposure are currently IDENTICAL — this system is spot-only, long-only (no
- *   short positions to net against), so "net" doesn't yet mean anything different from "gross"
- *   here. Both fields exist for when/if that changes, not because they differ today.
- * - Unrealized P&L requires a live price per open position's symbol — if that lookup fails for
- *   any one position, that position's contribution is excluded from the total (marked in
- *   unpricedSymbols) rather than assumed zero, which would understate real exposure/risk.
- * - riskState (GREEN/YELLOW/RED) is a simple, disclosed threshold heuristic — not a model, not
- *   a prediction. GREEN below 50% of any limit, YELLOW at 50-89%, RED at 90%+ of any single
- *   limit (drawdown, total exposure, or concurrent positions) — whichever is closest to breach
- *   determines the color, and that reason is always reported alongside the color, not left for
- *   the caller to guess at.
+ * Scope and behavior:
+ * - Exposure (gross/net/per-symbol/correlation-group) is computed directly from OPEN
+ *   Position records rather than from any reservation bookkeeping — positions are the
+ *   authoritative state for a portfolio view, independent of concurrency-safety
+ *   mechanisms used elsewhere.
+ * - Gross and net exposure are currently identical because this system is spot-only,
+ *   long-only (no short positions to net against). Both fields are kept so the model
+ *   already supports netting once shorting is introduced.
+ * - Unrealized P&L requires a live price per open position's symbol. If a price lookup
+ *   fails for a position, that position is excluded from the total and listed in
+ *   unpricedSymbols instead of being treated as zero, which would understate real
+ *   exposure and risk.
+ * - riskState (GREEN/YELLOW/RED) is a simple, disclosed threshold heuristic rather than
+ *   a predictive model. GREEN is below 50% of any limit, YELLOW is 50-89%, and RED is
+ *   90%+ of any single limit (drawdown, total exposure, or concurrent positions).
+ *   Whichever limit is closest to breach determines the color, and the reason is always
+ *   reported alongside it.
  */
 @Service
 @RequiredArgsConstructor
@@ -76,10 +74,9 @@ public class PortfolioRiskService {
         RiskProfile profile = riskProfileRepo.findByCredentialId(credential.getId()).orElse(null);
         List<Position> openPositions = positionRepo.findByCredentialIdAndStatus(credential.getId(), "OPEN");
 
-        // Review finding (caught while cross-checking against the existing checkDrawdown logic,
-        // not assumed): the quote asset for balance/equity purposes is profile.drawdownQuoteAsset,
-        // not a hardcoded string — same reasoning PositionMonitorService.checkDrawdown already
-        // documents (every enabled symbol is assumed to quote in this same asset).
+        // Balance/equity is measured in profile.drawdownQuoteAsset rather than a hardcoded
+        // asset, since every enabled symbol is assumed to quote in this same asset
+        // (consistent with PositionMonitorService.checkDrawdown).
         String quoteAsset = profile != null && profile.getDrawdownQuoteAsset() != null ? profile.getDrawdownQuoteAsset() : "USDT";
         BigDecimal freeBalance = BigDecimal.ZERO;
         try {
@@ -119,7 +116,7 @@ public class PortfolioRiskService {
             unrealizedPnl = unrealizedPnl.add(marketValue.subtract(costBasis));
             exposureBySymbol.merge(p.getSymbol(), marketValue, BigDecimal::add);
         }
-        // Spot-only, long-only — see this class's own javadoc for why these are the same today.
+        // Net exposure equals gross exposure here since this system is spot-only, long-only.
         BigDecimal netExposure = grossExposure;
 
         Map<String, BigDecimal> exposureByCorrelationGroup = new HashMap<>();

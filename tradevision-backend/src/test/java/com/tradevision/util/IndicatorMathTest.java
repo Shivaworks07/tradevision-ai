@@ -10,10 +10,10 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review item #26: these formulas are the server-side cross-check against whatever the browser
- * claims a signal's RSI/ATR are (review item #2's hardening) — if the math itself is wrong, that
- * whole defense is worthless. Uses reference cases whose correct answer can be verified by hand
- * from the algorithm definition, not just "does it run".
+ * These formulas are the server-side cross-check against whatever the browser claims a signal's
+ * RSI/ATR are — if the math itself is wrong, that whole defense is worthless. Uses reference
+ * cases whose correct answer can be verified by hand from the algorithm definition, not just
+ * "does it run".
  */
 class IndicatorMathTest {
 

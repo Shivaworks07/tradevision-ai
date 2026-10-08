@@ -20,38 +20,18 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Review finding ("Client-Side Signal Generation = Trusting the Browser with Money" — "Port the
- * entire TA engine... to Java on the server"): a verified port of OrderFlowService.analyze() from
- * trading-analyst/src/app/services/order-flow.service.ts.
+ * Derives an order-flow bias from Binance futures data: funding rate, open interest change, and
+ * cumulative volume delta (CVD) from recent aggregated trades. Each component contributes an
+ * interpretation and a score, which calculateBias combines into an overall directional bias.
  *
- * HOW "VERIFIED" IS DEFINED HERE, PRECISELY, AND WHERE IT'S HONESTLY INCOMPLETE (different from
- * VolumeProfileService, which was verified end-to-end):
- * - The COMPUTATION logic (processFunding, processOI, processCVD, calculateBias) is verified
- *   against the REAL private methods of THIS class, not a separate simplified standalone
- *   version — invoked via reflection with a configurable mock JsonNode (this sandbox has no real
- *   Jackson jar available, since Maven Central is blocked here too), fed the same realistic
- *   sample Binance-response-shaped data used to generate the original TypeScript reference
- *   output (3 scenarios: mixed bullish signals, a short-squeeze setup, null/empty inputs, plus a
- *   4th verifying the isMissingNode() branch specifically). Every value matched exactly,
- *   including field extraction through the real .path()/.asDouble()/.has() calls this class
- *   actually uses at runtime — not just the arithmetic in isolation.
- * - The HTTP FETCHING (fetchFunding/fetchOpenInterest/fetchOIHistory/fetchRecentTrades/
- *   fetchTicker) is NOT verified against a live call — Binance's domains are network-blocked
- *   from this development sandbox (confirmed with an actual failed request, documented
- *   elsewhere in this codebase's own history). The endpoint paths, base URL, and response field
- *   names below were checked against Binance's own official API documentation
- *   (developers.binance.com/docs/derivatives) before writing this, not assumed or copied
- *   blindly from the TypeScript file — but "matches the docs" is not the same guarantee as
- *   "verified against a real response", and that gap is stated here plainly rather than left
- *   implicit. Whoever deploys this should confirm a real call against fapi.binance.com works as
- *   expected before relying on it for a live trading decision.
+ * Always calls the live Binance futures API (fapi.binance.com), regardless of whether the
+ * accompanying spot credential is in TESTNET or LIVE mode — unlike other broker calls in this
+ * codebase, which are mode-aware. Testnet futures data is synthetic and unrelated to real market
+ * sentiment, so a testnet-mode credential asking what funding/open interest are actually doing
+ * needs the real market answer, not a sandboxed one.
  *
- * DELIBERATE DESIGN DEVIATION FROM THIS CODEBASE'S OWN established pattern: every other broker
- * call in this codebase is mode-aware (TESTNET vs LIVE, matching the credential doing the
- * trading). This one always calls the REAL, LIVE futures API regardless of the accompanying
- * spot credential's mode — testnet futures data is synthetic and has no relationship to real
- * market sentiment, so a testnet-mode credential asking "what is the market's real funding
- * rate/open interest doing" needs the real answer, not a sandboxed one.
+ * Per-endpoint fetch failures are non-fatal and additive: if one endpoint (e.g. OI history) fails,
+ * the others still populate their respective fields rather than blanking the whole analysis.
  */
 @Service
 @RequiredArgsConstructor
@@ -65,10 +45,9 @@ public class OrderFlowService {
     private final ExchangeHealthService exchangeHealth;
 
     /**
-     * spotSymbol is expected in "BTCUSDT" form (this codebase's own convention throughout —
-     * see AutonomousScannerService's own TIER1_SYMBOLS for the same format) — matches the real
-     * TypeScript's own normalization (symbol.toUpperCase().replace('/USDT','')+'USDT'), which is
-     * effectively a no-op for a symbol already in that form.
+     * spotSymbol is expected in "BTCUSDT" form, this codebase's convention throughout (see
+     * AutonomousScannerService's TIER1_SYMBOLS). The uppercase+suffix normalization here is a
+     * no-op for a symbol already in that form, but guards against a stray "/USDT" separator.
      */
     public OrderFlowAnalysis analyze(String spotSymbol) {
         String symbol = spotSymbol.toUpperCase().replace("/USDT", "") + "USDT";

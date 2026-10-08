@@ -6,9 +6,8 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding ("Webhook alert feature is an SSRF surface" -- P1, full context in
- * WebhookAlertService.isDestinationSafe's own javadoc): this file did not exist before this fix
- * -- WebhookAlertService had zero test coverage previously.
+ * Verifies that WebhookAlertService refuses to deliver to internal, private, or
+ * link-local destinations, guarding against SSRF via a configured webhook URL.
  *
  * Uses IP-literal URLs throughout rather than hostnames needing real DNS resolution, so these
  * tests are deterministic and don't depend on network access being available in the test
@@ -26,7 +25,7 @@ class WebhookAlertServiceTest {
     }
 
     @Test
-    @DisplayName("isDestinationSafe: loopback address (127.0.0.1) is rejected -- the actual review fix (\"Webhook alert feature is an SSRF surface\")")
+    @DisplayName("isDestinationSafe: loopback address (127.0.0.1) is rejected")
     void loopbackAddress_rejected() {
         assertThat(service.isDestinationSafe("https://127.0.0.1/webhook")).isFalse();
     }
@@ -44,7 +43,7 @@ class WebhookAlertServiceTest {
     }
 
     @Test
-    @DisplayName("isDestinationSafe: link-local address (169.254.x, where the cloud metadata endpoint lives) is rejected -- the exact classic SSRF target this fix specifically closes")
+    @DisplayName("isDestinationSafe: link-local address (169.254.x, where the cloud metadata endpoint lives) is rejected")
     void linkLocalMetadataAddress_rejected() {
         assertThat(service.isDestinationSafe("https://169.254.169.254/latest/meta-data/")).isFalse();
     }
@@ -78,11 +77,9 @@ class WebhookAlertServiceTest {
     }
 
     /**
-     * Review finding ("Webhook SSRF protection isn't completely closed" -- external review,
-     * thirtieth pass, P1, full context in WebhookAlertService's own updated class javadoc): the
-     * actual end-to-end proof that a redirect response is never automatically followed -- a
-     * real local HTTP server (JDK's own built-in com.sun.net.httpserver, no external dependency
-     * needed) that responds with a 302 pointing at a link-local address, confirming send()
+     * End-to-end proof that a redirect response is never automatically followed: a real
+     * local HTTP server (JDK's own built-in com.sun.net.httpserver, no external dependency
+     * needed) responds with a 302 pointing at a link-local address, confirming send()
      * treats that as a failed delivery rather than silently chasing it there. Uses plain HTTP
      * for the local test server itself (isDestinationSafe's own HTTPS-only rule would otherwise
      * refuse the test server's own URL before ever reaching the redirect-handling code this

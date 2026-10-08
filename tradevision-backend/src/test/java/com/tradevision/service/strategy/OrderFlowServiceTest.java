@@ -14,22 +14,15 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding ("Client-Side Signal Generation" — "Port the entire TA engine... to Java"):
- * tests the actual verified port — see OrderFlowService's own javadoc for the full verification
- * methodology and its honestly-incomplete scope (computation verified against the real private
- * methods via reflection; live HTTP fetching NOT verified — Binance is network-blocked from this
- * sandbox). Private methods accessed via reflection here for the same reason: RestTemplate is
- * inline-initialized (matching BinanceBrokerAdapter's own established pattern in this codebase),
- * not constructor-injected, so it isn't mockable — this tests the computation directly instead
- * of trying to mock around a call path that was never designed to be mocked.
+ * Verifies the ported TA computation logic against known reference outputs. Private methods
+ * are accessed via reflection because RestTemplate here is inline-initialized rather than
+ * constructor-injected, so it isn't mockable — these tests exercise the computation directly
+ * instead of mocking the call path.
  */
 class OrderFlowServiceTest {
 
-    // Review finding ("Exchange health is primarily an in-memory metric" -- P1, full context in
-    // ExchangeHealthService's own updated header javadoc): same minimal fix as
-    // BinanceBrokerAdapterTest's own identical situation -- this test never exercises
-    // ExchangeHealthService's actual behavior, so a plain Mockito.mock() for its now-required
-    // MongoTemplate argument is the right fix.
+    // This test never exercises ExchangeHealthService's own behavior, so a plain Mockito.mock()
+    // suffices for its required MongoTemplate argument.
     private final OrderFlowService service = new OrderFlowService(
         new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class)));
     private final ObjectMapper mapper = new ObjectMapper();

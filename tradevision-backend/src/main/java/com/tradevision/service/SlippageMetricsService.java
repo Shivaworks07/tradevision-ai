@@ -13,28 +13,24 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Review finding ("#9 — Slippage" — "For every trade: signalPrice, expectedPrice, submittedAt,
- * brokerAckAt, averageFillPrice, slippage. Then analytics: average slippage, P95, P99, by
- * symbol, by strategy, by volatility. This is critical to know whether your backtest actually
- * survives real execution."): this is that measurement, using Order's own requestedPrice
- * (repurposed as the expected/signal price — see Order's own field comment) and
- * averageFillPrice, both of which already existed from #4/#9's own latency work.
+ * Measures execution slippage — the gap between a signal's expected price and what an order
+ * actually filled at — using Order's own requestedPrice (repurposed as the expected/signal price
+ * — see Order's own field comment) and averageFillPrice.
  *
  * Slippage is expressed in basis points (1 bp = 0.01%), positive meaning the fill was WORSE than
  * expected (paid more for a BUY) and negative meaning it was better — the sign matters and is
  * preserved, not just the magnitude, so "average slippage" can't hide a consistent directional
  * bias behind cancellation from a few good and bad fills.
  *
- * HONEST SCOPE:
- * - "By strategy" is now implemented too (reportByStrategyVersion below) -- Order.strategyVersion
- *   is genuinely populated now (OrderService.create's own STRATEGY_VERSION constant), closing
- *   the gap this comment used to name. Strategy versioning itself is deliberately still simple:
- *   a manually-bumped constant, not an automated build-hash system -- see that constant's own
- *   javadoc for why.
- * - "By volatility" IS implemented — see reportByVolatilityBucket below, using
- *   Order.volatilityAtEntry (ATR as % of price at signal time, stamped via
- *   OrderService.recordVolatility — see that method's own javadoc).
- * - "By symbol" is directly supported via reportForSymbol.
+ * Scope:
+ * - By strategy version: reportByStrategyVersion below, keyed by Order.strategyVersion
+ *   (OrderService.create's own STRATEGY_VERSION constant). Strategy versioning itself is
+ *   deliberately simple: a manually-bumped constant, not an automated build-hash system — see
+ *   that constant's own javadoc for why.
+ * - By volatility: reportByVolatilityBucket below, using Order.volatilityAtEntry (ATR as % of
+ *   price at signal time, stamped via OrderService.recordVolatility — see that method's own
+ *   javadoc).
+ * - By symbol: reportForSymbol.
  * - Only entry orders are measured — the same scope boundary as everywhere else OMS is wired.
  * - An order with a null requestedPrice (e.g. one created before this field was populated) is
  *   excluded from the statistics entirely, not treated as zero slippage.
@@ -45,12 +41,10 @@ public class SlippageMetricsService {
 
     private final OrderRepository orderRepo;
 
-    // Review finding ("Execution" — "slippage by volatility"): disclosed, fixed thresholds for
-    // ATR-as-percent-of-price on hourly candles — a simple heuristic bucketing, not a
-    // statistically-derived one. LOW/MEDIUM/HIGH match typical BTC/ETH ranges on this timeframe;
-    // a genuinely different symbol universe (much higher-volatility altcoins, a different
-    // timeframe) would need different thresholds, stated plainly rather than presented as
-    // universally correct.
+    // Fixed thresholds for ATR-as-percent-of-price on hourly candles — a simple heuristic
+    // bucketing, not a statistically-derived one. LOW/MEDIUM/HIGH match typical BTC/ETH ranges on
+    // this timeframe; a genuinely different symbol universe (much higher-volatility altcoins, a
+    // different timeframe) would need different thresholds.
     private static final double LOW_VOLATILITY_THRESHOLD = 1.0;
     private static final double HIGH_VOLATILITY_THRESHOLD = 3.0;
 
@@ -65,9 +59,8 @@ public class SlippageMetricsService {
 
     public SlippageStats reportForSymbol(String symbol, int lookbackDays) {
         LocalDateTime cutoff = LocalDateTime.now().minusDays(lookbackDays);
-        // Review finding (unbounded metrics queries -- P2, full context in OrderRepository's own
-        // findByStatusAndCreatedAtAfter javadoc): pushes the cutoff into the database query
-        // itself, rather than fetching every FILLED order ever placed and filtering after.
+        // Pushes the cutoff into the database query itself, rather than fetching every FILLED
+        // order ever placed and filtering after.
         List<Order> orders = orderRepo.findByStatusAndCreatedAtAfter(OrderStatus.FILLED, cutoff).stream()
             .filter(o -> symbol == null || symbol.equalsIgnoreCase(o.getSymbol()))
             .toList();
@@ -75,15 +68,13 @@ public class SlippageMetricsService {
     }
 
     /**
-     * Review finding ("Execution" — "slippage by volatility"): buckets orders by
-     * volatilityAtEntry before computing slippage stats separately for each bucket — this is
-     * what actually answers "does slippage get worse in volatile conditions", not just an
-     * overall average that could hide that relationship entirely.
+     * Buckets orders by volatilityAtEntry before computing slippage stats separately for each
+     * bucket — this is what actually answers "does slippage get worse in volatile conditions",
+     * not just an overall average that could hide that relationship entirely.
      */
     public VolatilityBucketedReport reportByVolatilityBucket(String symbol, int lookbackDays) {
         LocalDateTime cutoff = LocalDateTime.now().minusDays(lookbackDays);
-        // Review finding (unbounded metrics queries -- P2, full context in reportForSymbol's own
-        // identical fix above): same fix, same reasoning.
+        // Cutoff pushed into the query itself, same as reportForSymbol above.
         List<Order> orders = orderRepo.findByStatusAndCreatedAtAfter(OrderStatus.FILLED, cutoff).stream()
             .filter(o -> symbol == null || symbol.equalsIgnoreCase(o.getSymbol()))
             .toList();
@@ -101,19 +92,14 @@ public class SlippageMetricsService {
     }
 
     /**
-     * Review finding ("Slippage analytics can't be tied to strategy version (versioning
-     * unpopulated)" -- P1): confirmed real and fixed -- Order.strategyVersion is now actually
-     * populated (OrderService.create's own STRATEGY_VERSION constant), closing the gap this
-     * class's own "HONEST SCOPE" javadoc used to name explicitly. Unlike volatility (a
-     * continuous value bucketed into 3 fixed ranges), strategy version is a discrete, open set
-     * of string values -- grouped into a map keyed by whatever versions actually appear in the
-     * data, rather than forcing it into a fixed shape that would break the moment a second
-     * strategy version exists.
+     * Groups slippage stats by strategy version. Unlike volatility (a continuous value bucketed
+     * into 3 fixed ranges), strategy version is a discrete, open set of string values — grouped
+     * into a map keyed by whatever versions actually appear in the data, rather than forced into
+     * a fixed shape that would break the moment a second strategy version exists.
      */
     public java.util.Map<String, SlippageStats> reportByStrategyVersion(String symbol, int lookbackDays) {
         LocalDateTime cutoff = LocalDateTime.now().minusDays(lookbackDays);
-        // Review finding (unbounded metrics queries -- P2, full context in reportForSymbol's own
-        // identical fix above): same fix, same reasoning.
+        // Cutoff pushed into the query itself, same as reportForSymbol above.
         List<Order> orders = orderRepo.findByStatusAndCreatedAtAfter(OrderStatus.FILLED, cutoff).stream()
             .filter(o -> symbol == null || symbol.equalsIgnoreCase(o.getSymbol()))
             .filter(o -> o.getStrategyVersion() != null) // an order with no known version is excluded, not lumped into a misleading "null" bucket

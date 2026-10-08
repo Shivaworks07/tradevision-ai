@@ -48,22 +48,15 @@ describe('ReplayComponent', () => {
   });
 
   it('should not step back below minimum candle index', () => {
-    // Review finding ("Frontend test coverage" -- P2): this test's own body contradicted its
-    // own name -- it asserted stepping from 60 down through 59 to 58 would succeed, which is
-    // literally stepping BELOW the minimum the test's own name says shouldn't happen. Read the
-    // real component logic before "fixing" this: stepBack()'s guard (`if (this.currentIdx <=
-    // 60) return;`) is correct and intentional, matching this component's own separate,
-    // documented requirement elsewhere that at least 60 candles are needed for real analysis
-    // (`if (candles.length < 60) return;`) -- 60 is a genuine floor, not an off-by-one bug.
-    // Fixed to actually test what the name says: stepping back from above the floor works
-    // normally, and stepping AT the floor is correctly blocked.
+    // stepBack() refuses to move below index 60, since the analysis logic
+    // needs at least 60 candles of history to produce a meaningful result.
     component['currentIdx'] = 65;
     component.stepBack();
     expect(component['currentIdx']).toBe(64);
 
     component['currentIdx'] = 60;
     component.stepBack();
-    expect(component['currentIdx']).toBe(60); // blocked -- must not go below the documented minimum
+    expect(component['currentIdx']).toBe(60); // blocked -- must not go below the minimum
   });
 
   it('should export CSV only when history exists', () => {

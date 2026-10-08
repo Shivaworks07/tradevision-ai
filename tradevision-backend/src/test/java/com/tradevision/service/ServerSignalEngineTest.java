@@ -10,15 +10,13 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding, this doc: "the backend doesn't independently calculate the trading decision."
- * These tests lock in the verification that was actually performed before this file existed:
- * the candle data below is the EXACT data used to cross-check this Java port against the real
- * ta-engine.service.ts source (extracted and run in Node.js, compared bit-for-bit against this
- * Java port compiled and run standalone). This file is generated entirely from that verified
- * JSON output by script — never hand-transcribed — specifically because a hand-transcription
- * pass on an earlier draft of this file was checked programmatically against the source JSON
- * and found to contain fabricated values from stale memory, not the real data. That mistake is
- * the reason this file states its own provenance instead of just asserting numbers.
+ * These tests verify that the backend independently calculates the trading decision, matching
+ * the real ta-engine.service.ts source exactly. The candle data below is the EXACT data used to
+ * cross-check this Java port against that source (extracted and run in Node.js, compared
+ * bit-for-bit against this Java port compiled and run standalone). This file is generated
+ * entirely from that verified JSON output by script -- never hand-transcribed -- since hand
+ * transcription risks introducing fabricated values that don't match the real data. That is
+ * why this file states its own provenance instead of just asserting numbers.
  *
  * See ServerSignalEngine's class javadoc for the full verification method.
  */

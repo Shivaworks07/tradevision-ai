@@ -6,14 +6,12 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Review finding ("TradeCall request has almost no validation"): the fields flagged as
- * "particularly concerning" (rawCandles, summary, patterns, bullReasons, bearReasons,
- * decisionWeights) are now bounded — an attacker sending a request with millions of list/map
- * entries gets a 400 instead of this backend trying to process and store all of it. Tomcat's
- * default max POST size (2MB) already provided a raw-byte ceiling before this; these add a
- * ceiling on element COUNT, since a 2MB body can still contain a very large number of small
- * entries. Not every one of the 100+ fields on this DTO has bounds — that would be its own
- * large diff — but every field the review specifically called out as dangerous does.
+ * Request payload for recording a trade call signal, carrying trade levels, indicator values,
+ * and strategy/ML metadata. The larger list/map fields (rawCandles, summary, patterns,
+ * bullReasons, bearReasons, decisionWeights) carry explicit element-count bounds in addition to
+ * Tomcat's raw-byte POST size ceiling, since a request under that byte limit can still contain a
+ * very large number of small entries; not every field on this DTO is bounded this way, only the
+ * ones that would otherwise let a caller force this backend to process an unbounded collection.
  */
 @Data
 public class TradeCallRequest {
@@ -40,16 +38,12 @@ public class TradeCallRequest {
     private double rrRatio;
     private String risk;
 
-    // Review finding (P1 #10 — "TradeCallRequest numeric validation is still weak"): confirmed a
-    // real, consequential gap, not just a hygiene concern — NaN comparisons in Java are always
-    // false (NaN > x, NaN < x both evaluate false), meaning a NaN entryPrice would silently
-    // bypass NoTradeFilterService's price-deviation safety check entirely rather than failing
-    // it, since "deviation > maxAllowed" never evaluates true when deviation is NaN. @DecimalMin/
-    // @Max don't reliably catch this (IEEE 754 NaN doesn't compare as greater or less than any
-    // bound), so this needs an explicit finite check. Scoped to the fields that actually drive
-    // execution math (entry/SL/TP/ATR/R:R/confidence) — not all 100+ fields on this DTO, which
-    // would be its own much larger diff; these are the ones a bad value can actually bypass a
-    // safety gate through.
+    // Explicit finiteness check because @DecimalMin/@Max don't reliably reject NaN -- IEEE 754
+    // NaN compares as neither greater nor less than any bound, so a NaN entryPrice would
+    // silently bypass NoTradeFilterService's price-deviation check ("deviation > maxAllowed"
+    // never evaluates true when deviation is NaN) rather than failing it. Scoped to the fields
+    // that actually drive execution math (entry/SL/TP/ATR/R:R/confidence), not every numeric
+    // field on this DTO.
     @AssertTrue(message = "Trade levels and confidence must be finite numbers (no NaN/Infinity) and confidence must be 0-100")
     public boolean isNumericallyValid() {
         double[] mustBeFinite = { entryPrice, stopLoss, target1, target2, target3, atr, atrPct, rrRatio };

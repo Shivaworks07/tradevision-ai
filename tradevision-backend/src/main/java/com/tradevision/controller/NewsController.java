@@ -9,15 +9,8 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @RequestMapping("/api/news")
 @RequiredArgsConstructor
-// Review finding ("@CrossOrigin still has hardcoded localhost origins" -- external review,
-// thirty-fifth pass, P2, confirmed real by direct inspection before this fix: this
-// controller-level annotation hardcoded localhost origins independently of
-// CorsConfig.allowedOrigins (driven by the configurable app.cors.allowed-origins property),
-// meaning production would need BOTH the property AND every one of these annotations updated
-// to change allowed origins -- exactly the "two sources of truth" risk the review names):
-// removed. CorsConfig's own global CorsFilter, registered for "/**", already covers every
-// endpoint in this application, including this controller's own -- this annotation was
-// redundant at best, and a second, unsynchronized origin list at worst.
+// CORS is handled centrally by CorsConfig's global CorsFilter (driven by the
+// app.cors.allowed-origins property), so no per-controller @CrossOrigin is needed here.
 public class NewsController {
 
     private final NewsService newsService;

@@ -17,36 +17,30 @@ import java.time.Instant;
 import static org.springframework.data.mongodb.core.query.Criteria.where;
 
 /**
- * Review finding ("P0 #3" — full context in ExposureReservation's own javadoc): the atomic
- * exposure-cap enforcement PositionSlotReservationService only ever provided for trade COUNT.
- * Same reserve()/release()/reconcile() shape, same MongoDB single-document-atomicity guarantee,
- * generalized to a dollar amount and (optionally) a per-symbol breakdown.
+ * Enforces atomic exposure caps (total dollar amount, and optionally a per-symbol and
+ * per-correlation-group breakdown), the same shape as {@code PositionSlotReservationService}
+ * generalizes to a dollar amount, with the same MongoDB single-document-atomicity guarantee.
  *
- * reserve() is two sequential atomic steps, not one: (1) atomically reserve into the TOTAL
- * exposure field, conditioned on staying under the total cap; (2) if that succeeds, atomically
- * reserve into the SYMBOL exposure field, conditioned on staying under the symbol cap — and if
- * step 2 fails, roll back step 1. This isn't a single indivisible transaction across both fields,
- * but it doesn't need to be: each field's own cap is enforced correctly and atomically by its
- * own step regardless of what the other field is doing concurrently. The only imperfection is a
- * brief window where a rolled-back total reservation could make a CONCURRENT request's total-cap
- * check slightly more conservative than strictly necessary — a safe failure mode (a false
- * rejection), not an unsafe one (never a false approval of either cap).
+ * <p>{@code reserve()} is multiple sequential atomic steps, not one: (1) atomically reserve into
+ * the total exposure field, conditioned on staying under the total cap; (2) if that succeeds,
+ * atomically reserve into the symbol exposure field, conditioned on staying under the symbol cap,
+ * rolling back step 1 if this fails; and similarly for any correlation groups. This isn't a
+ * single indivisible transaction across every field, but it doesn't need to be: each field's own
+ * cap is enforced correctly and atomically by its own step regardless of what the other fields
+ * are doing concurrently. The only imperfection is a brief window where a rolled-back total
+ * reservation could make a concurrent request's total-cap check slightly more conservative than
+ * strictly necessary -- a safe failure mode (a false rejection), never an unsafe one (a false
+ * approval of any cap).
  *
- * Review finding ("Exposure reservation rollback can steal another trade's reservation" /
- * "Generic exposure release() has the same ownership problem" — external review, twenty-sixth
- * pass, P0, the review's own explicit "biggest thing found in v172"): every successful
- * reservation now creates its own durable ExposureReservationRecord (see that class's own
- * javadoc for the full mechanism) capturing exactly what was reserved. release(String
- * reservationId) reads the amounts back from that record rather than trusting a caller-
- * recomputed value, and atomically claims the record before decrementing anything, making a
- * double-release a genuine no-op instead of a double-decrement. The intra-call rollback inside
- * reserve() itself (a later step failing, undoing an earlier step within the SAME call) remains
- * a direct counter decrement — that specific operation is mathematically safe on its own terms
- * (it undoes this same execution's own just-made increment, by the identical amount, before any
- * reservation record for it has ever been created or handed to a caller) — but every reservation
- * that actually succeeds and is handed back to a caller is now tracked by record, closing the
- * real risk: a caller releasing a DIFFERENT amount than it actually reserved, or releasing the
- * same logical reservation more than once.
+ * <p>Every successful reservation creates its own durable {@code ExposureReservationRecord} (see
+ * that class's javadoc) capturing exactly what was reserved. {@link #release(String)} reads the
+ * amounts back from that record rather than trusting a caller-recomputed value, and atomically
+ * claims the record before decrementing anything, making a double-release a genuine no-op instead
+ * of a double-decrement. The intra-call rollback inside {@code reserve()} itself (a later step
+ * failing, undoing an earlier step within the same call) remains a direct counter decrement,
+ * which is safe on its own terms: it undoes this same execution's own just-made increment, by the
+ * identical amount, before any reservation record for it has ever been created or handed to a
+ * caller.
  */
 @Service
 @RequiredArgsConstructor
@@ -55,58 +49,38 @@ public class ExposureReservationService {
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(ExposureReservationService.class);
     private static final Duration GRACE_WINDOW = Duration.ofSeconds(120);
     /**
-     * P3-5 fix ("ExposureReservationService group/symbol field paths -- user-supplied group
-     * names used as Mongo field paths ('.'/'$') -- validate names" -- external review, confirmed
-     * real by direct inspection: "reservedGroupExposure." + groupName is used as a literal Mongo
-     * field path in both reserve() overloads and release() below. RiskProfileService.upsert now
-     * rejects a bad group name at the one place it's actually written (see that method's own new
-     * validation, right where enabledSymbols is validated the same way), so this should never see
-     * a bad name going forward -- this is defense in depth for a profile document written before
-     * that fix existed, or by a direct database write bypassing the API entirely. Skipping (never
-     * throwing) here is deliberate: this method is on the hot path of real order placement, and a
-     * malformed correlation-group name on an old document must degrade to "this one group isn't
-     * enforced this call" rather than block a legitimate order or crash the reservation entirely.
+     * Checks whether a correlation-group name is safe to use as a literal MongoDB field path
+     * segment ({@code "reservedGroupExposure." + groupName}), since it contains no {@code '.'} or
+     * {@code '$'} and isn't blank. {@code RiskProfileService.upsert} validates group names at
+     * write time, so this is defense in depth for profile documents written before that
+     * validation existed, or by a direct database write bypassing the API. An unsafe name is
+     * skipped rather than rejected outright: this runs on the hot path of order placement, and a
+     * malformed group name on an old document should degrade to "this one group isn't enforced
+     * this call" rather than block a legitimate order or crash the reservation entirely.
      */
     private static boolean isSafeGroupName(String groupName) {
         return groupName != null && !groupName.isBlank() && !groupName.contains(".") && !groupName.contains("$");
     }
     /**
-     * Review finding ("stale PENDING reservation can race a slow reservation" -- external
-     * review, thirtieth pass, P1, confirmed real by direct inspection before this fix: a
-     * reserve() call that creates its own PENDING record and then pauses for longer than
-     * GRACE_WINDOW (an extreme GC pause, a genuinely stuck thread, or similar) could have that
-     * PENDING record deleted as "abandoned" by a concurrent reconcile() pass, and then resume
-     * and claim the counter anyway -- leaving a real, counted reservation with no durable
-     * record explaining it, for the remainder of this process's own lifetime): the review's own
-     * fully correct fix is a Mongo transaction wrapping the whole reserve() sequence, which this
-     * codebase already requires for LIVE authorization -- not attempted here because reserve()
-     * is also called for TESTNET/PAPER credentials, where transaction support (a replica set) is
-     * genuinely not guaranteed, and reserve() has no BrokerMode parameter to gate on today;
-     * adding one is a real, separate, larger change than this specific fix warrants doing
-     * alongside everything else in this pass. Narrowed pragmatically instead: a PENDING record
-     * only reaches this window's own reconcile()-driven cleanup after being PENDING for this
-     * much longer than any real reserve() call should ever take (a normal call resolves in
-     * milliseconds) -- reducing, though not eliminating, the probability of the exact pause
-     * this race requires actually exceeding the cleanup threshold before reserve() itself
-     * resumes and finishes.
+     * How long a {@code PENDING} reservation record may remain unresolved before
+     * {@code reconcile()}'s stale-PENDING cleanup treats it as abandoned and deletes it. This is
+     * set well above how long any real {@code reserve()} call should ever take (normally
+     * milliseconds), to keep the window small in which a slow but still in-progress {@code
+     * reserve()} call (an extreme GC pause, a stuck thread) could have its own record cleaned up
+     * from under it before it finishes claiming counters. A full Mongo transaction around the
+     * whole {@code reserve()} sequence would close this gap entirely, but {@code reserve()} is
+     * also called for TESTNET/PAPER credentials where transaction support (a replica set) isn't
+     * guaranteed, so this threshold is a pragmatic, narrower mitigation instead.
      */
     private static final Duration PENDING_CLEANUP_WINDOW = Duration.ofMinutes(10);
 
     private final MongoTemplate mongoTemplate;
-    /**
-     * Review finding ("v183 still has a dangerous 'PENDING reservation cleanup' window" --
-     * external review, thirty-fifth pass, P0, full context in reserve()'s own updated comment
-     * on the final PENDING-to-ACTIVE transition): needed to surface the exact dangerous state
-     * the review names -- counters already claimed, but the durable record proving why failed
-     * its own final transition -- loudly, rather than silently.
-     */
+    // Used to raise a critical incident, loudly rather than silently, whenever counters have
+    // already been claimed but the durable record proving why fails its final PENDING-to-ACTIVE
+    // transition (see reserve()).
     private final IncidentService incidentService;
-    /**
-     * Review finding ("v183 still has a dangerous 'PENDING reservation cleanup' window" --
-     * external review, thirty-fifth/thirty-seventh passes, P0, full context in
-     * ExposureReservationRecord.executionId's own field javadoc): needed for the real safety
-     * check in reconcile()'s own stale-PENDING cleanup.
-     */
+    // Used by reconcile()'s stale-PENDING cleanup to verify a PENDING record is actually
+    // abandoned before deleting it.
     private final com.tradevision.repository.ExecutionContextRepository executionContextRepo;
     private final com.tradevision.repository.RiskProfileRepository riskProfileRepo;
     private final com.tradevision.repository.ExposureReservationRecordRepository reservationRecordRepo;
@@ -122,26 +96,21 @@ public class ExposureReservationService {
     }
 
     /**
-     * Review finding ("Risk" — "atomic correlation reservations"): the same overload above,
-     * extended with an optional third atomic step for correlation-group caps — see
-     * ExposureReservation's own updated javadoc for the full context. correlationGroups/
-     * correlationGroupCaps may be null or empty (no correlation groups configured for this
-     * profile) — in which case this behaves identically to the two-step overload above. A symbol
-     * can belong to more than one group; each matching group is reserved as its own atomic step,
-     * and if ANY step (total, symbol, or any group) fails, every step that already succeeded is
-     * rolled back — the whole reservation is all-or-nothing, not partially applied.
+     * Overload that also enforces an optional third atomic step for correlation-group caps.
+     * {@code correlationGroups}/{@code correlationGroupCaps} may be null or empty (no correlation
+     * groups configured for this profile), in which case this behaves identically to the
+     * two-step overload above. A symbol can belong to more than one group; each matching group is
+     * reserved as its own atomic step, and if any step (total, symbol, or any group) fails, every
+     * step that already succeeded is rolled back -- the whole reservation is all-or-nothing.
      *
-     * Review finding ("v183 still has a dangerous 'PENDING reservation cleanup' window" --
-     * external review, thirty-fifth/thirty-seventh passes, P0, full context in
-     * ExposureReservationRecord.executionId's own field javadoc): executionId, when the caller
-     * has one (AutoTradeService always does, by the time it calls this -- ExecutionContext is
-     * created before any reservation is attempted), is stored on the PENDING record before any
-     * counter is touched, giving reconcile()'s own stale-PENDING cleanup a real, durable thing
-     * to check before deciding it's safe to delete. Genuinely nullable -- a caller with no
-     * executionId available (PositionMonitorService's own late-fill-discovery recovery path,
-     * for instance, which runs after the original evaluation and its own ExecutionContext are
-     * both long finished) passes null, and reconcile() falls back to the prior, time-based-only
-     * safety check for those specific records.
+     * <p>{@code executionId}, when the caller has one ({@code AutoTradeService} always does, since
+     * its {@code ExecutionContext} is created before any reservation is attempted), is stored on
+     * the PENDING record before any counter is touched, giving {@code reconcile()}'s stale-PENDING
+     * cleanup a durable thing to check before deciding it's safe to delete. It is genuinely
+     * nullable: a caller with no executionId available (e.g. {@code PositionMonitorService}'s
+     * late-fill-discovery recovery path, which runs after the original evaluation and its
+     * {@code ExecutionContext} are both long finished) passes null, and {@code reconcile()} falls
+     * back to a time-based-only safety check for those records.
      */
     public ExposureReserveResult reserve(String credentialId, String symbol, BigDecimal orderQuoteValue,
                                           BigDecimal maxTotal, BigDecimal maxSymbol,
@@ -152,20 +121,14 @@ public class ExposureReservationService {
     }
 
     /**
-     * Review finding ("Make LIVE reservation transaction fallback impossible" -- external
-     * review, thirty-ninth pass, the review's own explicit distinction: "Mongo supports
-     * transactions + runtime/session acquisition problem" is a DIFFERENT scenario from the
-     * startup check that already gates LIVE on a deployment with no replica-set support at all
-     * -- this is a live, transient failure DURING an otherwise-transactional deployment, and the
-     * review's own point stands: "the system can theoretically lose the atomic reservation
-     * lifecycle guarantee during a runtime failure that causes session acquisition to fail," with
-     * nothing before this fix distinguishing that case from "deployment genuinely doesn't support
-     * transactions" at all -- both silently took the exact same non-transactional fallback path):
-     * the actual fix -- live, when true, means this reservation is for a genuine LIVE-mode
-     * autonomous trade, and the review's own required policy applies: "transaction unavailable ->
-     * DO NOT fallback -> reject reservation -> halt autonomous execution -> critical incident."
-     * TESTNET/PAPER (live=false) keep the existing sequential-fallback behavior unchanged --
-     * this session's own earlier, deliberate choice not to require a replica set for those modes.
+     * Overload that also distinguishes LIVE-mode reservations from TESTNET/PAPER. When
+     * {@code live} is true, this is a genuine LIVE-mode autonomous trade, and a runtime failure
+     * to acquire a MongoDB transaction session (distinct from a deployment that doesn't support
+     * transactions at all) must not silently fall back to the non-transactional path: it rejects
+     * the reservation and halts autonomous execution with a critical incident instead, since LIVE
+     * execution requires the atomic reservation lifecycle guarantee a transaction provides.
+     * TESTNET/PAPER ({@code live=false}) keep the existing sequential-fallback behavior, since
+     * those modes don't require a replica set.
      */
     public ExposureReserveResult reserve(String credentialId, String symbol, BigDecimal orderQuoteValue,
                                           BigDecimal maxTotal, BigDecimal maxSymbol,
@@ -177,39 +140,31 @@ public class ExposureReservationService {
     }
 
     /**
-     * Review finding ("Reservation lifecycle is still not transactionally safe" -- external
-     * review, thirty-eighth pass, P0, the review's own explicit final fix: "Mongo transaction:
-     * insert reservation PENDING + increment all relevant counters + set ACTIVE, all in one
-     * transaction. If transaction fails: ROLLBACK EVERYTHING... You already require Mongo
-     * transactions for critical LIVE execution authorization, so I would extend that requirement
-     * to these reservation operations"): the actual fix, following the EXACT same proven pattern
-     * RiskProfileService.claimExecutionAtomicWithPlan already uses for LIVE execution
-     * authorization -- try a real Mongo ClientSession/transaction first; on the SPECIFIC,
-     * recognizable "this deployment doesn't support transactions" error (a standalone instance,
-     * not a replica set -- exactly the TESTNET/PAPER concern this session had previously declined
-     * a transactional rewrite over), fall back to the prior sequential approach below, which
-     * already has its own complete, independently-tested rollback-on-failure and
-     * loud-not-silent-activation-failure safety nets. Never silently swallow a genuine, different
-     * MongoDB error into a fallback that wouldn't actually address it.
+     * Reserves exposure inside a real MongoDB transaction when the deployment supports one
+     * (inserting the reservation PENDING, incrementing every relevant counter, and setting it
+     * ACTIVE as one atomic unit), following the same pattern
+     * {@code RiskProfileService.claimExecutionAtomicWithPlan} uses for LIVE execution
+     * authorization. On the specific, recognizable "this deployment doesn't support transactions"
+     * error (a standalone instance, not a replica set), this falls back to
+     * {@link #reserveSequentially}, which has its own independent rollback-on-failure and
+     * loud-not-silent-activation-failure safety nets. Any other MongoDB error is never silently
+     * swallowed into that fallback, since it wouldn't actually address a different failure.
      */
     /**
-     * CI-review fix ("Multi-plan combined exposure reservation" -- external review, fifth pass,
-     * failure 2, full context in reserveTransactionally's own updated javadoc): same bounded
-     * retry budget as PositionSlotReservationService's own identical constant, for the same
-     * reasoning -- a genuine WriteConflict under real concurrent transactions against the same
-     * document is expected and retryable, not an infrastructure failure.
+     * Bounded retry budget for a transaction that hits a MongoDB WriteConflict, matching
+     * {@code PositionSlotReservationService}'s identical constant: a WriteConflict under real
+     * concurrent transactions against the same document is expected and retryable, not an
+     * infrastructure failure.
      */
     private static final int MAX_TRANSACTION_RETRIES = 10;
 
     /**
-     * CI-review fix, same context as the retry-backoff comment at this method's own WriteConflict
-     * retry call site: a short, randomized (jittered) delay before each retry, growing slightly
-     * with the attempt number but capped low -- this is a real database transaction on the hot
+     * Short, randomized (jittered) delay before retrying a transaction that hit a WriteConflict,
+     * growing slightly with the attempt number but capped low -- this runs on the hot
      * order-placement path, not a background job, so even the worst case (attempt 10) adds at
-     * most tens of milliseconds, not seconds. Randomized specifically so that when multiple
-     * threads collide and all back off, they don't then retry in lockstep and collide again on
-     * the very next attempt -- a fixed, identical delay would just shift the same collision
-     * forward in time rather than actually reducing it.
+     * most tens of milliseconds. The randomization matters: when multiple threads collide and all
+     * back off, a fixed identical delay would just make them retry in lockstep and collide again
+     * on the very next attempt, rather than actually reducing contention.
      */
     private static long sleepMillisBeforeRetry(int attempt) {
         int baseMillis = Math.min(attempt * 2, 20);
@@ -229,8 +184,7 @@ public class ExposureReservationService {
                 String groupName = entry.getKey();
                 if (!isSafeGroupName(groupName)) {
                     log.error("Skipping correlation group \"{}\" for credential {} -- not a safe MongoDB field-path segment "
-                        + "(contains '.' or '$', or blank). This should never happen for a group saved after the P3-5 fix; "
-                        + "if you're seeing this, the profile document itself needs correcting.", groupName, credentialId);
+                        + "(contains '.' or '$', or blank); the profile document needs correcting.", groupName, credentialId);
                     continue;
                 }
                 if (entry.getValue() == null || !entry.getValue().contains(symbol)) continue;
@@ -251,35 +205,24 @@ public class ExposureReservationService {
                 correlationGroups, correlationGroupCaps, executionId);
         }
         try {
-            // CI-review fix ("Multi-plan combined exposure reservation" -- external review, fifth
-            // pass, failure 2, confirmed real by direct inspection: threeConcurrentPlansSameSymbol_
-            // combinedExposureNeverExceedsAccountCap expected 2 successes out of 3 concurrent
-            // callers, but got 0): this method's own transaction touches the SAME per-credential
-            // ExposureReservation document even more times than PositionSlotReservationService's
-            // equivalent (ensureDocumentExists, ensureSymbolFieldExists, optional group-field
-            // setup, insert, then up to one findAndModify per total/symbol/group cap) -- more
-            // writes per transaction against one shared document means more exposure to a
-            // WriteConflict (MongoDB error code 112, a "TransientTransactionError") under real
-            // concurrent load, and with only 3 racing callers in that test, all 3 collided before
-            // any of them reached a clean commit. Before this fix there was no retry logic for
-            // that specific, expected, retryable condition anywhere in this method -- it fell
-            // straight through to `throw e` below and escaped reserve() as an uncaught exception,
-            // which the test's own `executor.submit(...)` (never checking the returned Future)
-            // silently swallowed, so `successCount` never got incremented for any of the 3.
-            // Retrying the whole transaction body on the same session (MongoDB's own documented
-            // retry pattern -- a ClientSession stays valid across a startTransaction()/
-            // abortTransaction() cycle) lets every caller that can legally fit under the cap
-            // actually get the chance to, instead of losing its only attempt to contention.
+            // Retries the whole transaction body on the same session (a ClientSession stays
+            // valid across a startTransaction()/abortTransaction() cycle, MongoDB's documented
+            // retry pattern) when a WriteConflict occurs. This document sees several writes per
+            // transaction (ensureDocumentExists, ensureSymbolFieldExists, optional group-field
+            // setup, insert, then up to one findAndModify per total/symbol/group cap), so
+            // concurrent callers against the same document have real exposure to a WriteConflict
+            // (MongoDB error code 112, a TransientTransactionError); retrying lets every caller
+            // that can legally fit under the cap actually get the chance to, instead of losing
+            // its only attempt to contention.
             for (int attempt = 1; ; attempt++) {
                 try {
                     session.startTransaction();
                     var sessionTemplate = mongoTemplate.withSession(session);
-                    // Review finding (self-diagnosed, live production bug, full context in
-                    // ensureDocumentExists's own updated javadoc): all three setup calls now run INSIDE
-                    // the transaction, on the session-bound template -- genuinely part of the same
-                    // transactional snapshot as the counter claims that follow, closing the
-                    // fresh-credential visibility gap that could wrongly reject a first-ever reservation
-                    // with zero real competition.
+                    // All three setup calls run inside the transaction, on the session-bound
+                    // template, so they're part of the same transactional snapshot as the counter
+                    // claims that follow -- otherwise a fresh credential's setup could be
+                    // invisible to the claims in the same logical operation, wrongly rejecting a
+                    // first-ever reservation with zero real competition.
                     ensureDocumentExists(credentialId, sessionTemplate);
                     ensureSymbolFieldExists(credentialId, symbol, sessionTemplate);
                     for (String groupName : groupsToReserve) ensureGroupFieldExists(credentialId, groupName, sessionTemplate);
@@ -305,14 +248,9 @@ public class ExposureReservationService {
                         var totalResult = sessionTemplate.findAndModify(
                             totalQuery, totalInc, FindAndModifyOptions.options().returnNew(true), ExposureReservation.class);
                         if (totalResult == null) {
-                            // CI-review fix ("same 2 test failures again" -- MultiPlanExposureIntegrationTest
-                            // still expects 2 successes out of 3 concurrent attempts but gets 0, even after the
-                            // retry/backoff fix above landed and was confirmed running in real CI): every reject()
-                            // return in this method was completely silent before this fix -- there was no way to
-                            // tell, from a CI log alone, whether a given attempt lost legitimately to the cap or
-                            // was rejected by some other bug entirely. Logging the actual document state this
-                            // decision was based on (not just "rejected") so the next real CI run finally reveals
-                            // which one this is, instead of another round of guessing.
+                            // Logs the actual document state this rejection was based on (not
+                            // just "rejected"), so a cap rejection is distinguishable from any
+                            // other failure mode when diagnosing from logs alone.
                             log.warn("reserve() REJECT (total cap) for credential {} symbol {} attempt {}: requested {}, cap {} "
                                 + "(would need existing reservedTotalExposureQuote <= {} for this to have been allowed).",
                                 credentialId, symbol, attempt, orderQuoteValue, maxTotal, maxTotal.subtract(orderQuoteValue));
@@ -323,40 +261,23 @@ public class ExposureReservationService {
 
                     if (symbolCapConfigured) {
                         String symbolField = "reservedSymbolExposure." + symbol;
-                        // CI-review fix ("same 2 test failures again" -- real root cause, found after
-                        // adding the reject()-visibility logging above and re-running real CI: the
-                        // very FIRST-EVER reservation for a brand-new credential/symbol was being
-                        // rejected, with no concurrency involved at all -- not a race, a structural
-                        // bug. reservedTotalExposureQuote is a literal, @Field(targetType=DECIMAL128)
-                        // -annotated property, so Spring Data's QueryMapper knows to convert a raw
-                        // BigDecimal criteria value to Decimal128 for it automatically -- that's why
-                        // the total-cap check above has always worked. reservedSymbolExposure.<symbol>
-                        // (and reservedGroupExposure.<group>) is a DYNAMIC key inside a
-                        // Map<String,BigDecimal> -- there is no way to annotate a per-key target type
-                        // for a map Spring doesn't know the keys of ahead of time, so QueryMapper has
-                        // no metadata to convert by and falls back to this codebase's own default
-                        // BigDecimal handling, which ExposureReservation's own javadoc already
-                        // documents elsewhere: stored/compared as a STRING, not a number, unless
-                        // explicitly converted first. ensureSymbolFieldExists (and ensureGroupFieldExists)
-                        // already store the zeroed starting value as a real Decimal128 (via this same
-                        // toDecimal128 helper) -- so the stored value was Decimal128(0), the query's
-                        // own comparison value was being sent as a string, and a MongoDB $lte between
-                        // two different BSON types never matches, REGARDLESS of the actual numbers --
-                        // explaining both this test's single-threaded, zero-contention rejection and
-                        // MultiPlanExposureIntegrationTest's successCount-always-0 (every single
-                        // attempt there was failing at this exact, same symbol-cap check, which just
-                        // happened to look concurrency-shaped because three threads were racing to
-                        // reach the SAME broken comparison, not because the comparison itself was ever
-                        // close). Fixed the same way the Update side already converts: wrap the
-                        // comparison value in toDecimal128(...) explicitly rather than relying on
-                        // Spring to infer a type it structurally cannot infer for a dynamic map key.
+                        // reservedTotalExposureQuote is a literal, @Field(targetType=DECIMAL128)
+                        // -annotated property, so Spring Data's QueryMapper converts a raw
+                        // BigDecimal criteria value to Decimal128 automatically. reservedSymbolExposure.<symbol>
+                        // (and reservedGroupExposure.<group>) is a dynamic key inside a
+                        // Map<String,BigDecimal>, so there is no per-key target type Spring can
+                        // infer ahead of time, and it falls back to comparing as a string unless
+                        // explicitly converted -- a MongoDB $lte between two different BSON types
+                        // never matches regardless of the actual numeric values. The comparison
+                        // value is wrapped in toDecimal128(...) explicitly here, the same way the
+                        // Update side already converts, so the stored Decimal128 and the query
+                        // value are the same BSON type.
                         Query symbolQuery = new Query(where("credentialId").is(credentialId)
                             .and(symbolField).lte(toDecimal128(maxSymbol.subtract(orderQuoteValue))));
                         Update symbolInc = new Update().inc(symbolField, toDecimal128(orderQuoteValue)).set("lastReservedAt", Instant.now());
                         var symbolResult = sessionTemplate.findAndModify(
                             symbolQuery, symbolInc, FindAndModifyOptions.options().returnNew(true), ExposureReservation.class);
                         if (symbolResult == null) {
-                            // Same diagnostic-visibility fix as the total-cap reject just above.
                             log.warn("reserve() REJECT (symbol cap) for credential {} symbol {} attempt {}: requested {}, cap {} "
                                 + "(would need existing reservedSymbolExposure.{} <= {} for this to have been allowed).",
                                 credentialId, symbol, attempt, orderQuoteValue, maxSymbol, symbol, maxSymbol.subtract(orderQuoteValue));
@@ -375,7 +296,7 @@ public class ExposureReservationService {
                         var groupResult = sessionTemplate.findAndModify(
                             groupQuery, groupInc, FindAndModifyOptions.options().returnNew(true), ExposureReservation.class);
                         if (groupResult == null) {
-                            session.abortTransaction(); // undoes total, symbol, AND every group claim already made in this same transaction
+                            session.abortTransaction(); // undoes total, symbol, and every group claim already made in this same transaction
                             return ExposureReserveResult.reject("Would exceed correlation-group exposure cap of " + groupCap + " for group " + groupName);
                         }
                     }
@@ -393,8 +314,6 @@ public class ExposureReservationService {
                         ExposureReservationRecord.class);
 
                     session.commitTransaction();
-                    // Same diagnostic-visibility fix as the reject() logging above -- a successful
-                    // commit was also completely silent before this fix.
                     log.debug("reserve() OK for credential {} symbol {} attempt {}: reserved {}, record {}.",
                         credentialId, symbol, attempt, orderQuoteValue, record.getId());
                     return ExposureReserveResult.ok(record.getId());
@@ -407,23 +326,11 @@ public class ExposureReservationService {
                     if (isTransientTransactionError(e) && attempt < MAX_TRANSACTION_RETRIES) {
                         log.debug("Transient MongoDB transaction error on reserve() attempt {} for credential {} symbol {} ({}) -- retrying.",
                             attempt, credentialId, symbol, e.getMessage());
-                        // CI-review fix ("Multi-plan combined exposure reservation" -- real CI run,
-                        // GitHub Actions log archive downloaded and inspected directly: with real
-                        // concurrent threads racing this credential's SAME document, successCount
-                        // came back 0 of 3, not the 2 the account-level cap should allow, even
-                        // though this retry loop already existed and real WriteConflict retries
-                        // were visibly happening in the log): this specific document sees MORE
-                        // writes per transaction than PositionSlotReservationService's own
-                        // equivalent (ensureDocumentExists, ensureSymbolFieldExists, insert, then
-                        // up to two findAndModify calls -- total AND symbol, both configured in
-                        // this exact test), so it has more surface for a WriteConflict under real
-                        // concurrent load, and retrying every attempt back-to-back with ZERO delay
-                        // (as this loop did before this fix) maximizes the odds of the SAME threads
-                        // immediately re-colliding on their very next attempt instead of letting
-                        // whichever one is already ahead actually commit. A short, randomized sleep
-                        // before each retry -- MongoDB's own documented guidance for exactly this
-                        // scenario -- breaks that lockstep without meaningfully slowing down the
-                        // common, uncontended case (most reserve() calls never retry at all).
+                        // A short, randomized sleep before each retry -- MongoDB's documented
+                        // guidance for WriteConflict retries -- avoids racing threads immediately
+                        // re-colliding in lockstep on the very next attempt, without meaningfully
+                        // slowing down the common, uncontended case where most reserve() calls
+                        // never retry at all.
                         try {
                             Thread.sleep(sleepMillisBeforeRetry(attempt));
                         } catch (InterruptedException ie) {
@@ -431,42 +338,20 @@ public class ExposureReservationService {
                         }
                         continue;
                     }
-                    // CI-review fix, same context as the retry-backoff comment just above: if every
-                    // retry is exhausted, or this isn't a transient error at all, this exception
-                    // used to fall straight through to `throw e` below with no log line of its
-                    // own -- and since this method's only real caller in the failing test submits
-                    // to an ExecutorService without ever checking the returned Future, a thrown
-                    // exception here is silently swallowed with NO trace anywhere in the log. That
-                    // made the real CI failure genuinely undiagnosable from the log alone (confirmed
-                    // directly: a downloaded GitHub Actions log archive for this exact failure shows
-                    // only the first few retry attempts and then nothing -- no stack trace, no
-                    // further detail, for any of the 3 threads). Logging here, unconditionally,
-                    // before this method's own control flow decides what to do next, means the next
-                    // real CI run that hits this path leaves an actual diagnosable trace instead of
-                    // silence.
+                    // Logged unconditionally, before deciding what to do next, so that either the
+                    // standalone-deployment fallback below or a genuinely unhandled failure always
+                    // leaves a diagnosable trace, even for a caller that submits this call to an
+                    // ExecutorService without checking the returned Future.
                     log.warn("reserve() for credential {} symbol {} giving up after attempt {} ({}): {}",
                         credentialId, symbol, attempt, e.getClass().getName(), e.getMessage(), e);
-                    // Review finding (self-diagnosed, live production bug: this exact catch clause was
-                    // catching ONLY com.mongodb.MongoException directly -- but confirmed real by direct
-                    // inspection of a real production log, that's not actually what escapes here.
-                    // sessionTemplate.insert/findAndModify/updateFirst all go through Spring Data's own
-                    // MongoTemplate, which applies Spring's own exception translation -- wrapping the raw
-                    // driver exception (com.mongodb.MongoCommandException, error code 20 on a standalone
-                    // instance) into org.springframework.dao.DataAccessException (specifically
-                    // UncategorizedMongoDbException for an error Spring doesn't have a specific
-                    // translation for), a completely different type hierarchy that a catch on
-                    // com.mongodb.MongoException never matches at all. That meant this fallback branch
-                    // never actually ran on a standalone Mongo instance -- the real exception escaped
-                    // this method entirely, propagated up through several unrelated call frames, and was
-                    // ultimately caught and badly mislabeled by a much higher, generic catch block in
-                    // PositionMonitorService.reconcileEntryOrders as "Could not fetch order status," which
-                    // repeated on every single reconciliation pass since the position this reservation was
-                    // for could then never actually get created. The actual fix: catch RuntimeException
-                    // broadly (this session/transaction code's own thrown types are all unchecked, so this
-                    // narrows to real failures here, not a silent catch-all), and walk the FULL cause
-                    // chain -- not just the top-level exception -- for the actual standalone-instance
-                    // signature, since that raw signature can be buried one or more levels down inside
-                    // Spring's own wrapper.
+                    // Catches RuntimeException broadly, not just com.mongodb.MongoException:
+                    // sessionTemplate.insert/findAndModify/updateFirst go through Spring Data's
+                    // exception translation, which wraps the raw driver exception (e.g.
+                    // MongoCommandException, error code 20 on a standalone instance) into
+                    // org.springframework.dao.DataAccessException -- a different type hierarchy a
+                    // catch on com.mongodb.MongoException would never match. isStandaloneMongoTransactionError
+                    // walks the full cause chain, not just the top-level exception, since the raw
+                    // standalone-instance signature can be buried inside Spring's wrapper.
                     if (isStandaloneMongoTransactionError(e)) {
                         if (live) return rejectAndHaltForLive(credentialId, symbol, "run the reservation inside a real MongoDB transaction "
                             + "(standalone deployment, not a replica set/mongos)", e.getMessage());
@@ -487,17 +372,14 @@ public class ExposureReservationService {
     }
 
     /**
-     * Review finding ("Make LIVE reservation transaction fallback impossible" -- external
-     * review, thirty-ninth pass, the review's own explicit required flow: "transaction
-     * unavailable -> DO NOT fallback -> reject reservation -> halt autonomous execution ->
-     * critical incident"): the actual fail-closed action, shared by both fallback points above.
-     * Setting tradingHalted here (not merely rejecting this one reservation) is deliberate: a
-     * transaction-capable deployment that has stopped being able to acquire sessions or run
-     * transactions is a genuine infrastructure problem that will affect every subsequent LIVE
-     * reservation attempt identically, not a one-off this specific signal happened to hit --
-     * halting stops the account from repeatedly hitting the same failure on every future signal
-     * until an operator has actually looked at it, the same reasoning this codebase's own other
-     * tradingHalted call sites already apply.
+     * Fail-closed action shared by both LIVE-mode transaction fallback points above: rejects this
+     * reservation and halts autonomous trading for the credential, rather than merely rejecting
+     * one reservation. Setting {@code tradingHalted} (not just rejecting this attempt) is
+     * deliberate: a transaction-capable deployment that has stopped being able to acquire
+     * sessions or run transactions is a genuine infrastructure problem that will affect every
+     * subsequent LIVE reservation attempt identically, so halting stops the account from
+     * repeatedly hitting the same failure on every future signal until an operator has looked at
+     * it, the same reasoning this codebase's other {@code tradingHalted} call sites apply.
      */
     private ExposureReserveResult rejectAndHaltForLive(String credentialId, String symbol, String failedTo, String detail) {
         log.error("LIVE reservation for credential {} ({}) could not {}: {}. Per this deployment's own fail-closed LIVE policy, "
@@ -535,8 +417,7 @@ public class ExposureReservationService {
                 String groupName = entry.getKey();
                 if (!isSafeGroupName(groupName)) {
                     log.error("Skipping correlation group \"{}\" for credential {} -- not a safe MongoDB field-path segment "
-                        + "(contains '.' or '$', or blank). This should never happen for a group saved after the P3-5 fix; "
-                        + "if you're seeing this, the profile document itself needs correcting.", groupName, credentialId);
+                        + "(contains '.' or '$', or blank); the profile document needs correcting.", groupName, credentialId);
                     continue;
                 }
                 if (entry.getValue() == null || !entry.getValue().contains(symbol)) continue;
@@ -546,20 +427,13 @@ public class ExposureReservationService {
             }
         }
 
-        // Review finding ("Exposure reservation creation is still not atomic with the exposure
-        // counter" -- external review, twenty-eighth pass, P0, the review's own explicit
-        // "biggest thing found in v174" finding: reservationRecordRepo.save(record) used to
-        // happen AFTER every counter claim already succeeded -- if that save failed, the
-        // counters were already incremented with no record ever created to track or release
-        // them, leaving a permanently over-reserved account correctable only by reconcile()'s
-        // own 120-second grace window, not immediately): the actual fix -- the record is
-        // created FIRST, as PENDING, with the exact amounts this call intends to claim, before
-        // any counter is touched at all. If this insert itself fails, nothing has been claimed
-        // yet -- reject immediately, no rollback needed. Only once every counter claim below has
-        // actually succeeded is the record marked ACTIVE; if this application crashes at any
-        // point after this insert, a PENDING record referencing exactly this credential/symbol/
-        // amounts durably exists for reconciliation to find, verify against the real counters,
-        // and resolve -- never a counter increment with nothing at all to explain it.
+        // The record is created first, as PENDING, with the exact amounts this call intends to
+        // claim, before any counter is touched. If this insert fails, nothing has been claimed
+        // yet, so this rejects immediately with no rollback needed. Only once every counter claim
+        // below has actually succeeded is the record marked ACTIVE; if this application crashes
+        // at any point after this insert, a PENDING record referencing exactly this
+        // credential/symbol/amounts durably exists for reconciliation to find, verify against the
+        // real counters, and resolve -- never a counter increment with nothing to explain it.
         var record = new ExposureReservationRecord();
         record.setCredentialId(credentialId);
         record.setSymbol(symbol);
@@ -595,20 +469,19 @@ public class ExposureReservationService {
 
         if (symbolCapConfigured) {
             String symbolField = "reservedSymbolExposure." + symbol;
-            // Same dynamic-map-key Decimal128 fix as reserveTransactionally's own identical query
-            // (full context in that method's own updated comment) -- this sequential fallback path
-            // has the exact same bug for the exact same reason.
+            // Same dynamic-map-key Decimal128 conversion as reserveTransactionally's identical
+            // query -- see that method's comment for why the comparison value must be converted
+            // explicitly for a dynamic map key.
             Query symbolQuery = new Query(where("credentialId").is(credentialId)
                 .and(symbolField).lte(toDecimal128(maxSymbol.subtract(orderQuoteValue))));
             Update symbolInc = new Update().inc(symbolField, toDecimal128(orderQuoteValue)).set("lastReservedAt", Instant.now());
             ExposureReservation symbolResult = mongoTemplate.findAndModify(
                 symbolQuery, symbolInc, FindAndModifyOptions.options().returnNew(true), ExposureReservation.class);
             if (symbolResult == null) {
-                // Roll back the total reservation from step 1 — it was provisional on this step
-                // also succeeding. Safe as a bare decrement: this undoes THIS SAME call's own
-                // just-made increment, by the identical orderQuoteValue, before the record has
-                // ever been marked ACTIVE or handed to a caller — see this class's own class
-                // javadoc.
+                // Rolls back the total reservation from step 1, which was provisional on this
+                // step also succeeding. Safe as a bare decrement: this undoes this same call's
+                // own just-made increment, by the identical orderQuoteValue, before the record
+                // has ever been marked ACTIVE or handed to a caller -- see the class javadoc.
                 if (totalCapConfigured) {
                     mongoTemplate.updateFirst(
                         new Query(where("credentialId").is(credentialId)),
@@ -625,16 +498,16 @@ public class ExposureReservationService {
             BigDecimal groupCap = correlationGroupCaps.get(groupName);
             ensureGroupFieldExists(credentialId, groupName, mongoTemplate);
             String groupField = "reservedGroupExposure." + groupName;
-            // Same dynamic-map-key Decimal128 fix as above.
+            // Same dynamic-map-key Decimal128 conversion as above.
             Query groupQuery = new Query(where("credentialId").is(credentialId)
                 .and(groupField).lte(toDecimal128(groupCap.subtract(orderQuoteValue))));
             Update groupInc = new Update().inc(groupField, toDecimal128(orderQuoteValue)).set("lastReservedAt", Instant.now());
             ExposureReservation groupResult = mongoTemplate.findAndModify(
                 groupQuery, groupInc, FindAndModifyOptions.options().returnNew(true), ExposureReservation.class);
             if (groupResult == null) {
-                // Roll back total, symbol, and every group reservation that already
-                // succeeded in this same call — all-or-nothing, per this method's own
-                // javadoc. Same "undo this call's own just-made increment" safety as above.
+                // Rolls back total, symbol, and every group reservation that already succeeded
+                // in this same call -- all-or-nothing. Same "undo this call's own just-made
+                // increment" safety as above.
                 if (totalCapConfigured) {
                     mongoTemplate.updateFirst(new Query(where("credentialId").is(credentialId)),
                         new Update().inc("reservedTotalExposureQuote", toDecimal128(orderQuoteValue.negate())), ExposureReservation.class);
@@ -658,21 +531,14 @@ public class ExposureReservationService {
         // this same record (a genuinely rare race, but not an impossible one) can't be
         // overwritten by this call finishing late.
         //
-        // Review finding ("v183 still has a dangerous 'PENDING reservation cleanup' window" --
-        // external review, thirty-fifth pass, P0, confirmed real by direct inspection before
-        // this fix: this update's own return value used to be silently discarded. The review's
-        // own exact dangerous scenario: if this specific update fails to match (the record was
-        // deleted out from under this call -- e.g. a concurrent reconcile pass's own stale-
-        // PENDING cleanup racing this exact reserve() call, which is precisely the crash-window
-        // race the review describes), the aggregate counters above have ALREADY been durably
-        // incremented, but the one record that could prove why now either never existed as
-        // ACTIVE or was deleted -- exactly the "counter incremented, durable record gone" state
-        // the review's own dangerous scenario walks through step by step): the actual fix, not
-        // a full Mongo-transaction rewrite of this whole method (a materially larger, separate
-        // change -- see reconcile()'s own PENDING_CLEANUP_WINDOW comment for why that wasn't
-        // attempted wholesale earlier this session, given this method also runs for TESTNET/
-        // PAPER credentials with no guaranteed replica-set support) -- this specific, narrow gap
-        // is now at least LOUD rather than silent: a failed transition here raises a critical
+        // The return value of this update is checked rather than discarded: if it fails to match
+        // (e.g. a concurrent reconcile pass's stale-PENDING cleanup deleted the record out from
+        // under this call), the aggregate counters above have already been durably incremented,
+        // but the record that could explain why no longer exists as ACTIVE. A full Mongo
+        // transaction wrapping this whole method would close this gap entirely, but that's a
+        // materially larger change given this method also runs for TESTNET/PAPER credentials
+        // with no guaranteed replica-set support (see PENDING_CLEANUP_WINDOW above); instead this
+        // narrow gap is made loud rather than silent: a failed transition raises a critical
         // incident naming the exact record and credential, since an operator needs to know this
         // exposure is durably counted with no ACTIVE record to explain or eventually release it,
         // even though the counters themselves cannot be safely unwound at this point without
@@ -700,11 +566,10 @@ public class ExposureReservationService {
     }
 
     /**
-     * Review finding, same context as reserve()'s own updated javadoc: best-effort cleanup for
-     * a reservation that never actually claimed any counter (the cap check rejected it, or a
-     * later step in the same call did). Deliberately non-fatal -- a PENDING record that fails to
-     * delete here is still correctly handled by reconciliation (see this class's own PENDING
-     * recovery path in reconcile()), it just takes longer to disappear.
+     * Best-effort cleanup for a reservation that never actually claimed any counter (the cap
+     * check rejected it, or a later step in the same call did). Deliberately non-fatal -- a
+     * PENDING record that fails to delete here is still correctly handled by reconciliation (see
+     * the PENDING recovery path in {@code reconcile()}), it just takes longer to disappear.
      */
     private void deletePendingRecord(String recordId) {
         try {
@@ -716,23 +581,18 @@ public class ExposureReservationService {
     }
 
     /**
-     * Review finding ("Exposure reservation rollback can steal another trade's reservation" /
-     * "Generic exposure release() has the same ownership problem" — external review, twenty-
-     * sixth pass, P0, full context in this class's own class javadoc): the actual, safe release
-     * — reads the exact amounts back from the reservation's own durable record rather than
-     * trusting a caller-recomputed value, and atomically claims the record (ACTIVE -> RELEASED)
-     * BEFORE decrementing anything, so a genuine double-release (a retry, two code paths racing
-     * to release the same logical reservation) is a real no-op, not a double-decrement. This is
-     * the method every real caller should now use — see release(String, String, BigDecimal)
-     * below for the narrower cases where a reservationId genuinely isn't available.
+     * The safe way to release a reservation: reads the exact amounts back from the reservation's
+     * own durable record rather than trusting a caller-recomputed value, and atomically claims
+     * the record ({@code ACTIVE -> RELEASED}) before decrementing anything, so a genuine
+     * double-release (a retry, two code paths racing to release the same logical reservation) is
+     * a real no-op, not a double-decrement. This is the method real callers should use; see
+     * {@link #release(String, String, BigDecimal)} below for the narrower cases where a
+     * reservationId genuinely isn't available.
      */
     /**
-     * Review finding ("reservation reconciliation is still fundamentally cache-based" --
-     * external review, twenty-ninth pass, P1, full context in
-     * ExposureReservationRecord.positionId's own field javadoc): called once the position this
-     * reservation was for is actually created and saved -- best-effort like every other write
-     * in this class, since a failure here must never block the real position-creation flow it's
-     * merely recording metadata about.
+     * Records which position a reservation ultimately created, once that position is actually
+     * created and saved. Best-effort like every other write in this class, since a failure here
+     * must never block the real position-creation flow it's merely recording metadata about.
      */
     public void linkToPosition(String reservationId, String positionId) {
         if (reservationId == null || positionId == null) return;
@@ -751,24 +611,19 @@ public class ExposureReservationService {
         if (reservationId == null || reservationId.isBlank()) return;
         // Atomic claim: only a caller that wins this findAndModify actually proceeds to
         // decrement anything — a concurrent second call for the same id finds status no longer
-        // "ACTIVE" and gets null back, exactly the idempotency guarantee this fix exists for.
+        // "ACTIVE" and gets null back, making a double-release a safe no-op.
         var claimed = mongoTemplate.findAndModify(
             new Query(where("id").is(reservationId).and("status").is("ACTIVE")),
             new Update().set("status", "RELEASED").set("releasedAt", Instant.now()),
             ExposureReservationRecord.class);
         if (claimed == null) return; // already released, or never existed — safe either way
 
-        // Review finding ("Exposure reservation records can remain ACTIVE after reconciliation
-        // overwrites counters" -- external review, twenty-eighth pass, P1, confirmed real by
-        // direct inspection before this fix: this used to be a bare $inc with no lower-bound
-        // condition at all -- if reconcile() had already reset the aggregate counter to its own
-        // real, actual value (e.g. 0) while this record stayed ACTIVE because the position it
-        // belonged to crashed before ever being persisted, releasing this stale record would
-        // decrement the counter below zero. A negative reservation counter is a genuine risk-cap
-        // failure -- it makes the NEXT real reservation's own cap check pass when it shouldn't):
-        // the actual fix -- releaseFloored below only decrements down to zero, never below it,
-        // using the exact same conditional-then-clamp pattern for every field this record
-        // touched.
+        // releaseFloored only decrements down to zero, never below it, since a bare decrement
+        // could otherwise drive a counter negative -- e.g. if reconcile() already reset the
+        // aggregate counter to its real value (such as 0) while this record stayed ACTIVE because
+        // the position it belonged to crashed before ever being persisted. A negative reservation
+        // counter is a genuine risk-cap failure: it would make the next real reservation's cap
+        // check pass when it shouldn't.
         if (claimed.getTotalAmountReserved() != null) {
             releaseFloored(claimed.getCredentialId(), "reservedTotalExposureQuote", claimed.getTotalAmountReserved());
         }
@@ -783,19 +638,17 @@ public class ExposureReservationService {
     }
 
     /**
-     * Review finding, same context as release(String)'s own updated comment: decrements the
-     * given field by exactly `amount` when the field's own current value is genuinely at least
-     * that much (the common, correct case) -- and when it isn't (a stale ACTIVE record being
-     * released after reconciliation already reset the counter out from under it), sets the
-     * field to exactly zero instead of letting it go negative. Never a no-op: either the
-     * conditional decrement succeeds, or the explicit clamp-to-zero does.
+     * Decrements the given field by exactly {@code amount} when the field's current value is at
+     * least that much (the common, correct case), and when it isn't (a stale ACTIVE record being
+     * released after reconciliation already reset the counter out from under it), sets the field
+     * to exactly zero instead of letting it go negative. Never a no-op: either the conditional
+     * decrement succeeds, or the explicit clamp-to-zero does.
      */
     private void releaseFloored(String credentialId, String field, BigDecimal amount) {
-        // Same dynamic-map-key Decimal128 fix as reserveTransactionally's own symbol/group cap
-        // queries (full context there) -- this is called for "reservedTotalExposureQuote" (a
-        // literal, annotated field, where this was never broken) AND for
-        // "reservedSymbolExposure.<symbol>" / "reservedGroupExposure.<group>" (dynamic map keys,
-        // where it was) -- converting unconditionally here is correct and safe for both.
+        // Same dynamic-map-key Decimal128 conversion as reserveTransactionally's symbol/group cap
+        // queries -- this is called for "reservedTotalExposureQuote" (a literal, annotated field)
+        // and for "reservedSymbolExposure.<symbol>" / "reservedGroupExposure.<group>" (dynamic
+        // map keys); converting unconditionally here is correct and safe for both.
         var decremented = mongoTemplate.findAndModify(
             new Query(where("credentialId").is(credentialId).and(field).gte(toDecimal128(amount))),
             new Update().inc(field, toDecimal128(amount.negate())),
@@ -809,18 +662,16 @@ public class ExposureReservationService {
     }
 
     /**
-     * Review finding, same context as release(String)'s own javadoc: the narrower, amount-based
-     * release, kept ONLY for callers that genuinely have no reservationId to work with — self-
-     * healing reconciliation paths that compute a release amount from actual open positions
-     * directly, not from a specific reservation record. New call sites should prefer
-     * release(String reservationId) above; this remains for that narrower case, not as the
-     * general-purpose release path it used to be.
+     * Narrower, amount-based release kept only for callers that genuinely have no reservationId
+     * to work with -- self-healing reconciliation paths that compute a release amount from actual
+     * open positions directly, not from a specific reservation record. New call sites should
+     * prefer {@link #release(String)} above; this remains for that narrower case.
      */
     public void release(String credentialId, String symbol, BigDecimal orderQuoteValue) {
         if (orderQuoteValue == null || orderQuoteValue.signum() <= 0) return;
-        // Same dynamic-map-key Decimal128 fix as reserveTransactionally's own symbol/group cap
-        // queries (full context there) -- the total-field comparison below was never broken
-        // (it's a literal, annotated field), but every symbol/group comparison in this method was.
+        // Same dynamic-map-key Decimal128 conversion as reserveTransactionally's symbol/group cap
+        // queries -- the total-field comparison below is a literal, annotated field, but every
+        // symbol/group comparison here needs the explicit conversion.
         mongoTemplate.updateFirst(
             new Query(where("credentialId").is(credentialId).and("reservedTotalExposureQuote").gte(toDecimal128(orderQuoteValue))),
             new Update().inc("reservedTotalExposureQuote", toDecimal128(orderQuoteValue.negate())),
@@ -861,41 +712,33 @@ public class ExposureReservationService {
     }
 
     /**
-     * Review finding ("Risk" — "atomic correlation reservations"): the overload above, extended
-     * with an optional actualGroupExposure — see this class's own reserve()/release() javadoc
-     * for the full context. Null or empty means no correlation groups configured, in which case
-     * this behaves identically to the overload above.
+     * Overload that also accepts an optional {@code actualGroupExposure}. Null or empty means no
+     * correlation groups are configured, in which case this behaves identically to the overload
+     * above.
      */
     public void reconcile(String credentialId, BigDecimal actualTotalExposure, java.util.Map<String, BigDecimal> actualSymbolExposure,
                            java.util.Map<String, BigDecimal> actualGroupExposure) {
         ensureDocumentExists(credentialId, mongoTemplate);
-        // Review finding ("Exposure reservation creation is still not atomic with the exposure
-        // counter" -- external review, twenty-eighth pass, P0, full context in reserve()'s own
-        // updated javadoc): the actual recovery for a PENDING record left behind by a crash
-        // between the record insert and the final ACTIVE flip. A PENDING record older than the
-        // same grace window already used for the aggregate counter below is genuinely
-        // abandoned -- the reserve() call that created it either completed (flipped to ACTIVE
-        // long ago) or crashed; deleting it here is safe regardless of which counters it may or
-        // may not have actually claimed, since the aggregate-counter reconcile below
-        // unconditionally overwrites those counters from the real, actual open-position/
-        // reservation state anyway.
+        // Recovers a PENDING record left behind by a crash between the record insert and the
+        // final ACTIVE flip. A PENDING record older than the same grace window used for the
+        // aggregate counter below is genuinely abandoned -- the reserve() call that created it
+        // either completed (flipped to ACTIVE long ago) or crashed; deleting it here is safe
+        // regardless of which counters it may or may not have actually claimed, since the
+        // aggregate-counter reconcile below unconditionally overwrites those counters from the
+        // real, actual open-position/reservation state anyway.
         var staleCutoff = Instant.now().minus(PENDING_CLEANUP_WINDOW);
         for (var pending : reservationRecordRepo.findByCredentialIdAndStatusAndCreatedAtBefore(credentialId, "PENDING", staleCutoff)) {
-            // Review finding ("v183 still has a dangerous 'PENDING reservation cleanup' window"
-            // -- external review, thirty-fifth/thirty-seventh passes, P0, the review's own
-            // explicit required fix: "Never simply delete a stale PENDING reservation without
-            // first proving that no exchange execution can be associated with it"): the actual
-            // proof, when this record has an executionId to check -- its own linked
-            // ExecutionContext's own real, durable status. STARTED/RISK_APPROVED means this
-            // reservation attempt itself never even got past risk checks -- genuinely safe to
-            // delete, nothing downstream could possibly reference it. Anything from CLAIMED
-            // onward (an atomic execution-authorization claim was won, meaning the code was
-            // about to call, or had already called, adapter.placeOrder()) means a real exchange
-            // order MAY exist that this application has simply lost track of recording --
-            // exactly the review's own named danger scenario. Deleting this record in that case
-            // would erase the one clue connecting a possibly-real position to its own reserved
-            // exposure; escalating instead leaves both the record and the trail intact for a
-            // human to actually investigate.
+            // Never deletes a stale PENDING reservation without first proving that no exchange
+            // execution can be associated with it. When this record has an executionId to check,
+            // its linked ExecutionContext's real, durable status is the proof: STARTED/
+            // RISK_APPROVED means this reservation attempt never even got past risk checks, so
+            // it's genuinely safe to delete. Anything from CLAIMED onward (an atomic
+            // execution-authorization claim was won, meaning the code was about to call, or had
+            // already called, adapter.placeOrder()) means a real exchange order may exist that
+            // this application has simply lost track of recording. Deleting the record in that
+            // case would erase the one clue connecting a possibly-real position to its own
+            // reserved exposure, so this escalates instead, leaving both the record and the trail
+            // intact for a human to investigate.
             boolean safeToDelete = true;
             if (pending.getExecutionId() != null) {
                 var context = executionContextRepo.findById(pending.getExecutionId()).orElse(null);
@@ -920,9 +763,9 @@ public class ExposureReservationService {
                     }
                 }
                 // context == null (the ExecutionContext record itself is missing, e.g. its own
-                // insert failed): falls through to the prior, time-based-only deletion below --
-                // there's no further evidence available either way, and this record is already
-                // well past the same grace window the aggregate counter reconcile below trusts.
+                // insert failed) falls through to the time-based-only deletion below -- there's
+                // no further evidence available either way, and this record is already well past
+                // the same grace window the aggregate counter reconcile below trusts.
             }
             if (safeToDelete) {
                 log.warn("Deleting stale PENDING exposure reservation record {} for credential {} (created {}, older than the {}-second "
@@ -932,17 +775,13 @@ public class ExposureReservationService {
             }
         }
 
-        // Review finding ("The lastReservedAt grace-window design is still time-based safety" --
-        // external review, twenty-eighth pass, P1, confirmed real by direct inspection before
-        // this fix: the ONLY signal for "is a reservation genuinely still in flight" was a fixed
-        // 120-second assumption, dangerous for a real exchange system with real latency
-        // variance): a real, durable signal alongside the time-based one -- any PENDING record
+        // A durable signal alongside the time-based grace-window check below: any PENDING record
         // still younger than the grace window (the stale ones above were just cleaned up) means
-        // a reserve() call for this exact credential is provably in progress RIGHT NOW, not
-        // guessed from elapsed time. Doesn't replace the time-based check (a reservation that
-        // already flipped to ACTIVE has no PENDING record left to find, and still needs the
-        // grace window's own protection for the position-persistence race that follows it) --
-        // adds to it.
+        // a reserve() call for this exact credential is provably in progress right now, rather
+        // than inferred purely from elapsed time. This doesn't replace the time-based check below
+        // -- a reservation that already flipped to ACTIVE has no PENDING record left to find, and
+        // still needs the grace window's protection for the position-persistence race that
+        // follows it -- it adds to it.
         boolean pendingReservationInFlight = !reservationRecordRepo
             .findByCredentialIdAndStatus(credentialId, "PENDING")
             .isEmpty();
@@ -957,24 +796,20 @@ public class ExposureReservationService {
             return; // a reservation happened recently enough that it may still be in flight
         }
 
-        // Review finding ("reservation reconciliation is still fundamentally cache-based" --
-        // external review, twenty-ninth pass, P1, the review's own explicit "biggest remaining
-        // reservation concern," full context in ExposureReservationRecord.positionId's own
-        // field javadoc): the actual fix. actualTotalExposure/actualSymbolExposure above are
-        // computed purely from real OPEN positions -- an ACTIVE reservation record whose own
-        // position genuinely hasn't been created and saved yet (the review's own named failure
-        // window) would be entirely invisible to that computation. Found here directly, by
-        // querying for exactly that state (ACTIVE, positionId still null), rather than inferred
-        // from timing -- these amounts are ADDED to the position-derived totals, since they
-        // represent real exposure this credential has genuinely committed to that the position
-        // query simply cannot see yet. A stale ACTIVE record (one that never got linked because
-        // the whole execution actually failed, not because it's still in flight) is NOT a
-        // concern here -- the PENDING-cleanup and time-based checks above already run first,
-        // and any ACTIVE record old enough to be genuinely stale rather than in-flight will
-        // have its own position eventually either appear (releasing the double-count risk this
-        // addition might otherwise create) or the record itself ages past what any real
-        // execution should ever take, at which point it's a genuine operational anomaly worth
-        // surfacing, not silently smoothing over by excluding it here.
+        // actualTotalExposure/actualSymbolExposure above are computed purely from real open
+        // positions, so an ACTIVE reservation record whose own position genuinely hasn't been
+        // created and saved yet would be entirely invisible to that computation. Such records are
+        // found directly here, by querying for exactly that state (ACTIVE, positionId still
+        // null), rather than inferred from timing, and their amounts are added to the
+        // position-derived totals, since they represent real exposure this credential has
+        // genuinely committed to that the position query simply cannot see yet. A stale ACTIVE
+        // record (one that never got linked because the whole execution actually failed, not
+        // because it's still in flight) is not a concern here, since the PENDING-cleanup and
+        // time-based checks above already run first, and any ACTIVE record old enough to be
+        // genuinely stale rather than in-flight will have its own position eventually either
+        // appear, or the record itself ages past what any real execution should ever take, at
+        // which point it's a genuine operational anomaly worth surfacing rather than silently
+        // smoothing over by excluding it here.
         java.math.BigDecimal unlinkedActiveTotal = java.math.BigDecimal.ZERO;
         var unlinkedActiveGroupTotals = new java.util.HashMap<String, java.math.BigDecimal>();
         for (var unlinked : reservationRecordRepo.findByCredentialIdAndStatusAndPositionIdIsNull(credentialId, "ACTIVE")) {
@@ -1007,37 +842,26 @@ public class ExposureReservationService {
     }
 
     /**
-     * Review finding (self-diagnosed, live production bug, full context in
-     * PositionSlotReservationService.ensureDocumentExists's own identical fix): the same real
-     * bug, and the same fix, applied to exposure reservations. Takes the MongoOperations to use
-     * as a parameter so reserveTransactionally can pass its own session-bound instance.
+     * Ensures an {@code ExposureReservation} document exists for this credential (same pattern
+     * as {@code PositionSlotReservationService.ensureDocumentExists}). Takes the
+     * {@code MongoOperations} to use as a parameter so {@code reserveTransactionally} can pass
+     * its own session-bound instance.
      */
     /**
-     * Review finding (self-diagnosed, live production bug, full context in
-     * reserveTransactionally's own updated catch-clause comment above): walks the FULL cause
-     * chain of the given exception -- not just its own top level -- looking for the real,
+     * Walks the full cause chain of the given exception, not just its top level, looking for the
      * standalone-Mongo-instance signature (error code 20, or the exact "Transaction numbers are
-     * only allowed on a replica set member or mongos" message Mongo itself returns), since
-     * Spring Data's own exception translation can wrap the raw driver exception carrying that
-     * signature one or more levels down inside org.springframework.dao.DataAccessException.
+     * only allowed on a replica set member or mongos" message Mongo returns), since Spring Data's
+     * exception translation can wrap the raw driver exception carrying that signature one or more
+     * levels down inside {@code org.springframework.dao.DataAccessException}.
      */
     /**
-     * Review finding (self-diagnosed, live production bug, confirmed real via direct production
-     * log evidence: a genuinely fresh-computed BigDecimal -- qty.multiply(avgEntryPrice), never
-     * read back from storage -- still failed MongoDB's own $inc with "Cannot increment with
-     * non-numeric argument" even AFTER spring.data.mongodb.big-decimal-representation=decimal128
-     * was added and the database was dropped and recreated from scratch. That ruled out "stale
-     * string-typed data already in the database" as the cause -- the real gap is narrower and
-     * more specific: that Spring Boot 3.2+ property configures how BigDecimal fields are
-     * serialized when Spring Data maps a full ENTITY (an object saved or read via
-     * MongoTemplate/MongoRepository's own document-mapping pipeline) -- it does not reliably
-     * apply to the raw value passed into Update.inc(String, Object), which is a lower-level
-     * query-builder API that can bypass that same entity-mapping conversion path in this Spring
-     * Data MongoDB version. The actual, direct fix that sidesteps this ambiguity entirely rather
-     * than depending on it: convert to org.bson.types.Decimal128 -- MongoDB's own native BSON
-     * decimal type -- explicitly, right here, before the value is ever handed to .inc(...). A
-     * Decimal128 value can never be misinterpreted as a string by the driver, regardless of
-     * which Spring Data conversion path does or doesn't apply to it.
+     * Converts to {@code org.bson.types.Decimal128}, MongoDB's native BSON decimal type, before a
+     * value is handed to {@code Update.inc(...)}. This is necessary because Spring Data's
+     * BigDecimal-as-Decimal128 configuration applies reliably when mapping a full entity through
+     * {@code MongoTemplate}/{@code MongoRepository}'s document-mapping pipeline, but not to a raw
+     * value passed into the lower-level {@code Update.inc(String, Object)} query-builder API,
+     * which can bypass that same conversion path. Explicit conversion sidesteps that ambiguity
+     * entirely: a Decimal128 value can never be misinterpreted as a string by the driver.
      */
     private org.bson.types.Decimal128 toDecimal128(BigDecimal value) {
         return value == null ? null : new org.bson.types.Decimal128(value);
@@ -1056,13 +880,11 @@ public class ExposureReservationService {
     }
 
     /**
-     * CI-review fix ("Multi-plan combined exposure reservation" -- external review, fifth pass,
-     * failure 2, full context in reserveTransactionally's own updated javadoc): the same helper
-     * as PositionSlotReservationService's own identical fix -- recognizes a genuine, expected,
-     * RETRYABLE write-conflict under real concurrent transactions against the same document,
-     * distinct from isStandaloneMongoTransactionError above (which means transactions aren't
-     * supported AT ALL, never retryable). Checks the driver's own "TransientTransactionError"
-     * label first, then falls back to the raw WriteConflict code (112) directly.
+     * Recognizes a genuine, expected, retryable write conflict under real concurrent
+     * transactions against the same document, distinct from {@link
+     * #isStandaloneMongoTransactionError} above (which means transactions aren't supported at
+     * all, never retryable). Checks the driver's "TransientTransactionError" label first, then
+     * falls back to the raw WriteConflict code (112) directly.
      */
     private boolean isTransientTransactionError(Throwable e) {
         Throwable current = e;

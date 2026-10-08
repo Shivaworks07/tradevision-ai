@@ -20,42 +20,28 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Review finding ("1m trading still isn't truly event-driven" -- external review, twentieth
- * pass, P1, confirmed real by direct inspection: AutonomousScannerService.scan() runs on a
- * @Scheduled(fixedDelay = 60_000) cycle regardless of what timeframe a plan is actually
- * configured for -- for a 1m strategy specifically, a real candle can close and this
- * application may not act on it for up to a full minute, long enough to miss the intended
- * entry): the actual fix, following the review's own suggested architecture exactly:
+ * Keeps 1-minute trading plans event-driven rather than relying solely on
+ * AutonomousScannerService's periodic poll, which runs on a fixed delay regardless of which
+ * timeframe a plan is configured for — for a 1m strategy specifically, waiting out a full poll
+ * cycle after a candle closes can be long enough to miss the intended entry. This class
+ * subscribes to Binance's public kline WebSocket and triggers an immediate scan the moment a
+ * relevant 1m candle closes:
  *
  *   Binance kline WebSocket -> closed candle event -> relevant 1m plans -> strategy
  *
- * DESIGN CHOICE, stated plainly, same as BinanceUserDataStreamService's own: this stream is used
- * PURELY as a "a real 1m candle just closed, check this symbol now" trigger. It does NOT parse
- * OHLCV out of the stream and feed it directly into analysis -- on a closed-candle event, this
- * calls AutonomousScannerService.scanOneSymbol() directly, the exact same method the 60s poll
- * already calls, which does its own REST candle fetch and runs the exact same, already-hardened
- * analysis pipeline. That keeps exactly one code path responsible for actually deciding whether
- * to trade, whether it's woken by this push signal or by the periodic poll that remains as a
- * backstop (REST is fallback/reconciliation, per the review's own suggested design -- nothing
- * about the existing scheduled scan() was removed by this fix). The value this adds is latency
- * for the specific case that matters (1m plans, on their own explicitly-configured/TIER1
- * symbols -- see AutonomousScannerService.compute1mScanTargets's own HONEST SCOPE note for what
- * this deliberately does not cover), not a second source of trading decisions.
+ * DESIGN CHOICE, same as BinanceUserDataStreamService's: this stream is used purely as a "a real
+ * 1m candle just closed, check this symbol now" trigger. It does not parse OHLCV out of the
+ * stream and feed it directly into analysis — on a closed-candle event, it calls
+ * AutonomousScannerService.scanOneSymbol() directly, the same method the periodic poll calls,
+ * which does its own REST candle fetch and runs the same analysis pipeline. That keeps exactly
+ * one code path responsible for actually deciding whether to trade, whether it's woken by this
+ * push signal or by the periodic poll, which remains as a fallback/reconciliation backstop. The
+ * value this adds is latency for the case that matters (1m plans on their explicitly-configured
+ * symbols), not a second source of trading decisions.
  *
- * This is a PUBLIC, unauthenticated Binance market-data stream -- confirmed directly against
- * Binance's own current documentation before writing this, not assumed: no API key, secret, or
- * per-credential connection is needed at all. One shared connection covers every credential's
- * own 1m plans simultaneously, subscribed to whatever distinct symbol set those plans actually
- * need right now.
- *
- * HONEST CAVEAT, same as every other Binance-facing file this session: this sandbox has no
- * network path to binance.com or testnet.binance.vision. The endpoint URL, combined-stream
- * format, and kline payload shape below were verified against Binance's current published
- * documentation via live web search moments before writing this -- but the actual connection,
- * message flow, and reconnect behavior have never been exercised against a real server. Test
- * against a real connection (does a real closed-1m-candle event actually arrive and trigger
- * scanOneSymbol; does reconnection actually recover after a network blip; does the 24-hour
- * server-side disconnect get handled gracefully) before this is trusted for LIVE trading.
+ * This is a public, unauthenticated Binance market-data stream: no API key, secret, or
+ * per-credential connection is needed. One shared connection covers every credential's 1m plans
+ * simultaneously, subscribed to whatever distinct symbol set those plans actually need right now.
  */
 @Service
 @RequiredArgsConstructor
@@ -63,8 +49,6 @@ public class Kline1mStreamService {
 
     private static final Logger log = LoggerFactory.getLogger(Kline1mStreamService.class);
 
-    // Review finding, same verification discipline as BinanceUserDataStreamService's own base
-    // URLs: confirmed against Binance's current published WebSocket Streams documentation.
     // Public market data only -- the same base serves both TESTNET and LIVE identically (unlike
     // the user-data stream, this has no account-specific auth/mode split at all).
     private static final String BASE_URL = "wss://stream.binance.com:9443/stream?streams=";
@@ -81,11 +65,11 @@ public class Kline1mStreamService {
     private volatile Map<String, List<AutonomousScannerService.OneMinuteScanTarget>> routingBySymbol = Map.of();
 
     /**
-     * Review finding, same context as this class's own top-level javadoc: reconciles the
-     * WebSocket's own subscription set against whatever 1m plans currently need one, every 2
-     * minutes -- frequent enough that a newly-enabled 1m plan starts getting real-time triggers
-     * quickly, infrequent enough not to reconnect constantly under normal operation (the
-     * required symbol set only changes when a plan is created/edited/disabled, not every cycle).
+     * Reconciles the WebSocket's subscription set against whatever 1m plans currently need one,
+     * every 2 minutes -- frequent enough that a newly-enabled 1m plan starts getting real-time
+     * triggers quickly, infrequent enough not to reconnect constantly under normal operation
+     * (the required symbol set only changes when a plan is created/edited/disabled, not every
+     * cycle).
      */
     @Scheduled(fixedDelay = 120_000, initialDelay = 50_000, scheduler = "scanScheduler")
     public void reconcileSubscriptions() {
@@ -187,11 +171,10 @@ public class Kline1mStreamService {
     }
 
     /**
-     * Review finding, same context as this class's own top-level javadoc: parses only what's
-     * needed to decide whether a real trigger fired -- symbol and the closed-candle flag (`x`)
-     * -- and never touches OHLCV values from the stream at all (see this class's own DESIGN
-     * CHOICE note for why: scanOneSymbol does its own, independent REST fetch of the real candle
-     * series, so nothing here is ever trusted as trading-relevant market data by itself).
+     * Parses only what's needed to decide whether a real trigger fired -- symbol and the
+     * closed-candle flag (`x`) -- and never touches OHLCV values from the stream at all.
+     * scanOneSymbol does its own, independent REST fetch of the real candle series, so nothing
+     * here is ever trusted as trading-relevant market data by itself.
      */
     private void handleMessage(String message) throws Exception {
         JsonNode root = mapper.readTree(message);

@@ -8,13 +8,9 @@ import { authGuard } from './auth.guard';
 import { provideHttpClient, withInterceptorsFromDi } from '@angular/common/http';
 
 /**
- * Review finding ("Frontend still caches non-secret user profile in localStorage; residual XSS
- * surface for session continuity" -- external review, nineteenth pass, P1, full context in
- * AuthService's own sessionReady field comment): the actual test proving this guard's own real
- * fix -- awaiting sessionReady before ever reading isLoggedIn, closing a genuine race this same
- * pass would otherwise have introduced (the removed, synchronous localStorage read used to make
- * isLoggedIn already correct by the time this guard ran at all; the new session check is a real,
- * async network call).
+ * Covers authGuard's handling of the async session check: it awaits sessionReady before
+ * ever reading isLoggedIn, since session restoration is a real network call rather than
+ * a synchronous read.
  */
 describe('authGuard', () => {
   let http: HttpTestingController;
@@ -45,14 +41,10 @@ describe('authGuard', () => {
     // point -- flush it now, confirming a valid session, before the guard's own promise settles.
     flushProfile(true);
 
-    // Pre-existing gap in this spec (unrelated to any P2 fix): AuthService's own constructor
-    // calls doRefresh() immediately once a valid session is confirmed (see AuthService's own
-    // doRefresh commentary -- it eagerly rotates the token rather than waiting for the 20-minute
-    // timer on session restore), firing a real POST /api/auth/refresh this test previously never
-    // flushed. That left an unmatched open request for HttpTestingController.verify() to trip
-    // over in afterEach -- a genuine test bug, not a product bug, since the guard itself never
-    // reads or waits on this call. Flushed here so the harness's own "no open requests" check
-    // reflects AuthService's actual, intended behavior instead of failing on it.
+    // AuthService's constructor calls doRefresh() immediately once a valid session is
+    // confirmed, firing a real POST /api/auth/refresh that must be flushed here, or
+    // HttpTestingController.verify() trips over an unmatched open request in afterEach.
+    // The guard itself never reads or waits on this call.
     const refreshReq = http.expectOne(`${environment.apiUrl}/auth/refresh`);
     refreshReq.flush({ success: true, data: { accessToken: 'irrelevant-to-this-guard' } });
 

@@ -6,8 +6,7 @@
       <p>30+ currency pairs · Live ECB rates · Auto-refresh 60s · {{currency.currency()==='INR'?'₹ INR Mode':'$ USD Mode'}}</p>
     </div>
     <div class="hdr-right">
-      <!-- Review finding (closing statement — "Never: 🟢 LIVE when the application is actually
-      showing fallback numbers"): this was hardcoded regardless of actual data state. -->
+      <!-- Live/stale badge reflects whether any pair is actually using fallback data -->
       @if (!anyStale()) {
         <span class="live-chip">🟢 LIVE</span>
       }
@@ -41,9 +40,8 @@
         <div class="forex-card" [class.bullish]="!p.ohlcUnavailable && p.changePct>=0" [class.bearish]="!p.ohlcUnavailable && p.changePct<0">
           <div class="fx-header">
             <div class="fx-pair">{{p.symbol}}</div>
-            <!-- Review finding ("still fake/derived FX market data"): change/changePct were
-            Math.random()-derived even for a genuinely live rate — never shown as a real
-            number now; "—" when this data source genuinely doesn't provide it. -->
+            <!-- Shows the real change percentage when available, or "—" when this data
+            source only provides a point-in-time rate with no change data. -->
             @if (!p.ohlcUnavailable) {
               <span class="change-pill" [class.up]="p.changePct>=0" [class.dn]="p.changePct<0">
                 {{p.changePct>=0?'▲':'▼'}} {{p.changePct|number:'1.2-2'}}%
@@ -53,7 +51,7 @@
               <span class="change-pill fx-na" title="This data source provides only a point-in-time rate, no change data">—</span>
             }
           </div>
-          <!-- Review finding (P1 #8 — "The frontend still fabricates market data") -->
+          <!-- Flags a card whose rate is a placeholder rather than a live quote -->
           @if (p.stale) {
             <div class="fx-stale" title="Live rate unavailable — showing a placeholder, not a current price">⚠️ STALE — not a live rate</div>
           }
@@ -80,8 +78,7 @@
           <button class="analyze-btn" (click)="analyze(p)" [disabled]="analyzing===p.symbol">
             {{analyzing===p.symbol?'⟳ Analyzing…':'📊 Get Trade Call'}}
           </button>
-          <!-- Review finding (P1 #9 — "Synthetic candles are still used to generate trading
-          analysis"): the review's own required UI text for this exact state. -->
+          <!-- Shown when there isn't enough real historical data to run analysis -->
           @if (analysisUnavailable===p.symbol) {
             <div class="fx-analysis-unavailable">
               ⚠️ Analysis unavailable — live historical market data could not be retrieved for {{p.symbol}}.

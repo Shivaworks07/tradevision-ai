@@ -24,16 +24,12 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 /**
- * Review finding ("Strategy engine is not the complete strategy actually represented by the
- * frontend" -- P1, full context in MLWeightService's own header javadoc): verifies this is a
- * genuinely faithful port of TaEngineService.updateMLFromOutcome, not just a plausible-looking
- * approximation -- every expected weight value below is hand-computed against the actual
- * frontend algorithm (learning rate 0.05, win nudges by the full rate, loss nudges by half),
- * not against this Java port's own logic (which would just prove the port is internally
- * consistent, not that it matches the frontend it's supposed to be porting).
+ * Verifies this is a faithful port of TaEngineService.updateMLFromOutcome: every expected weight
+ * value below is hand-computed against the frontend algorithm (learning rate 0.05, win nudges
+ * by the full rate, loss nudges by half), not against this Java port's own logic.
  *
  * Uses the same real, stateful in-memory fake backing store technique as
- * ExchangeHealthServiceTest -- MLWeightService's own recordOutcome/getWeights round-trip through
+ * ExchangeHealthServiceTest -- MLWeightService's recordOutcome/getWeights round-trip through
  * multiple calls within a single test to build up totalCalls past the warm-up threshold, which a
  * stateless per-call Mockito stub can't represent.
  */
@@ -110,7 +106,7 @@ class MLWeightServiceTest {
     }
 
     @Test
-    @DisplayName("recordOutcome: RSI bullish signal + LONG + win -- rsiWeight increases by exactly the learning rate (0.05), the other three weights stay untouched -- the actual review fix (\"Strategy engine is not the complete strategy actually represented by the frontend\")")
+    @DisplayName("recordOutcome: RSI bullish signal + LONG + win -- rsiWeight increases by exactly the learning rate (0.05), the other three weights stay untouched")
     void recordOutcome_rsiWinCondition_increasesOnlyRsiWeight() {
         // 4 calls to reach the warm-up boundary with conditions that do NOT trigger macd/pattern/volume.
         for (int i = 0; i < 4; i++) {

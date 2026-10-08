@@ -56,27 +56,16 @@ export interface CryptoTicker {
 
 @Injectable({ providedIn: 'root' })
 export class BinanceService {
-  // Review finding ("Direct api.binance.com calls from the frontend for market data" -- P1):
-  // confirmed real, and deliberately left as-is -- the review's own assessment of this specific
-  // finding was "not inherently dangerous," and that holds up: everything this service fetches
-  // is PUBLIC market data (candles, tickers) that Binance itself serves without authentication.
-  // No API key, secret, or credential of any kind ever passes through this class or this URL --
-  // those are handled exclusively server-side (BrokerCredentialService, never sent to the
-  // browser at all). The actual trading decision and execution path (AutoTradeService,
-  // OrderService, the OMS) never uses this service or this URL either; this is purely for the
-  // chart/ticker display the user is already looking at. Routing this through the backend
-  // instead would add a real proxy layer and an extra network hop for zero security benefit,
-  // since there is nothing sensitive in this specific call to protect. If this class is ever
-  // extended to place orders, fetch balances, or touch anything account-specific, that MUST go
-  // through the backend's own credential-scoped endpoints instead -- this boundary is the
-  // reason it's safe today, not a blanket exemption.
+  // Calls api.binance.com directly for public market data only (candles, tickers), which
+  // Binance serves without authentication. No API key, secret or credential ever passes
+  // through this class or this URL — those stay server-side (BrokerCredentialService) and
+  // are never sent to the browser. Order placement, balances and anything account-specific
+  // go through the backend's credential-scoped endpoints instead; this class exists purely
+  // to drive the chart/ticker display.
   private readonly BASE = 'https://api.binance.com/api/v3';
-  // Review finding ("Frontend WebSocket implementation is effectively unused" -- external
-  // review): confirmed real and removed -- this field was never assigned or read anywhere in
-  // this file. Market data here is REST polling only; the backend's own user-data WebSocket
-  // stream is the real, account-specific execution stream, and this class deliberately never
-  // touches account-specific data at all (see this class's own header comment above). Dead code
-  // that merely looked like WebSocket support existed here, when it didn't.
+  // Market data here is REST polling only. The backend's own user-data WebSocket stream
+  // handles the real, account-specific execution feed; this class never touches
+  // account-specific data, so it has no live ticker stream of its own.
   private tickerSubject = new Subject<CryptoTicker>();
 
   readonly SYMBOLS = [

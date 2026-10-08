@@ -17,13 +17,12 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * P3-1 fix ("management.endpoint.health.show-details=when-authorized + JWT with no roles -- any
- * logged-in user sees component details" -- external review, full context in SecurityConfig's
- * own updated jwtFilter comment): this file did not exist before this fix -- the jwtFilter bean's
- * own authentication logic (in particular, which authorities it grants) had zero direct test
- * coverage. Constructs the filter bean directly rather than via Spring context, matching this
- * codebase's own established pattern for testing hand-written filter beans without a full
- * Spring Security test slice (see MetricsFilter's own test style).
+ * Verifies the jwtFilter bean's authentication logic, in particular which authorities it
+ * grants, since management.endpoint.health.roles=ADMIN depends on a real ROLE_ADMIN
+ * authority being granted rather than an empty list. Constructs the filter bean directly
+ * rather than via Spring context, matching this codebase's established pattern for testing
+ * hand-written filter beans without a full Spring Security test slice (see MetricsFilter's
+ * own test style).
  */
 class SecurityConfigTest {
 
@@ -54,9 +53,9 @@ class SecurityConfigTest {
 
             var auth = SecurityContextHolder.getContext().getAuthentication();
             assertThat(auth).isNotNull();
-            // P3-1's own actual review fix: a real ROLE_ADMIN authority, not an empty list --
-            // this is what makes management.endpoint.health.roles=ADMIN a genuine check instead
-            // of a no-op that always evaluated true for anyone logged in at all.
+            // A real ROLE_ADMIN authority, not an empty list -- this is what makes
+            // management.endpoint.health.roles=ADMIN a genuine check instead of a no-op
+            // that always evaluates true for anyone logged in at all.
             assertThat(auth.getAuthorities()).extracting(Object::toString).contains("ROLE_ADMIN");
         } finally {
             SecurityContextHolder.clearContext();

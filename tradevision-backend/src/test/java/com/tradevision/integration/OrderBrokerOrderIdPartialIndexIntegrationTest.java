@@ -24,30 +24,24 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
- * P3-11 fix ("The new order-ID index will block trading on a symbol after one rejected order" --
- * external review, second pass, re-audit): the review's own suggested proof -- "one integration
- * test would confirm it in seconds" -- for the actual regression: a SPARSE compound unique index
- * on {credentialId, symbol, brokerOrderId} does NOT exclude brokerOrderId=null documents the way
- * a sparse SINGLE-field index would, because credentialId and symbol are always set, and MongoDB
- * includes a document in a sparse compound index if it has ANY of the indexed fields. Every order
- * created but never confirmed by the broker (rejected before an id was assigned, or simply not
+ * Verifies, against a real MongoDB, that a sparse compound unique index on {credentialId,
+ * symbol, brokerOrderId} does not exclude brokerOrderId=null documents the way a sparse
+ * single-field index would, because credentialId and symbol are always set, and MongoDB
+ * includes a document in a sparse compound index if it has any of the indexed fields. Every
+ * order created but never confirmed by the broker (rejected before an id was assigned, or not
  * submitted yet) has brokerOrderId=null, so a second such order for the same credential+symbol
- * would collide as a duplicate key under the old (sparse) index -- exactly the scenario this test
- * drives against a real MongoDB, both before (would fail) and after (passes) the partial-index fix.
- * See Order.java's own @CompoundIndex javadoc and IndexInitializer's own updated comments for the
- * full explanation and the migration this same fix required for existing deployments.
+ * would collide as a duplicate key under a sparse index -- the partial index avoids this. See
+ * Order.java's @CompoundIndex javadoc and IndexInitializer for the full explanation.
  *
- * HONEST LIMITATION, same as this package's other Testcontainers-backed tests: `docker ps` fails
- * outright in this sandbox ("docker: not found" / no daemon), so I have not executed this test and
- * cannot confirm it passes. Run `mvn test -Dtest=OrderBrokerOrderIdPartialIndexIntegrationTest` on
- * a machine with Docker available to actually confirm this before trusting it -- exactly the
- * confirmation the external review itself asked for.
+ * Requires Docker (Testcontainers); run
+ * `mvn test -Dtest=OrderBrokerOrderIdPartialIndexIntegrationTest` on a machine with Docker
+ * available.
  */
 @Testcontainers(disabledWithoutDocker = true)
-// P1-16 fix: spring.profiles.active now defaults to "prod" (fail-closed), which has no default
-// secrets at all -- without this, this Testcontainers-backed context would fail to start outside
-// a real deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, the same
-// secrets this test always implicitly relied on before that default changed.
+// spring.profiles.active defaults to "prod" (fail-closed), which has no default secrets at all
+// -- without this, this Testcontainers-backed context would fail to start outside a real
+// deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, which has the
+// secrets this test relies on.
 @ActiveProfiles("local")
 @SpringBootTest
 class OrderBrokerOrderIdPartialIndexIntegrationTest {
@@ -81,7 +75,7 @@ class OrderBrokerOrderIdPartialIndexIntegrationTest {
     }
 
     @Test
-    @DisplayName("Order: two orders for the SAME credential+symbol, both still brokerOrderId=null, both save successfully against a REAL MongoDB -- the actual P3-11 regression test. Against the old sparse compound index, the second insert would fail with a duplicate-key error; against the fixed partial index, MongoDB never indexes either document at all, since neither has brokerOrderId as a string.")
+    @DisplayName("Order: two orders for the same credential+symbol, both still brokerOrderId=null, both save successfully against a real MongoDB. Against a sparse compound index the second insert would fail with a duplicate-key error; against the partial index, MongoDB never indexes either document, since neither has brokerOrderId as a string.")
     void twoOrdersSameCredentialSymbol_bothNullBrokerOrderId_bothSaveSuccessfully() {
         Order first = newOrder("cred1", "BTCUSDT", "client-order-1");
         Order second = newOrder("cred1", "BTCUSDT", "client-order-2");

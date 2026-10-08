@@ -22,51 +22,27 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding (P1/🟠 #11 — "Testing is still the biggest weakness"): the review's exact
- * example was PositionSlotReservationServiceTest/ExposureReservationServiceTest only proving
- * findAndModify() was CALLED with the right arguments — never that two ACTUAL concurrent Mongo
- * operations behave correctly against a REAL MongoDB. This is that proof: a real MongoDB
- * container (via Testcontainers), real concurrent threads, real atomic $inc, checking the
- * database's own actual guarantee rather than a mocked stand-in for it.
+ * Verifies, against a real MongoDB container (via Testcontainers) rather than a mock, that two
+ * actual concurrent Mongo operations behave correctly: real concurrent threads, real atomic
+ * $inc, checking the database's own guarantee.
  *
- * CI-review fix ("concurrentReserve_realMongo_enforcesExactCap: expected 3, actual 1" --
- * external review, GitHub Actions integration-test failures, failure 1): confirmed a genuine
- * production bug, not a test problem -- reserveTransactionally's own error handling treated
- * EVERY RuntimeException from a failed transaction as either "standalone Mongo, fall back
- * non-transactionally" or an outright failure, with no case at all for a WriteConflict
- * (MongoDB error code 112, carrying the driver's own "TransientTransactionError" label) under
- * genuine concurrent transactions against the same reservation document -- exactly what 20
- * threads racing for 3 slots against a REAL (non-standalone) MongoDB replica set produces. Only
- * the single thread that won the very first attempt ever succeeded; every other thread's
- * transaction aborted on its first WriteConflict and was never retried, so successCount landed
- * at 1 instead of 3. Per this review's own explicit instruction ("Do not simply change the
- * expected value from 3 to 1" -- the correct fix is in PositionSlotReservationService itself:
- * reserveTransactionally now retries the whole transaction body (same ClientSession, fresh
- * startTransaction()) up to MAX_TRANSACTION_RETRIES=10 times specifically when the caught
- * exception carries the TransientTransactionError label or code 112, which is MongoDB's own
- * documented retry pattern for this exact condition -- never for a genuine standalone-deployment
- * or other fatal error, which still fall through to the existing (unchanged) handling. This
- * test's own already-existing assertion (exactly maxAllowed succeed, not "probably") is left
- * completely unchanged and now serves directly as the regression test for that fix -- it is the
- * same 20-threads-vs-3-slots scenario that exposed the bug, so no separate regression test is
- * added; weakening or duplicating this assertion would both violate the review's own instruction
- * and add no real coverage beyond what is already here.
+ * When many threads race for a limited number of reservation slots against a real
+ * (non-standalone) MongoDB replica set, concurrent transactions against the same reservation
+ * document can hit a WriteConflict (MongoDB error code 112, carrying the
+ * "TransientTransactionError" label). reserveTransactionally retries the whole transaction body
+ * (same ClientSession, fresh startTransaction()) up to MAX_TRANSACTION_RETRIES=10 times when the
+ * caught exception carries that label or code, so that exactly maxAllowed threads succeed
+ * rather than only the first to win a single attempt; a genuine standalone-deployment or other
+ * fatal error still falls through to the existing handling.
  *
- * HONEST LIMITATION, unlike every other test written this session: I cannot run this myself.
- * `docker ps` succeeds in this sandbox (the Docker daemon itself runs), but every container
- * registry (Docker Hub, GHCR, Quay) and direct MongoDB binary download are blocked by this
- * sandbox's own egress policy (confirmed via repeated 403 Forbidden responses, not a transient
- * failure) -- so no real MongoDB instance can actually be started here, and I have not executed
- * this test and cannot confirm it passes. The fix above is supported by direct source-level
- * tracing of MongoDB's own documented WriteConflict/TransientTransactionError retry contract and
- * successful compilation only. Run `mvn test -Dtest=PositionSlotReservationIntegrationTest` on a
- * machine with real registry/Docker access to actually confirm this passes before trusting it.
+ * Requires Docker with real container-registry access; run
+ * `mvn test -Dtest=PositionSlotReservationIntegrationTest` on a machine with that access.
  */
 @Testcontainers(disabledWithoutDocker = true)
-// P1-16 fix: spring.profiles.active now defaults to "prod" (fail-closed), which has no default
-// secrets at all -- without this, this Testcontainers-backed context would fail to start
-// outside a real deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, the
-// same secrets this test always implicitly relied on before that default changed.
+// spring.profiles.active defaults to "prod" (fail-closed), which has no default secrets at all
+// -- without this, this Testcontainers-backed context would fail to start outside a real
+// deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, which has the
+// secrets this test relies on.
 @ActiveProfiles("local")
 @SpringBootTest
 class PositionSlotReservationIntegrationTest {
@@ -98,10 +74,7 @@ class PositionSlotReservationIntegrationTest {
             executor.submit(() -> {
                 try {
                     startLine.await(); // all threads fire as close to simultaneously as possible
-                    // Review finding ("Position slot reservations still don't have ownership
-                    // IDs" -- external review, twenty-eighth pass, P0, full context in
-                    // PositionSlotReservationRecord's own class javadoc): reserve() now returns
-                    // SlotReserveResult, not a bare boolean.
+                    // reserve() returns a SlotReserveResult carrying the reservation's ownership id.
                     if (slotReservationService.reserve(credentialId, maxAllowed).reserved()) {
                         successCount.incrementAndGet();
                     }
@@ -116,10 +89,8 @@ class PositionSlotReservationIntegrationTest {
         assertThat(allDone.await(30, TimeUnit.SECONDS)).isTrue();
         executor.shutdown();
 
-        // The actual claim under test: no matter how many threads race for it simultaneously,
-        // MongoDB's own atomicity means EXACTLY maxAllowed can ever succeed — not "probably", not
-        // "usually", exactly. A mocked test can assert the code CALLS findAndModify correctly;
-        // only a real database can prove findAndModify itself actually serializes these threads.
+        // No matter how many threads race for it simultaneously, MongoDB's atomicity means
+        // exactly maxAllowed can ever succeed.
         assertThat(successCount.get()).isEqualTo(maxAllowed);
     }
 }

@@ -25,17 +25,19 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Audit item P0-1 fix. Full context in LiveCanaryRecord's own class javadoc.
+ * Proves a LIVE broker credential can actually place and resolve a real order before autonomous
+ * trading is allowed to rely on it. A canary places one minimal, real BUY order with tight
+ * protective TP/SL and tracks it through fill, Position creation, and OCO placement using the
+ * exact same pipeline every other LIVE order already goes through.
  *
- * HONEST SCOPE: this is a real, additional safeguard, not a substitute for every other LIVE
- * gate already in RiskProfileService.authorizeLiveAutoTrade (confirmation phrase, risk-limit
- * completeness, Mongo transaction support, re-verified broker permissions) -- those all remain,
- * unchanged, and this is checked alongside them, not instead of them. It also does not re-verify
- * itself on every single trade -- hasRecentPassingCanary's own 24-hour lookback window matches
- * this codebase's own established pattern for "proven recently enough to trust" (see
- * BrokerCredential.lastValidatedAt's own usage elsewhere), not a perpetual per-trade check,
- * since re-placing a real order before every autonomous trade would itself be a new source of
- * real-money risk and exchange load, not a safety improvement.
+ * This is an additional safeguard alongside every other LIVE gate in
+ * RiskProfileService.authorizeLiveAutoTrade (confirmation phrase, risk-limit completeness, Mongo
+ * transaction support, re-verified broker permissions) -- those all remain in force, and a
+ * passing canary is checked alongside them, not instead of them. A PASSED result stays valid for
+ * {@value #VALID_HOURS} hours (see hasRecentPassingCanary), the same "proven recently enough to
+ * trust" window this codebase already uses elsewhere for credential validation, rather than
+ * requiring a real order before every single autonomous trade -- which would itself add
+ * real-money risk and exchange load instead of removing it.
  */
 @Service
 @RequiredArgsConstructor
@@ -57,8 +59,7 @@ public class LiveCanaryService {
     private static final long VALID_HOURS = 24;
     /** How long a PENDING canary is given to resolve (order fill -> Position -> real OCO placed)
      *  before this sweep gives up and marks it FAILED -- PositionMonitorService's own
-     *  reconciliation runs every 60 seconds (confirmed directly, not assumed), so 15 minutes is
-     *  generous headroom, not a tight race. */
+     *  reconciliation runs every 60 seconds, so 15 minutes is generous headroom, not a tight race. */
     private static final long TIMEOUT_MINUTES = 15;
     /** Defensive ceiling on the computed canary notional -- see startCanary's own javadoc for why
      *  this never trusts a computed quantity blindly, regardless of what the exchange's own

@@ -1,17 +1,14 @@
 package com.tradevision.service.broker.dto;
 
 /**
- * Review finding (P1 #10 — "Withdrawal-permission check relies on /api/v3/account.canWithdraw"):
- * that account-level flag reflects whether the ACCOUNT can withdraw at all, not what THIS API KEY
- * is restricted to — a real account almost always reports canWithdraw=true regardless of the key's
- * own permissions, which would make the existing LIVE withdrawal check either always refuse (if
- * ever tightened) or be silently meaningless (as it was found to be). The key-level truth lives at
- * a separate endpoint, `GET /sapi/v1/account/apiRestrictions`, which reports exactly what THIS key
- * — not the account — is permitted to do. This record is that response's relevant fields.
+ * Key-level permissions from `GET /sapi/v1/account/apiRestrictions` -- what this specific API key
+ * is permitted to do, as distinct from account-level flags like canWithdraw, which reflect
+ * whether the account can withdraw at all regardless of this key's own restrictions and are
+ * therefore not a reliable signal for what this key itself is allowed to do.
  *
- * Every boolean here defaults to the UNSAFE reading (as if the restriction were absent/disabled)
- * when the broker's response is missing a field, mirroring AccountPermissions' own existing
- * defensive-default convention — never assume a missing field means "safe."
+ * Every boolean here defaults to the unsafe reading (as if the restriction were absent/disabled)
+ * when the broker's response is missing a field, matching AccountPermissions' own defensive-
+ * default convention — never assume a missing field means "safe."
  */
 public record ApiKeyRestrictions(
     /** True only if this key is IP-whitelisted on Binance. Required — an unrestricted key is a

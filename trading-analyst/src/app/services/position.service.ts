@@ -3,8 +3,8 @@ import { Injectable, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, tap } from 'rxjs';
 
-// Review finding ("UI has no real Position/Execution dashboard"): mirrors PositionSummaryDto on
-// the backend exactly — one contract, not a separately-invented frontend shape.
+// Mirrors the backend's PositionSummaryDto exactly, so there is one contract
+// for the position shape rather than a separately-maintained frontend copy.
 export interface PositionSummary {
   id: string;
   credentialId: string;
@@ -18,16 +18,11 @@ export interface PositionSummary {
   stopLossPrice: number | null;
   takeProfitPrice: number | null;
   protectedByOco: boolean;
-  // Review finding ("Position protection status is not yet a first-class invariant" -- external
-  // review, full context in the backend's own PositionSummaryDto header javadoc): mirrors the
-  // backend's own new field -- lets the UI distinguish "fully protected" from "partially
-  // protected" instead of collapsing both into the same binary badge.
+  // Quantity actually covered by a stop/OCO order, so the UI can distinguish
+  // "fully protected" from "partially protected" instead of a single binary badge.
   protectedQuantity: number | null;
-  // Review finding ("dust classification needs one more invariant" -- external review, second
-  // pass, full context in the backend's own PositionSummaryDto header javadoc): 'FULL' |
-  // 'DUST_RESIDUAL' | 'PARTIAL' | 'UNPROTECTED' | 'N/A' -- server-computed using the real
-  // exchange minQty, replacing this file's own earlier isPartiallyProtected() client-side
-  // guess (which had no minQty to judge a residual against at all).
+  // Server-computed classification using the real exchange minQty, so a genuine
+  // residual gap can be told apart from harmless exchange-rounding dust.
   protectionStatus: 'FULL' | 'DUST_RESIDUAL' | 'PARTIAL' | 'UNPROTECTED' | 'N/A';
   exitPrice: number | null;
   realizedPnlQuote: number | null;
@@ -40,8 +35,8 @@ export interface PositionSummary {
 }
 
 /**
- * Review finding ("No user-facing emergency position action"): thin wrapper around
- * /api/positions/**, same auth pattern as every other service in this app.
+ * Thin wrapper around /api/positions/**, following the same auth pattern as every
+ * other service in this app.
  */
 @Injectable({ providedIn: 'root' })
 export class PositionService {
@@ -65,7 +60,7 @@ export class PositionService {
     return this.http.post(`${this.API}/credential/${credentialId}/reconcile-now`, {});
   }
 
-  // Review finding (P1 #20): backs the dashboard's incident indicator.
+  // Backs the dashboard's incident indicator.
   unresolvedIncidents(credentialId: string): Observable<any> {
     return this.http.get(`${this.API}/credential/${credentialId}/incidents`);
   }

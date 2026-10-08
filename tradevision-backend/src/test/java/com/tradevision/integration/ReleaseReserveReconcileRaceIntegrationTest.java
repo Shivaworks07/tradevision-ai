@@ -27,29 +27,26 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding ("No executed concurrency test for release-vs-reserve" -- external review,
- * twenty-eighth pass, P2, the review's own exact ask: "Thread A: release(reservationA). Thread
- * B: reserve(...). while: Thread C: reconcile(...) runs. This should be tested against real
- * Mongo."): this is that exact test.
+ * Concurrency test for release() vs reserve() vs reconcile() running at once against a real
+ * MongoDB: Thread A releases reservationA, Thread B reserves a new amount, and Thread C
+ * reconciles, all simultaneously.
  *
- * Genuine race, genuinely non-deterministic ordering -- this test does NOT assert a single exact
- * final value (there isn't one correct answer when three operations race for real), it asserts
- * the invariants that must hold regardless of how the race actually resolves: no exception from
- * any of the three operations, the counter is never negative, and the counter's final value is
- * explainable by SOME valid interleaving of what actually happened -- never a value outside what
- * any possible ordering could produce.
+ * Genuine race, genuinely non-deterministic ordering -- this test does NOT assert a single
+ * exact final value (there isn't one correct answer when three operations race for real), it
+ * asserts the invariants that must hold regardless of how the race actually resolves: no
+ * exception from any of the three operations, the counter is never negative, and the
+ * counter's final value is explainable by SOME valid interleaving of what actually happened
+ * -- never a value outside what any possible ordering could produce.
  *
- * HONEST LIMITATION, same as every other integration test in this package: `docker ps` fails
- * outright in this sandbox -- no Docker daemon is available here, so I have not executed this
- * test and cannot confirm it passes. Run
- * `mvn test -Dtest=ReleaseReserveReconcileRaceIntegrationTest` on a machine with Docker available
- * to actually confirm this before trusting it.
+ * Requires Docker (via Testcontainers) and is skipped automatically when no Docker daemon is
+ * available. Run `mvn test -Dtest=ReleaseReserveReconcileRaceIntegrationTest` on a machine
+ * with Docker to execute it.
  */
 @Testcontainers(disabledWithoutDocker = true)
-// P1-16 fix: spring.profiles.active now defaults to "prod" (fail-closed), which has no default
-// secrets at all -- without this, this Testcontainers-backed context would fail to start
-// outside a real deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, the
-// same secrets this test always implicitly relied on before that default changed.
+// spring.profiles.active defaults to "prod" (fail-closed), which has no default secrets at
+// all -- without this, this Testcontainers-backed context would fail to start outside a real
+// deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, which has the
+// secrets this test relies on.
 @ActiveProfiles("local")
 @SpringBootTest
 class ReleaseReserveReconcileRaceIntegrationTest {
@@ -89,7 +86,7 @@ class ReleaseReserveReconcileRaceIntegrationTest {
         AtomicReference<Throwable> threadCError = new AtomicReference<>();
         AtomicReference<Boolean> newReserveAllowed = new AtomicReference<>();
 
-        // Thread A: release(reservationA) -- exactly the review's own named thread.
+        // Thread A: release(reservationA).
         executor.submit(() -> {
             try {
                 startLine.await();
@@ -101,7 +98,7 @@ class ReleaseReserveReconcileRaceIntegrationTest {
             }
         });
 
-        // Thread B: reserve(...) -- exactly the review's own named thread.
+        // Thread B: reserve(...).
         executor.submit(() -> {
             try {
                 startLine.await();
@@ -114,7 +111,7 @@ class ReleaseReserveReconcileRaceIntegrationTest {
             }
         });
 
-        // Thread C: reconcile(...) -- exactly the review's own named thread. Reconciling to a
+        // Thread C: reconcile(...). Reconciling to a
         // real, non-zero "actual open exposure" value (not necessarily matching either A or B's
         // own amount exactly, on purpose -- reconcile represents the REAL, independently-derived
         // truth from actual open positions, not an echo of the reservation counters themselves).
@@ -135,14 +132,13 @@ class ReleaseReserveReconcileRaceIntegrationTest {
 
         // Invariant 1: none of the three operations threw -- a real race condition manifesting
         // as an exception (a NullPointerException from a half-updated document, for instance)
-        // would be a genuine bug this test needs to catch.
+        // would be a real defect this test needs to catch.
         assertThat(threadAError.get()).isNull();
         assertThat(threadBError.get()).isNull();
         assertThat(threadCError.get()).isNull();
 
         // Invariant 2: the real, persisted counter is never negative, regardless of exactly how
-        // the three operations interleaved -- this is the actual property P1-2's own
-        // floor-at-zero fix and this test together are supposed to guarantee.
+        // the three operations interleaved -- the floor-at-zero property this test guarantees.
         var finalState = mongoTemplate.findOne(new Query(Criteria.where("credentialId").is(credentialId)), ExposureReservation.class);
         assertThat(finalState).isNotNull();
         assertThat(finalState.getReservedTotalExposureQuote()).isGreaterThanOrEqualTo(BigDecimal.ZERO);

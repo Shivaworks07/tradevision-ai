@@ -1,16 +1,12 @@
 package com.tradevision.model;
 
 /**
- * Review finding (P1 #18 — "Trading state is still represented by multiple booleans"):
- * confirmed real — mode, autoTradeEnabled, liveAutoTradeAuthorized, tradingHalted (spread across
- * two different model classes) allow combinations that are hard to reason about directly.
- *
- * Honest scope: this is a DERIVED read model, not a replacement for the underlying booleans.
- * Refactoring every consumer of those four fields to read/write a single enum instead would be a
- * much larger, higher-regression-risk change across every service that currently checks them
- * directly — not something to do as a side effect of adding a UI-friendly summary. This gives
- * the review's own actual goal (an execution engine that's easier to reason about, a dashboard
- * that can show one clear state instead of four booleans) without that larger risk.
+ * A single, easy-to-reason-about summary of a credential's trading state, derived from the
+ * underlying mode/autoTradeEnabled/liveAutoTradeAuthorized/tradingHalted flags that are spread
+ * across BrokerCredential and RiskProfile. This is a derived read model, not a replacement for
+ * those underlying fields — every consumer of those four flags still reads/writes them
+ * directly; this exists purely to give a dashboard or caller one clear state to show instead of
+ * reasoning through four booleans combined.
  */
 public enum TradingState {
     TESTNET,                    // mode=TESTNET, not halted

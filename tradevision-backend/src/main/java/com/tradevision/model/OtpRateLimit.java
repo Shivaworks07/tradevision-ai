@@ -9,11 +9,10 @@ import org.springframework.data.mongodb.core.mapping.Document;
 import java.time.LocalDateTime;
 
 /**
- * Review finding (this doc, "BLOCKER #7" — OTP resend has insufficient rate limiting): the
- * previous rate limiting only counted FAILED VERIFICATION attempts, and only for identifiers
- * that already had a User record — a brand-new identifier could be hammered for OTP sends with
- * zero limiting (SMS cost, email abuse, provider rate-limit problems). This tracks send
- * frequency directly, per identifier+purpose, independent of whether a User exists yet.
+ * Tracks OTP send frequency per identifier+purpose, independent of whether a User record
+ * exists yet for that identifier — this is what lets a brand-new signup identifier be rate
+ * limited on OTP sends (not just failed verification attempts) to control SMS/email cost and
+ * provider abuse.
  */
 @Data @NoArgsConstructor
 @Document(collection = "otp_rate_limits")

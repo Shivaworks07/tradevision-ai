@@ -17,17 +17,11 @@ public class JwtUtil {
     @Value("${app.jwt.refresh-expiration:604800000}") private long refreshExpiration; // 7d default
 
     /**
-     * Review finding ("JWT secret format is not strongly validated" -- external review,
-     * twenty-third pass, P2, confirmed real by direct inspection before this fix: key() below
-     * calls Keys.hmacShaKeyFor(secret.getBytes()) lazily, on first actual use -- meaning a
-     * too-short or missing secret would let this application start up and appear healthy, only
-     * to fail at the first real login attempt in front of an actual user, a worse failure mode
-     * than failing fast at startup): the actual fix -- explicit validation at startup, with a
-     * clear, actionable message, rather than relying solely on the underlying library's own
-     * WeakKeyException surfacing lazily and cryptically whenever key() first happens to be
-     * called. HS256 (the weakest HMAC-SHA variant Keys.hmacShaKeyFor can select) requires at
-     * least 256 bits (32 bytes) per RFC 7518 -- verified against that spec's own stated minimum
-     * before choosing this threshold, not guessed.
+     * Validates app.jwt.secret at startup rather than letting key() below discover a too-short
+     * or missing secret lazily on first use, which would otherwise let this application start up
+     * and appear healthy only to fail at the first real login attempt. HS256 (the weakest
+     * HMAC-SHA variant Keys.hmacShaKeyFor can select) requires at least 256 bits (32 bytes) per
+     * RFC 7518.
      */
     @jakarta.annotation.PostConstruct
     void validateSecretAtStartup() {
@@ -104,12 +98,7 @@ public class JwtUtil {
 
     public long getRefreshExpirationMs() { return refreshExpiration; }
 
-    /**
-     * Review finding ("Auth hardening" -- "access token still in localStorage, not HttpOnly
-     * cookies"): needed to set the access-token cookie's own Max-Age to genuinely match the
-     * token's real lifetime, matching the existing getRefreshExpirationMs()'s own pattern
-     * exactly rather than inventing a second, different way to expose this.
-     */
+    /** Access token lifetime in milliseconds, used to set the access-token cookie's Max-Age. */
     public long getAccessExpirationMs() { return expiration; }
 
     private Claims claims(String token) {

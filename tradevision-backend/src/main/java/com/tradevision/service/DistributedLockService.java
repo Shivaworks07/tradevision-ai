@@ -14,40 +14,30 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 
 /**
- * Review finding ("Single-instance assumption for autonomous trading/reconciliation -- no
- * distributed lock, unsafe to scale replicas" -- P0, full context in ReconciliationLock's own
- * javadoc): real inter-process mutual exclusion for reconciliation, backed by MongoDB's own
- * unique _id constraint -- the same proven technique as AdminController's own bootstrap lock.
+ * Provides real inter-process mutual exclusion for reconciliation, backed by MongoDB's unique
+ * {@code _id} constraint -- the same technique used by the admin bootstrap lock.
  *
- * Deliberately does NOT replace PositionMonitorService's existing JVM-local ReentrantLock map --
- * that still correctly prevents two THREADS in the same process from racing (a cheap, fast,
- * uncontended check in the overwhelmingly common single-instance-today deployment), while this
- * adds the missing cross-process guarantee on top for whenever this scales beyond replicas: 1.
- * Layering both is deliberate: the local lock avoids paying a database round-trip for
- * same-process contention, and this class is what actually makes scaling safe.
+ * <p>This is layered on top of, not a replacement for, {@code PositionMonitorService}'s
+ * JVM-local {@code ReentrantLock} map: the local lock cheaply prevents two threads in the same
+ * process from racing, while this class adds the cross-process guarantee needed once more than
+ * one instance is running. The local lock avoids a database round-trip for same-process
+ * contention, and this class is what makes scaling across replicas safe.
  *
- * <p>Audit item P2 ("wall-clock expiry"): external review, investigated by direct inspection.
- * The broad concern -- that a naive wall-clock TTL lets a lock be released from under its
- * legitimate holder, or expire while still genuinely needed -- does NOT describe this class as
- * it stands today: {@code generation} is a DB-generated monotonic fencing token (never derived
- * from a timestamp, see {@link #tryAcquireWithDiagnosis}), release is scoped to {@code _id AND
- * instanceId} so one holder can never drop another's lock, and {@link #renew}/{@link
- * #renewWithGeneration} are themselves atomic, expiry- and (optionally) generation-gated updates
- * that every long-running holder (see {@code PositionMonitorService}, {@code
- * PositionSafetyService}, {@code AutoTradeService}) calls repeatedly and aborts immediately on
- * failure, rather than trusting a single lease to outlive the whole operation.
+ * <p>Ownership is tracked with a DB-generated monotonic fencing token ({@code generation}, see
+ * {@link #tryAcquireWithDiagnosis}) rather than derived from a timestamp. Release is scoped to
+ * {@code _id AND instanceId} so one holder can never drop another's lock, and {@link #renew}/
+ * the generation-aware overload are atomic, expiry- and (optionally) generation-gated updates
+ * that every long-running holder ({@code PositionMonitorService}, {@code PositionSafetyService},
+ * {@code AutoTradeService}) calls repeatedly, aborting immediately on failure rather than
+ * trusting a single lease to outlive the whole operation.
  *
- * <p>What genuinely remains, and is an inherent property of ANY TTL-based lease rather than a
- * defect in this implementation: {@code expiresAt} comparisons ({@code Instant.now()} at lines
- * computing/checking it) are evaluated against each app instance's own local clock, not a single
- * Mongo-server-side clock -- so meaningful clock skew between app nodes could let a fast-clocked
- * node treat another node's still-valid lease as already expired. This is the real, narrow
- * residual shape of the audit's concern. It is accepted here rather than engineered away because
- * every lease duration below (30-90s) is comfortably larger than ordinary NTP-synced drift
- * between nodes in the same deployment, and because closing it fully (e.g. moving the expiry
- * comparison to a Mongo-side {@code $expr}/{@code $$NOW} check) would only trade N-node clock
- * skew for app-vs-Mongo-server skew -- a smaller, but not zero, version of the same assumption.
- * Operationally: this requires NTP (or equivalent) time sync across app nodes; do not disable it.
+ * <p>{@code expiresAt} comparisons are evaluated against each app instance's own local clock,
+ * not a single Mongo-server-side clock, so meaningful clock skew between app nodes could let a
+ * fast-clocked node treat another node's still-valid lease as already expired. This is accepted
+ * because every lease duration below (30-90s) is comfortably larger than ordinary NTP-synced
+ * drift between nodes in the same deployment; closing it fully (e.g. a Mongo-side {@code $expr}/
+ * {@code $$NOW} comparison) would only trade app-node clock skew for app-vs-Mongo-server skew.
+ * Operationally this requires NTP (or equivalent) time sync across app nodes; do not disable it.
  */
 @Service
 @RequiredArgsConstructor
@@ -58,18 +48,10 @@ public class DistributedLockService {
     private final MongoTemplate mongoTemplate;
 
     /**
-     * Review finding ("DistributedLockService has a subtle generation race" -- external review,
-     * twenty-ninth pass, P1, confirmed real by direct inspection before this fix:
-     * tryAcquireWithDiagnosis already computes its own generation via nextGeneration() before
-     * inserting the lock -- the exact value is known right there -- but the old return type
-     * (AcquireResult, a bare enum) couldn't carry it, forcing every caller into a SEPARATE
-     * currentGeneration() query afterward. That query reads whatever generation is CURRENTLY
-     * persisted for this credential, not necessarily the one THIS call's own insert just wrote --
-     * if the lock had already expired and been re-acquired by another instance in the window
-     * between this call's own insert and its currentGeneration() read, the old caller would
-     * silently receive the NEW instance's own generation instead of its own): the actual fix --
-     * the generation this call's own insert just wrote, carried directly on the return value,
-     * with no separate query and no window for it to have changed underneath the caller.
+     * Pairs an acquisition outcome with the exact generation this call's own insert wrote, so a
+     * caller never needs a separate follow-up query to learn its own generation -- which matters
+     * because that follow-up query could otherwise read a different instance's generation if the
+     * lock expired and was re-acquired in between.
      */
     public record LockLease(AcquireResult result, long generation) {
         public boolean acquired() { return result == AcquireResult.ACQUIRED; }
@@ -87,31 +69,22 @@ public class DistributedLockService {
     }
 
     /**
-     * Review finding ("Emergency flatten lock failure is ambiguous" -- external review,
-     * confirmed real by direct inspection before any fix was attempted): the plain boolean
-     * tryAcquire above collapses two genuinely different outcomes into the same `false` --
-     * "another instance genuinely holds this lock right now" (safe, expected, exactly what a
-     * lock is for) and "a real infrastructure failure meant this couldn't even be determined"
-     * (e.g. MongoDB itself unreachable). PositionSafetyService.emergencyFlatten's own callers
-     * used to treat both identically -- silently returning as if another instance were already
-     * handling the flatten, when an infrastructure failure actually means NO instance is
-     * flattening this naked position at all. This richer result lets that specific,
-     * safety-critical caller distinguish the two and escalate the infrastructure-failure case
-     * instead of silently doing nothing. The plain tryAcquire() above is kept as a thin
-     * convenience wrapper collapsing ACQUIRED to true and everything else to false, preserving
-     * this method's own exact prior behavior for PositionMonitorService's own reconciliation
-     * lock, which doesn't need this distinction with the same urgency.
+     * Distinguishes "another instance genuinely holds this lock" (safe, expected) from "a real
+     * infrastructure failure meant this couldn't even be determined" (e.g. MongoDB unreachable).
+     * Safety-critical callers such as emergency flatten need this distinction so they can
+     * escalate an infrastructure failure instead of silently assuming another instance is
+     * handling the work. {@link #tryAcquire} remains a thin convenience wrapper over this,
+     * collapsing {@code ACQUIRED} to {@code true} and everything else to {@code false} for
+     * callers that don't need the distinction.
      */
     public enum AcquireResult { ACQUIRED, HELD_BY_OTHER, INFRASTRUCTURE_FAILURE }
 
     /**
-     * Review finding ("ReconciliationLock.generation() is not actually a monotonic generation"
-     * -- external review, third pass, full context in LockGenerationCounter's own javadoc): a
-     * genuine atomic $inc against a dedicated, never-deleted counter document for this
-     * credential -- immune to wall-clock behavior entirely, unlike the timestamp this replaces.
-     * upsert(true) means the very first acquisition for a credential that's never had one
-     * creates the counter starting from 1 (Mongo's own $inc on a non-existent field starts from
-     * the increment amount itself), not a separate explicit "create if missing" branch.
+     * Returns the next monotonic generation for this credential via an atomic {@code $inc}
+     * against a dedicated, never-deleted counter document -- immune to clock skew, unlike a
+     * timestamp-derived value. {@code upsert(true)} means the first acquisition for a credential
+     * that has never had one simply creates the counter starting at 1, since Mongo's {@code $inc}
+     * on a non-existent field starts from the increment amount itself.
      */
     private long nextGeneration(String credentialId) {
         var counter = mongoTemplate.findAndModify(
@@ -132,22 +105,17 @@ public class DistributedLockService {
         }
 
         try {
-            // Review finding ("ReconciliationLock.generation() is not actually a monotonic
-            // generation" -- external review, third pass): obtained BEFORE the insert attempt,
-            // deliberately -- even if the insert below then fails with HELD_BY_OTHER (another
-            // instance genuinely won the race), a "wasted" counter increment here is completely
-            // harmless (the counter only needs to keep moving forward, not account for exactly
-            // one increment per successful acquisition), and obtaining it after a successful
-            // insert would reopen a real gap: a second instance's own nextGeneration() call
-            // landing in between this instance's insert and its own generation fetch could hand
-            // out a generation to the WRONG acquisition.
+            // Obtained before the insert attempt, deliberately: even if the insert below fails
+            // with HELD_BY_OTHER, a "wasted" counter increment here is harmless (the counter only
+            // needs to keep moving forward, not account for exactly one increment per successful
+            // acquisition), whereas obtaining it after a successful insert would let a second
+            // instance's own nextGeneration() call land in between and hand out a generation to
+            // the wrong acquisition.
             long generation = nextGeneration(credentialId);
             mongoTemplate.insert(new ReconciliationLock(credentialId, instanceId,
                 Instant.now().plus(holdDuration.toMillis(), ChronoUnit.MILLIS), generation));
-            // Review finding ("DistributedLockService has a subtle generation race" -- external
-            // review, twenty-ninth pass, P1, full context in LockLease's own javadoc): this
-            // exact generation value -- the one this call's own insert just wrote, nothing
-            // re-read from the database -- is what the caller actually gets back now.
+            // The exact generation this insert just wrote is returned directly, with nothing
+            // re-read from the database.
             return new LockLease(AcquireResult.ACQUIRED, generation);
         } catch (DuplicateKeyException e) {
             return new LockLease(AcquireResult.HELD_BY_OTHER, -1); // another instance genuinely holds this lock right now — expected, not an error
@@ -159,17 +127,10 @@ public class DistributedLockService {
     }
 
     /**
-     * Review finding ("DistributedLockService.renew() does not verify ownership generation" --
-     * external review, second pass, full context in ReconciliationLock.generation's own updated
-     * javadoc): reads back this lock's own real, persisted generation immediately after a
-     * successful acquisition, for a caller that wants to carry it through subsequent renewal
-     * checks. A separate query rather than changing tryAcquire/tryAcquireWithDiagnosis's own
-     * existing return types -- both already have real, established callers this session
-     * deliberately didn't want to force through a breaking signature change for this addition.
-     * Returns -1 if no lock document exists for this credential at all (should not happen
-     * immediately after a successful acquire, but a caller must not silently treat a missing
-     * lock as generation 0 -- that could coincidentally collide with a real, different lock's
-     * own generation under clock skew across processes).
+     * Reads back the persisted generation for this credential's lock, for a caller that wants to
+     * carry it through subsequent generation-aware renewal checks. Returns -1 if no lock document
+     * exists for this credential at all; a missing lock must never be treated as generation 0,
+     * since that could coincidentally collide with a different lock's real generation.
      */
     public long currentGeneration(String credentialId) {
         ReconciliationLock lock = mongoTemplate.findById(credentialId, ReconciliationLock.class);
@@ -192,43 +153,23 @@ public class DistributedLockService {
     }
 
     /**
-     * Review finding ("Distributed reconciliation lock has a fixed 90-second lease with no
-     * renewal" -- P1): confirmed real -- a genuinely slow reconciliation pass (a slow Binance
-     * response, a large number of positions, GC pause) could exceed the original fixed lease
-     * duration entirely, at which point a SECOND instance could acquire what it believes is a
-     * fresh lock on the same credential while the first instance is still actively working —
-     * both reconciling simultaneously, the exact double-processing this lock exists to prevent.
+     * Extends an in-progress lock's lease so a genuinely slow reconciliation pass (a slow
+     * exchange response, a large number of positions, a GC pause) doesn't let its fixed lease
+     * expire while still working -- which would otherwise let a second instance acquire the same
+     * credential's lock and reconcile simultaneously, the exact double-processing this lock
+     * exists to prevent. This renews the existing lease rather than threading a fencing token
+     * through every downstream write the lock protects, which would be a substantially larger
+     * change for the same correctness gain.
      *
-     * A renewable lease, not a fencing-token scheme -- the review itself offers both as
-     * options ("renewable lease, heartbeat/lock extension, or lock duration based on worst-case
-     * bounded operation time... also use fencing tokens if strict correctness is required").
-     * Fencing tokens would mean threading a token through every single downstream write this
-     * lock protects (every position/order mutation across PositionMonitorService's own
-     * reconciliation pass) so each one can itself reject a stale token — a substantially larger,
-     * more invasive change than extending a lease. A renewable lease closes the actual gap named
-     * (a lease that can silently expire mid-operation) without that larger surface area.
-     *
-     * Same "conditional on still being owned by this instance" safety as release() above -- an
-     * instance whose lease already expired (and was possibly reacquired by someone else) must
-     * not resurrect or extend a lock it no longer legitimately owns. Returns false (not an
-     * exception) if the renewal loses that race, exactly like tryAcquire's own "not acquired"
-     * contract -- the caller should treat this the same way as never having held the lock,
-     * i.e. stop its own work rather than continue believing it's still exclusive.
-     */
-    /**
-     * Review finding ("Distributed lock renewal can resurrect an expired lock" -- external
-     * review, confirmed real by direct inspection before any fix was attempted): this query used
-     * to check only _id and instanceId, never expiresAt itself. If the lock had already expired
-     * but no other instance had yet called tryAcquire() to sweep and replace the stale document
-     * (tryAcquire's own expired-lock removal only runs when someone ELSE attempts to acquire --
-     * nothing proactively sweeps a lock the original owner is still quietly calling renew()
-     * on), the original owner could successfully "renew" a lock that had already lapsed --
-     * extending its own expiry back into the future without ever having proven it was still the
-     * continuous, legitimate owner through the gap. Now requires expiresAt > now as part of the
-     * SAME atomic condition, so a genuinely expired lock can only be renewed if nothing else has
-     * changed about it since it expired -- and even then, the caller learns the truth (this
-     * still returns false once the window without any renewal exceeds this lock's own TTL,
-     * which is the correct, honest signal: ownership was NOT provably continuous).
+     * <p>Like {@link #release}, this only succeeds if the lock is still owned by this instance:
+     * an instance whose lease already expired (and was possibly reacquired by someone else) must
+     * not resurrect or extend a lock it no longer legitimately owns. The atomic condition
+     * requires {@code expiresAt > now} at the moment of the update, so a lock that has already
+     * expired can only be renewed if nothing else has changed about it since -- and once the gap
+     * since the last successful renewal exceeds the lock's own TTL, this returns false, the
+     * correct signal that ownership was not provably continuous. The caller should treat a false
+     * return exactly like a failed {@code tryAcquire}: stop its own work rather than continue
+     * believing it still holds the lock.
      */
     public boolean renew(String credentialId, String instanceId, java.time.Duration extendBy) {
         try {
@@ -236,12 +177,9 @@ public class DistributedLockService {
                 Query.query(Criteria.where("_id").is(credentialId).and("instanceId").is(instanceId).and("expiresAt").gt(Instant.now())),
                 new org.springframework.data.mongodb.core.query.Update().set("expiresAt", Instant.now().plus(extendBy.toMillis(), ChronoUnit.MILLIS)),
                 ReconciliationLock.class);
-            // Real bug: modifiedCount is 0 whenever the new value equals the value already
-            // stored (e.g. a same-millisecond lease renewal) -- that was being misread as "lock
-            // lost" and could abort an entire in-progress reconciliation pass even though the
-            // lock was, in fact, still held. matchedCount reflects whether the document (this
-            // instance's own lock row) was actually found and matched, which is what "do I still
-            // hold this lock" really means here.
+            // matchedCount, not modifiedCount, is the right signal for "do I still hold this
+            // lock": modifiedCount is 0 whenever the new value equals the value already stored
+            // (e.g. a same-millisecond renewal), which would misreport a still-held lock as lost.
             return result.getMatchedCount() > 0;
         } catch (Exception e) {
             log.warn("Could not renew reconciliation lock for credential {} (treated as lost, not renewed): {}", credentialId, e.getMessage());
@@ -250,14 +188,12 @@ public class DistributedLockService {
     }
 
     /**
-     * Review finding ("DistributedLockService.renew() does not verify ownership generation" --
-     * external review, second pass, full context in ReconciliationLock.generation's own updated
-     * javadoc): the actual generation-aware renewal -- also requires this exact generation to
-     * still be current, on top of instanceId and the un-expired check the plain renew() above
-     * already has. A NEW overload, not a change to the existing method's own signature -- this
-     * codebase's own existing renew() callers that don't carry a generation still work
-     * unmodified; callers that DO capture one at acquisition time (via currentGeneration()
-     * immediately after tryAcquire) get the stronger guarantee by using this overload instead.
+     * Generation-aware variant of {@link #renew} that also requires the given generation to
+     * still be the current one, on top of the instanceId and un-expired checks. This is an
+     * overload rather than a change to {@link #renew}'s signature, so existing callers that
+     * don't track a generation are unaffected; callers that capture one at acquisition time (via
+     * {@link #currentGeneration} right after acquiring) get the stronger guarantee by using this
+     * overload instead.
      */
     public boolean renew(String credentialId, String instanceId, long generation, java.time.Duration extendBy) {
         try {
@@ -266,12 +202,8 @@ public class DistributedLockService {
                     .and("expiresAt").gt(Instant.now()).and("generation").is(generation)),
                 new org.springframework.data.mongodb.core.query.Update().set("expiresAt", Instant.now().plus(extendBy.toMillis(), ChronoUnit.MILLIS)),
                 ReconciliationLock.class);
-            // Real bug: modifiedCount is 0 whenever the new value equals the value already
-            // stored (e.g. a same-millisecond lease renewal) -- that was being misread as "lock
-            // lost" and could abort an entire in-progress reconciliation pass even though the
-            // lock was, in fact, still held. matchedCount reflects whether the document (this
-            // instance's own lock row) was actually found and matched, which is what "do I still
-            // hold this lock" really means here.
+            // matchedCount, not modifiedCount, is the right signal for "do I still hold this
+            // lock" -- see the plain renew() overload above for why.
             return result.getMatchedCount() > 0;
         } catch (Exception e) {
             log.warn("Could not renew reconciliation lock for credential {} generation {} (treated as lost, not renewed): {}",

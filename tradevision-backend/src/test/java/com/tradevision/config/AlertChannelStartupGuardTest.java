@@ -21,16 +21,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.*;
 
 /**
- * P1-1 fix ("No startup check that an alert channel is configured before LIVE trading is
- * possible" -- full context in AlertChannelStartupGuard's own class javadoc). Same
- * ReflectionTestUtils pattern as DevSecretStartupGuardTest for the @Value field.
- *
- * Audit fix (P1-1 follow-up -- external review, second pass: "Require the alert channel to
- * cover the live user, and check it when a LIVE credential is connected"): rewritten against the
- * new per-user coverage check (findByMode + userHasAlertChannelCoverage), replacing the old
- * countByMode/existsByAlertWebhookUrlIsNotNull system-wide-existence checks the reviewer
- * correctly flagged as not actually verifying the LIVE user specifically is reachable. Also adds
- * coverage for requireAlertChannelCoverage, the new runtime half of this fix.
+ * Verifies the startup check that an alert channel is configured before LIVE trading is
+ * possible. Uses the same ReflectionTestUtils pattern as DevSecretStartupGuardTest for the
+ * @Value field. Exercises the per-user coverage check (findByMode +
+ * userHasAlertChannelCoverage), which requires the alert channel to specifically cover the
+ * user who holds the LIVE credential rather than merely existing somewhere in the system.
+ * Also covers requireAlertChannelCoverage, the runtime half of this check.
  */
 @ExtendWith(MockitoExtension.class)
 class AlertChannelStartupGuardTest {
@@ -90,9 +86,9 @@ class AlertChannelStartupGuardTest {
     }
 
     /**
-     * The exact reviewer scenario: a webhook exists SOMEWHERE in the system, but not for the
-     * user who actually holds the LIVE credential. The old check (existsByAlertWebhookUrlIsNotNull)
-     * would have let this one through; the per-user check must not.
+     * A webhook exists SOMEWHERE in the system, but not for the user who actually holds the
+     * LIVE credential. A system-wide existence check would let this through; the per-user
+     * check must not.
      */
     @Test
     @DisplayName("a DIFFERENT user (not the LIVE credential holder) has a webhook configured -- still REFUSES TO START for the actual live user")

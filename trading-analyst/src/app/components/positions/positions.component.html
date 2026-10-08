@@ -139,16 +139,11 @@
         </div>
         @if (p.status === 'OPEN') {
           <div class="pos-protection">
-            <!-- Review finding ("The UI needs explicit protection-state presentation" -- external
-            review, second pass): replaced the single collapsed badge with the review's own
-            explicitly requested breakdown -- Protected / Residual / Status as separate,
-            labeled fields, using the server's own real protectionStatus classification
-            directly rather than this component's own former client-side guess (which had no
-            real exchange minQty to judge a residual against, and could not tell a genuine
-            partial gap apart from harmless exchange-rounding dust). The whole point: an
-            operator glancing at "OCO: ACTIVE" alone could believe the WHOLE position is
-            covered when only part of it is -- this makes the actual protected/residual split
-            impossible to miss. -->
+            <!-- Shows Protected / Residual / Status as separate labeled fields instead of a single
+            collapsed badge, so a partially-protected position can't be mistaken for a fully
+            protected one at a glance. Status comes from the server's protectionStatus
+            classification, which can tell a genuine residual gap apart from harmless
+            exchange-rounding dust. -->
             <div class="prot-detail">
               <span class="pf-label">Protected</span>
               <span class="pf-value">{{ p.protectedQuantity ?? 0 }} / {{ p.quantity }}</span>

@@ -27,105 +27,83 @@ public class RiskProfileService {
     private final IncidentService incidentService;
     private final BrokerCredentialService credentialService;
     private final PositionRepository positionRepo;
-    // Review finding ("Kill switch can race with LIVE order submission" -- P0, full context at
-    // claimExecutionAuthorization's own javadoc): needed for the actual atomic claim.
+    // Backs the atomic findAndModify claims used to gate execution safely under concurrency.
     private final org.springframework.data.mongodb.core.MongoTemplate mongoTemplate;
-    // Review finding ("Resume does not prove existing positions are protected" -- P0, full
-    // context in resume's own updated javadoc): needed for the actual synchronous safety checks.
+    // Used by resume() to check for unresolved UNKNOWN/RECONCILIATION_REQUIRED orders before
+    // autonomous trading is allowed to restart.
     private final com.tradevision.repository.OrderRepository orderRepo;
     /**
-     * Review finding ("Narrow but real race: Strategy Plan disable / version change vs final
-     * execution" -- external review, eighteenth pass, P0, full context in
-     * claimExecutionAtomicWithPlan's own javadoc below): needed for the actual atomic
-     * transaction spanning both this class's own claim and StrategyPlanService's -- and for the
-     * graceful, non-transactional fallback when the deployment doesn't support transactions.
-     * Confirmed safe against a circular bean dependency before adding this: StrategyPlanService
-     * depends on RiskProfileRepository, never on this service itself.
+     * Lets claimExecutionAtomicWithPlan span a single MongoDB transaction across both this
+     * service's own execution claim and the strategy plan's claim, with a graceful
+     * non-transactional fallback when the deployment doesn't support transactions.
+     * StrategyPlanService depends only on RiskProfileRepository, never on this service, so this
+     * stays free of a circular bean dependency.
      */
     private final StrategyPlanService strategyPlanService;
     /**
-     * Review finding ("Secrets / encryption key rotation and credential revocation story
-     * incomplete" -- external review, nineteenth pass, P1, full context in
-     * emergencyRevokeAll's own javadoc): needed for the force-re-auth half -- bumping
+     * Used by emergencyRevokeAll to force re-authentication everywhere: bumping
      * User.tokenVersion invalidates every existing JWT for this user immediately, the same
-     * mechanism AuthService.logout() and its own refresh-token-reuse detection already use.
-     * Confirmed no circular dependency: UserRepository is a plain Spring Data repository with
-     * no service-layer dependencies of its own.
+     * mechanism AuthService.logout() and its refresh-token-reuse detection already use.
+     * UserRepository is a plain Spring Data repository with no service-layer dependencies, so
+     * this stays free of a circular bean dependency.
      */
     private final com.tradevision.repository.UserRepository userRepo;
     /**
-     * Audit item P1-5, full context in authorizeLiveAutoTrade's own updated javadoc: needed for
-     * the fresh step-up OTP check authorizeLiveAutoTrade now requires, reusing AuthService's
+     * Backs the fresh step-up OTP check authorizeLiveAutoTrade requires, reusing AuthService's
      * existing OTP infrastructure (rate limiting, hashing, expiry, single-use consumption)
-     * rather than a second copy of it. Confirmed no circular dependency: AuthService depends
-     * only on UserRepository, OtpRepository, JwtUtil, OtpUtil, EmailService,
-     * OtpRateLimitService, MongoTemplate and WebhookAlertService -- none of which depend on
-     * RiskProfileService.
+     * rather than a second copy of it. AuthService depends only on UserRepository,
+     * OtpRepository, JwtUtil, OtpUtil, EmailService, OtpRateLimitService, MongoTemplate and
+     * WebhookAlertService -- none of which depend on RiskProfileService -- so this stays free of
+     * a circular bean dependency.
      */
     private final AuthService authService;
     /**
-     * Review finding ("The execution authorization still has an unavoidable exchange-boundary
-     * race" -- external review, twenty-first pass, P0, full context in haltAll's own updated
-     * javadoc): needed for the actual "automatically reconcile in-flight claims immediately
-     * after a halt" fix the review itself suggests. Confirmed no circular dependency:
-     * PositionMonitorService never injects RiskProfileService.
+     * Lets haltAll trigger an immediate reconciliation pass for each halted credential right
+     * after the halt, rather than waiting for the next periodic cycle to discover anything that
+     * slipped through. PositionMonitorService never injects RiskProfileService, so this stays
+     * free of a circular bean dependency.
      */
     private final PositionMonitorService positionMonitorService;
     private final com.tradevision.repository.BrokerCredentialRepository credentialRepo;
     private final com.tradevision.repository.TradingIncidentRepository tradingIncidentRepo;
     /**
-     * Review finding ("Mongo standalone deployment still weakens the plan/profile execution
-     * atomicity guarantee" -- external review, twenty-fourth pass, P1, full context in
-     * IndexInitializer.checkMongoTransactionSupport's own javadoc): needed for the actual
-     * authorizeLiveAutoTrade refusal check. Confirmed no circular dependency: StartupState is a
-     * pure state holder with no dependencies of its own at all.
+     * Lets authorizeLiveAutoTrade refuse authorization outright when the MongoDB deployment
+     * doesn't support transactions, rather than silently relying on the weaker sequential
+     * fallback. StartupState is a pure state holder with no dependencies, so this stays free of
+     * a circular bean dependency.
      */
     private final com.tradevision.config.StartupState startupState;
-    // Audit item P0-1 fix, full context in LiveCanaryRecord's own class javadoc: the actual
-    // "has this credential ever proven itself with a real LIVE order" gate, checked below
-    // alongside every other LIVE-only check this method already has.
+    // The "has this credential ever proven itself with a real LIVE order" gate, checked
+    // alongside every other LIVE-only check authorizeLiveAutoTrade already applies.
     private final LiveCanaryService liveCanaryService;
 
-    /**
-     * Review finding ("Kill switch can race with LIVE order submission" -- P0): confirmed real
-     * by direct inspection of AutoTradeService.evaluateForProfileLocked() -- it loads a
-     * RiskProfile ONCE at the start of a long sequence (NO-TRADE check, pricing, sizing, risk
-     * checks, slot reservation, exposure reservation, OMS creation), then places a real exchange
-     * order using that SAME, now-potentially-stale, in-memory object. A user pressing the kill
-     * switch, revoking LIVE authorization, or a circuit breaker halting the profile mid-sequence
-     * updates the DATABASE, but the in-memory profile AutoTradeService is about to act on never
-     * sees that write -- the revocation was never a hard execution barrier.
-     *
-     * This is the actual barrier: a single atomic MongoDB conditional update, called
-     * IMMEDIATELY before the exchange order (not at the start of the sequence, not anywhere
-     * reservations or risk checks happen) -- WHERE credentialId=X AND autoTradeEnabled=true AND
-     * tradingHalted=false AND autoTradeHalted=false, AND (for LIVE specifically)
-     * liveAutoTradeAuthorized=true. The update's own success or failure is the atomic
-     * read-and-decide: if it modifies zero documents, at least one of those conditions was false
-     * at the exact moment of the update (not moments earlier when AutoTradeService's own
-     * in-memory profile was loaded), and the caller must not call the exchange. The $set target
-     * (lastExecutionClaimAt) is a real field write, not a no-op read dressed up as one -- what
-     * actually gives this its atomicity is that Mongo evaluates the WHERE filter and applies the
-     * $set as a single, indivisible operation on one document.
-     *
-     * Deliberately does NOT re-check every other risk parameter (position limits, exposure caps,
-     * etc.) -- those were already correctly evaluated earlier in the sequence against
-     * reservations that ARE atomic (PositionSlotReservationService/ExposureReservationService).
-     * This specifically closes the gap the review named: the kill-switch/safety-state flags
-     * were the ones being read once and trusted stale.
-     */
-    /**
-     * Review finding ("claimExecutionAuthorization() is still an authorization claim, not a
-     * lease" -- external review, second pass, full context in
-     * RiskProfile.lastExecutionClaimId's own updated field javadoc): a real claim identity now
-     * accompanies the atomic authorization check -- findAndModify (not updateFirst) so this
-     * method returns the exact document state, including the fresh claim id and the
-     * safetyStateVersion, from the SAME atomic operation that granted it. A caller can record
-     * this claim's own id on whatever it submits to the exchange, giving a genuine, traceable
-     * answer to "which claim authorized this order" if something needs auditing later.
-     */
+    /** The result of a successful execution claim: a traceable claim id a caller can record on
+     *  whatever it submits to the exchange, plus the safety-state generation it was granted under. */
     public record ExecutionClaim(String claimId, long generation) {}
 
+    /**
+     * Grants (or refuses) authorization to submit one order to the exchange, as a single atomic
+     * MongoDB conditional update evaluated immediately before the exchange call -- not earlier in
+     * the evaluation sequence, where a RiskProfile might otherwise be loaded once into memory and
+     * then acted on after it has gone stale. The query requires credentialId=X AND
+     * autoTradeEnabled=true AND tradingHalted=false AND autoTradeHalted=false, and for LIVE
+     * credentials also liveAutoTradeAuthorized=true; the accompanying $set
+     * (lastExecutionClaimAt/lastExecutionClaimId) is a real field write, so Mongo evaluates the
+     * filter and applies the update as one indivisible operation on a single document. If it
+     * modifies zero documents, at least one condition was false at that exact moment and the
+     * caller must not call the exchange -- a kill switch, a revoked LIVE authorization, or a
+     * circuit-breaker halt landing at any point before this call is guaranteed to be seen.
+     *
+     * Deliberately does not re-check position limits, exposure caps, or similar risk parameters:
+     * those are evaluated earlier against reservations that are already atomic in their own right
+     * (PositionSlotReservationService / ExposureReservationService). This claim's own job is
+     * narrower -- making sure the kill-switch/safety-state flags are read fresh, not from a
+     * stale in-memory profile.
+     *
+     * Uses findAndModify rather than updateFirst so the returned document carries the fresh claim
+     * id and safetyStateVersion from the exact same atomic operation that granted it, giving a
+     * genuine, traceable answer to "which claim authorized this order" for later auditing.
+     */
     public ExecutionClaim claimExecutionAuthorization(String credentialId, boolean isLive) {
         var criteria = org.springframework.data.mongodb.core.query.Criteria.where("credentialId").is(credentialId)
             .and("autoTradeEnabled").is(true)
@@ -143,34 +121,25 @@ public class RiskProfileService {
         return claimed == null ? null : new ExecutionClaim(claimId, claimed.getSafetyStateVersion());
     }
 
-    /**
-     * Review finding ("There is still a tiny gap between final authorization and
-     * markExecutionStarted()" -- external review, fourth pass, P0, full context in
-     * RiskProfile.executionInFlightCount's own field javadoc): this is now the single atomic
-     * operation that both re-validates the claim AND registers the in-flight execution -- the
-     * exact same condition set as isClaimStillValid(), applied as the QUERY of one findAndModify
-     * whose UPDATE increments executionInFlightCount, so there is no longer any gap between
-     * "confirm this claim is still valid" and "register this execution as in flight" for a
-     * concurrent kill switch to land in. Returns false (and increments nothing) if the
-     * conditions no longer hold -- the caller MUST treat false as "do not call the exchange",
-     * exactly like a failed isClaimStillValid() check. Deliberately NOT upserting: a credential
-     * with no matching RiskProfile at all must never have one silently created by this call.
-     *
-     * Review finding ("The claim itself has no expiry" -- external review, fourth pass, P1,
-     * confirmed real by direct inspection before any fix was attempted): a claim used to remain
-     * valid indefinitely as long as lastExecutionClaimId was never superseded by a newer one --
-     * meaning an evaluator paused for an arbitrarily long time (a long GC pause, a debugger
-     * breakpoint, a thread starved for minutes under load) could resume and still submit,
-     * because nothing about the claim itself carried a lifetime. Now also requires
-     * lastExecutionClaimAt to be within CLAIM_MAX_AGE of now, in the SAME atomic query -- a
-     * capability that ages out on its own, independent of whether anything else ever
-     * invalidates it. 15 seconds: generous enough that the claim -> risk checks -> order
-     * construction -> this call sequence (normally well under a second) never spuriously
-     * expires, short enough that "paused for minutes, then resumed" -- the review's own named
-     * scenario -- is genuinely closed.
-     */
+    /** How long a claim from claimExecutionAuthorization stays valid for markExecutionStarted to
+     *  accept. Without an expiry, a claim would remain usable indefinitely as long as nothing
+     *  superseded it, so an evaluator paused for an arbitrarily long time (a long GC pause, a
+     *  debugger breakpoint, a thread starved under load) could resume and still submit. 15
+     *  seconds is generous enough that the normal claim -> risk checks -> order construction ->
+     *  submit sequence (well under a second) never spuriously expires, while still closing off a
+     *  claim resumed after minutes of being paused. */
     private static final java.time.Duration CLAIM_MAX_AGE = java.time.Duration.ofSeconds(15);
 
+    /**
+     * Re-validates a claim and registers its execution as in flight in one atomic operation --
+     * the same condition set as the original claim, applied as the query of a single
+     * findAndModify whose update increments executionInFlightCount, so there is no gap between
+     * "confirm this claim is still valid" and "register this execution as in flight" for a
+     * concurrent kill switch to land in. Returns false (incrementing nothing) if the conditions
+     * no longer hold or the claim has aged past CLAIM_MAX_AGE; the caller must treat false as "do
+     * not call the exchange". Deliberately never upserts: a credential with no matching
+     * RiskProfile must never have one silently created by this call.
+     */
     public boolean markExecutionStarted(String credentialId, String claimId, boolean isLive) {
         var criteria = org.springframework.data.mongodb.core.query.Criteria.where("credentialId").is(credentialId)
             .and("lastExecutionClaimId").is(claimId)
@@ -190,33 +159,25 @@ public class RiskProfileService {
     }
 
     /**
-     * Review finding ("Narrow but real race: Strategy Plan disable / version change vs final
-     * execution" -- external review, eighteenth pass, P0, confirmed real: claimPlanExecution
-     * (StrategyPlan) and markExecutionStarted (RiskProfile) above are two SEPARATE, sequential
-     * MongoDB operations on two different collections -- a plan disable or version bump landing
-     * in the few-millisecond gap between them could theoretically still let an already-claimed
-     * signal reach the exchange): the actual fix -- a genuine MongoDB multi-document
-     * transaction spanning both claims, committing only if BOTH succeed, aborting (leaving
-     * neither claim in place) if either fails.
+     * Claims execution against both a strategy plan and its risk profile as one genuine MongoDB
+     * multi-document transaction, committing only if both claims succeed and aborting (leaving
+     * neither claim in place) if either fails. Without a shared transaction, the plan claim and
+     * the profile claim are two separate, sequential operations on different collections, and a
+     * plan disable or version bump landing in the gap between them could otherwise still let an
+     * already-claimed signal reach the exchange.
      *
-     * HONEST SCOPE, stated plainly rather than assumed: MongoDB multi-document transactions
-     * require the deployment to be a replica set (or sharded cluster) -- confirmed via
-     * documentation before writing this, not assumed. A standalone MongoDB instance (a common,
-     * valid deployment for smaller setups) rejects transactions outright with a specific,
-     * recognizable error. Rather than fail this method entirely on a standalone deployment (which
-     * would make auto-trading impossible there) or silently skip the plan check (which would
-     * silently reopen the exact race this method exists to close), this catches that SPECIFIC
-     * error and falls back to the previous, sequential two-claim approach -- functionally
-     * identical to what this codebase already had before this pass, narrowing but not fully
-     * closing the race on that deployment. This is not glossed over: the fallback branch below
-     * says so explicitly, every time it's taken, so a real deployment's own logs make clear
-     * whether the full guarantee is actually in effect.
+     * MongoDB multi-document transactions require the deployment to be a replica set (or sharded
+     * cluster); a standalone instance rejects transactions outright with a specific, recognizable
+     * error. Rather than fail this method entirely on a standalone deployment, or silently skip
+     * the plan check, this catches that specific error and falls back to the sequential
+     * two-claim approach, logging explicitly whenever that fallback is taken so a deployment's
+     * own logs make clear whether the full transactional guarantee is actually in effect there.
      */
     public boolean claimExecutionAtomicWithPlan(String credentialId, String claimId, boolean isLive,
                                                   String planId, Long expectedPlanVersion, String profileUserId) {
         if (planId == null || expectedPlanVersion == null) {
-            // No plan to coordinate with at all -- the existing single-document claim below is
-            // already fully atomic and sufficient on its own.
+            // No plan to coordinate with -- the single-document claim below is already fully
+            // atomic and sufficient on its own.
             return markExecutionStarted(credentialId, claimId, isLive);
         }
         com.mongodb.client.ClientSession session;
@@ -269,18 +230,17 @@ public class RiskProfileService {
             try {
                 if (session.hasActiveTransaction()) session.abortTransaction();
             } catch (Exception ignore) {
-                // Best-effort cleanup only -- the transaction attempt already failed, and a
-                // failure aborting an already-failed transaction changes nothing about the outcome.
+                // Best-effort cleanup only -- the transaction attempt already failed, so a
+                // failure aborting it changes nothing about the outcome.
             }
-            // MongoDB's own specific signal for "this deployment doesn't support transactions at
-            // all" (a standalone instance, not a replica set) -- code 20 ("IllegalOperation") is
-            // the documented code for this specific case. Anything else is a genuine, different
-            // MongoDB error that should propagate rather than be silently swallowed into a
-            // fallback that wouldn't actually fix it.
+            // Code 20 ("IllegalOperation") is MongoDB's documented signal that this deployment
+            // doesn't support transactions at all (a standalone instance, not a replica set).
+            // Anything else is a genuine, different MongoDB error that should propagate rather
+            // than be silently swallowed into a fallback that wouldn't actually fix it.
             if (e.getCode() == 20 || (e.getMessage() != null && e.getMessage().contains("Transaction numbers"))) {
                 log.warn("MongoDB transactions are not supported by this deployment (standalone, not a replica set/mongos) -- falling "
-                    + "back to the sequential, non-transactional two-claim approach for credential {}. This means the narrow race this "
-                    + "transactional path exists to close (a plan disable/version-bump landing in the exact gap between the two separate "
+                    + "back to the sequential, non-transactional two-claim approach for credential {}. The narrow race this "
+                    + "transactional path exists to close (a plan disable/version-bump landing in the gap between the two separate "
                     + "claims) remains theoretically possible on this deployment. Configure a MongoDB replica set to close it fully.",
                     credentialId);
                 return claimPlanThenProfileSequentially(credentialId, claimId, isLive, planId, expectedPlanVersion, profileUserId);
@@ -292,11 +252,10 @@ public class RiskProfileService {
     }
 
     /**
-     * The exact fallback behavior this codebase already had before this pass -- two separate,
-     * sequential atomic claims, each fully atomic within its own single document, but not
-     * atomic with each other. Extracted here specifically so claimExecutionAtomicWithPlan's own
-     * fallback branches above have one real implementation to call, not a second copy of this
-     * same logic.
+     * Claims plan execution and then profile execution as two separate, sequential atomic
+     * claims, each fully atomic within its own single document but not atomic with each other.
+     * Used as the fallback path on a MongoDB deployment that doesn't support multi-document
+     * transactions.
      */
     private boolean claimPlanThenProfileSequentially(String credentialId, String claimId, boolean isLive,
                                                        String planId, Long expectedPlanVersion, String profileUserId) {
@@ -311,15 +270,14 @@ public class RiskProfileService {
     }
 
     /**
-     * Review finding, same context: the other half -- called in a finally block by every caller
-     * of markExecutionStarted, unconditionally, so a submission that throws still releases its
-     * own count. Never allowed to go negative, enforced via the query condition itself
-     * (executionInFlightCount > 0), not a second update operator on the same field -- same
-     * reasoning as the prior (now-replaced) ExecutionInFlightCounter-based version. Matched by
-     * credentialId alone, deliberately NOT re-checking claimId/halted/etc: this must always
-     * release regardless of what happened to the claim or halt state in between, or a legitimate
-     * finally-block release could itself get silently skipped by a condition that no longer
-     * matches, permanently leaking a count.
+     * Releases the in-flight execution count incremented by markExecutionStarted. Called
+     * unconditionally in a finally block by every caller, so a submission that throws still
+     * releases its own count. The decrement is guarded against going negative via the query
+     * condition itself (executionInFlightCount > 0) rather than a second update operator on the
+     * same field. Matched by credentialId alone, deliberately not re-checking claimId/halted/
+     * etc: a release must always succeed regardless of what happened to the claim or halt state
+     * in between, or a legitimate finally-block release could be skipped by a condition that no
+     * longer matches, permanently leaking a count.
      */
     public void markExecutionFinished(String credentialId) {
         mongoTemplate.updateFirst(
@@ -330,11 +288,9 @@ public class RiskProfileService {
     }
 
     /**
-     * Audit fix (P1-5 follow-up -- external review, second pass: "Require a step-up OTP for
-     * risk-limit edits" -- full context in authorizeLiveAutoTrade's own javadoc for why this
-     * matters at all). Kept its own distinct purpose, same reasoning as STEPUP_OTP_PURPOSE's own
-     * javadoc: a stolen live-autotrade step-up code must never be replayable to edit risk limits
-     * instead, or vice versa.
+     * OTP purpose for step-up verification before editing a LIVE credential's risk limits.
+     * Kept distinct from STEPUP_OTP_PURPOSE so a stolen live-autotrade step-up code can never be
+     * replayed to edit risk limits instead, or vice versa.
      */
     public static final String RISK_PROFILE_STEPUP_PURPOSE = "RISK_PROFILE_STEPUP";
 
@@ -349,30 +305,26 @@ public class RiskProfileService {
     public RiskProfile upsert(String userId, RiskProfileRequest req) {
         // Ensures the credential exists, belongs to this user, and is active — throws otherwise.
         var credential = credentialService.ownedCredential(userId, req.getCredentialId());
-        // Audit fix (P1-5 follow-up -- external review, second pass: "Require a step-up OTP for
-        // risk-limit edits" -- confirmed real by direct inspection: editing the very limits
-        // authorizeLiveAutoTrade/RiskEngineService rely on to bound a LIVE account's real-money
-        // exposure was gated only by an ordinary session, same gap P1-5 originally closed for
-        // authorizeLiveAutoTrade itself -- widening a daily loss limit or a max-position cap is
-        // just as consequential as the one-time authorization that first enabled LIVE trading.
-        // Scoped to LIVE only (not TESTNET/PAPER), same scoping P0-6's hasCompleteLiveRiskLimits
-        // check already uses -- there is no real money at stake to step up for otherwise, and
-        // this profile is edited far more often during ordinary TESTNET/PAPER strategy
-        // development, where a fresh OTP on every save would be pure friction with no safety
-        // benefit. Checked first, before any other validation below, so a stale/replayed
-        // request never reaches a state-changing write.
+        // Editing the limits authorizeLiveAutoTrade/RiskEngineService rely on to bound a LIVE
+        // account's real-money exposure is just as consequential as the one-time authorization
+        // that first enabled LIVE trading, so it requires the same fresh step-up proof of
+        // identity rather than relying on an ordinary, possibly long-lived session. Scoped to
+        // LIVE only (not TESTNET/PAPER), matching hasCompleteLiveRiskLimits' own scoping -- there
+        // is no real money at stake to step up for otherwise, and this profile is edited far more
+        // often during ordinary TESTNET/PAPER strategy development, where a fresh OTP on every
+        // save would be pure friction with no safety benefit. Checked first, before any other
+        // validation below, so a stale/replayed request never reaches a state-changing write.
         if (credential.getMode() == com.tradevision.model.BrokerMode.LIVE) {
             authService.verifyStepUpOtp(userId, RISK_PROFILE_STEPUP_PURPOSE, req.getStepUpOtp());
         }
         try {
             return doUpsert(userId, req, credential.getBroker());
         } catch (org.springframework.dao.DuplicateKeyException e) {
-            // Review finding (P1 — "RiskProfile needs a unique credential index"): the unique
-            // index just added means a genuine collision (two concurrent requests both finding
-            // no existing profile, both trying to insert one) now surfaces as a real, catchable
-            // exception instead of silently succeeding twice. One retry: by the time we get
-            // here, the OTHER request's profile is now findable, so this becomes a normal
-            // update instead of a second insert.
+            // A unique index on (userId, credentialId) means a genuine collision -- two
+            // concurrent requests both finding no existing profile and both trying to insert one
+            // -- surfaces as this catchable exception instead of silently succeeding twice. One
+            // retry is enough: by the time we get here, the other request's profile is now
+            // findable, so this becomes a normal update instead of a second insert.
             return doUpsert(userId, req, credential.getBroker());
         }
     }
@@ -380,16 +332,13 @@ public class RiskProfileService {
     private static final String REQUIRED_QUOTE_ASSET = "USDT";
 
     private RiskProfile doUpsert(String userId, RiskProfileRequest req, com.tradevision.model.BrokerType broker) {
-        // Review finding ("Risk exposure assumes every quote asset is the same currency" -- P1):
-        // confirmed real -- PortfolioRiskService's own exposure/equity aggregation sums market
-        // value across every open position's own symbol without ever converting to a common
-        // currency (100 USDT + 100 USDC + 0.1 BTC summed as if they were the same number). The
-        // review's own two options were "normalize every exposure to a configured base currency
-        // using fresh conversion prices" or "restrict the production bot to a single quote asset
-        // such as USDT and enforce that server-side," with an explicit recommendation: "for v1,
-        // I strongly recommend the latter." This is that enforcement -- rejected here, at the
-        // one place a user's enabled-symbol list is actually written, rather than trusted
-        // silently and discovered as an aggregation bug much later during a real drawdown check.
+        // PortfolioRiskService's own exposure/equity aggregation sums market value across every
+        // open position's symbol without converting to a common currency (100 USDT + 100 USDC +
+        // 0.1 BTC would otherwise be summed as if they were the same number). Rather than
+        // normalize every exposure to a configured base currency using fresh conversion prices,
+        // this enforces a single quote asset (USDT) server-side, rejected here at the one place
+        // a user's enabled-symbol list is actually written -- simpler and safer than discovering
+        // a currency-mixing aggregation bug later during a real drawdown check.
         if (req.getEnabledSymbols() != null) {
             List<String> invalid = req.getEnabledSymbols().stream()
                 .filter(s -> s != null && !s.toUpperCase().endsWith(REQUIRED_QUOTE_ASSET))
@@ -401,21 +350,15 @@ public class RiskProfileService {
                     + "they were the same number.");
             }
         }
-        // P3-5 fix ("ExposureReservationService group/symbol field paths -- user-supplied group
-        // names used as Mongo field paths ('.'/'$') -- validate names" -- external review,
-        // confirmed real by direct inspection: ExposureReservationService builds a live Mongo
-        // update/query field path as the literal string "reservedGroupExposure." + groupName for
-        // every group this profile configures (see that class's own reserve()/release() methods),
-        // and correlationGroups' keys are 100% free-text user input from this exact request with
-        // no prior validation anywhere. A group named e.g. "Majors.sub" would target the NESTED
-        // path reservedGroupExposure.Majors.sub instead of a flat field, silently corrupting or
-        // conflicting with a genuinely different group named "Majors" (a BigDecimal leaf value
-        // there vs. this write's own subdocument), and MongoDB rejects a field name starting with
-        // "$" as invalid/dangerous outright -- either way, a name the user was never supposed to
-        // be able to pick this update path with breaks or corrupts exposure tracking used for
-        // real-money risk limits. Rejected here, at the one place a user's group names are
-        // actually written (never persisted with a bad name in the first place), matching this
-        // exact method's own established pattern for enabledSymbols right above.
+        // ExposureReservationService builds a live Mongo update/query field path as the literal
+        // string "reservedGroupExposure." + groupName for every group this profile configures,
+        // and correlationGroups' keys are free-text user input with no prior validation. A group
+        // named e.g. "Majors.sub" would target the nested path reservedGroupExposure.Majors.sub
+        // instead of a flat field, silently corrupting or conflicting with a genuinely different
+        // group named "Majors", and MongoDB rejects a field name starting with "$" outright --
+        // either way a bad name breaks or corrupts exposure tracking used for real-money risk
+        // limits. Rejected here, at the one place a user's group names are actually written,
+        // matching the enabledSymbols validation above.
         if (req.getCorrelationGroups() != null) {
             List<String> invalidGroupNames = req.getCorrelationGroups().keySet().stream()
                 .filter(name -> name == null || name.isBlank() || name.contains(".") || name.contains("$"))
@@ -439,38 +382,29 @@ public class RiskProfileService {
         profile.setMaxTotalExposureQuote(req.getMaxTotalExposureQuote());
         profile.setMaxSymbolExposureQuote(req.getMaxSymbolExposureQuote());
         profile.setMaxPriceDeviationPercent(req.getMaxPriceDeviationPercent());
-        // P0-6 fix ("LIVE risk-limit enforcement" -- full context in RiskProfileRequest's own
-        // updated javadoc): same "field existed on the model, was never actually settable" gap
-        // as correlationGroups/correlationGroupCaps below -- these four were already read by
-        // RiskEngineService's own checks but never written here, so a user could never actually
-        // configure them regardless of what this method's own request contained.
+        // These four are already read by RiskEngineService's own checks, so they must actually
+        // be settable here -- otherwise a user could never configure them regardless of what
+        // this request contains.
         profile.setMaxDrawdownPercent(req.getMaxDrawdownPercent());
         profile.setMaxOrdersPerHour(req.getMaxOrdersPerHour());
         profile.setMaxConsecutiveAutoTradeLosses(req.getMaxConsecutiveAutoTradeLosses());
         profile.setCircuitBreakerThreshold(req.getCircuitBreakerThreshold());
-        // Review finding (P1 #5 — full context in RiskProfileRequest's own javadoc): the actual
-        // fix — these were never persisted here regardless of what the request contained.
         profile.setCorrelationGroups(req.getCorrelationGroups() != null ? req.getCorrelationGroups() : new java.util.HashMap<>());
         profile.setCorrelationGroupCaps(req.getCorrelationGroupCaps() != null ? req.getCorrelationGroupCaps() : new java.util.HashMap<>());
         profile.setUpdatedAt(LocalDateTime.now());
         // Any change to risk parameters revokes live auto-trade authorization — re-confirm explicitly.
         profile.setLiveAutoTradeAuthorized(false);
 
-        // Review finding ("Risk-profile updates/resume can race with safety state" -- P0):
-        // confirmed real by direct inspection -- this method only ever SETS configuration
-        // fields above (autoTradeEnabled, enabledSymbols, minConfidence, etc.), never touching
-        // safety-state fields like tradingHalted/autoTradeHalted/dailyRealizedLossQuote/
-        // consecutiveOrderFailures/peakEquityQuote -- yet the old code called
-        // riskProfileRepo.save(profile), a FULL-DOCUMENT save that would silently overwrite
-        // whatever value those safety fields had at the moment `profile` was loaded a few lines
-        // above. A concurrent halt()/drawdown/circuit-breaker write landing in that window would
-        // be erased the instant this save runs. For an EXISTING profile (has a real database id
-        // already), a targeted $set touching ONLY the configuration fields this method is
-        // actually responsible for replaces the full save -- a concurrent safety-state write is
-        // now physically impossible to clobber, since this update never even names those
-        // fields. For a genuinely NEW profile (no id yet, this is the very first save), a full
-        // save is correct and safe as-is -- there's no existing document for anything else to
-        // be racing against.
+        // This method only ever sets configuration fields (autoTradeEnabled, enabledSymbols,
+        // minConfidence, etc.), never safety-state fields like tradingHalted/autoTradeHalted/
+        // dailyRealizedLossQuote/consecutiveOrderFailures/peakEquityQuote. A full-document save
+        // would silently overwrite whatever value those safety fields held at the moment
+        // `profile` was loaded above, erasing a concurrent halt()/drawdown/circuit-breaker write
+        // that landed in that window. For an existing profile (has a database id already), a
+        // targeted $set touching only the configuration fields this method owns avoids that --
+        // a concurrent safety-state write can no longer be clobbered, since this update never
+        // names those fields at all. For a genuinely new profile (no id yet), a full save is
+        // correct and safe as-is, since there's no existing document to race against.
         if (profile.getId() == null) {
             profile = riskProfileRepo.save(profile);
         } else {
@@ -485,10 +419,9 @@ public class RiskProfileService {
                 .set("maxTotalExposureQuote", profile.getMaxTotalExposureQuote())
                 .set("maxSymbolExposureQuote", profile.getMaxSymbolExposureQuote())
                 .set("maxPriceDeviationPercent", profile.getMaxPriceDeviationPercent())
-                // P0-6 fix: same reasoning as this method's own field-set block above -- these
-                // four must be part of the targeted $set too, or an existing profile's update
-                // would keep silently dropping them even after the fix above started setting
-                // them on the in-memory `profile` object.
+                // These four must be part of the targeted $set too, or an existing profile's
+                // update would keep silently dropping them even though they're set on the
+                // in-memory `profile` object above.
                 .set("maxDrawdownPercent", profile.getMaxDrawdownPercent())
                 .set("maxOrdersPerHour", profile.getMaxOrdersPerHour())
                 .set("maxConsecutiveAutoTradeLosses", profile.getMaxConsecutiveAutoTradeLosses())
@@ -496,14 +429,14 @@ public class RiskProfileService {
                 .set("correlationGroups", profile.getCorrelationGroups())
                 .set("correlationGroupCaps", profile.getCorrelationGroupCaps())
                 .set("updatedAt", profile.getUpdatedAt())
-                .set("liveAutoTradeAuthorized", false); // intentional, fresh write -- not a stale-value overwrite, see this method's own comment above
+                .set("liveAutoTradeAuthorized", false); // intentional, fresh write -- not a stale-value overwrite, per the targeted-$set reasoning above
             mongoTemplate.updateFirst(
                 new org.springframework.data.mongodb.core.query.Query(org.springframework.data.mongodb.core.query.Criteria.where("id").is(profile.getId())),
                 update, RiskProfile.class);
             // Re-read after the targeted update so the returned object (and the audit line
             // below) reflects the real, current document -- not the in-memory object, which
-            // still doesn't know about any concurrent safety-state field this update
-            // deliberately left untouched.
+            // doesn't know about any concurrent safety-state field this update deliberately
+            // left untouched.
             profile = riskProfileRepo.findById(profile.getId()).orElse(profile);
         }
         credentialService.audit(userId, req.getCredentialId(), broker, "RISK_PROFILE_UPDATED",
@@ -522,19 +455,16 @@ public class RiskProfileService {
     public RiskProfile halt(String userId, String credentialId, String reason) {
         RiskProfile profile = get(userId, credentialId);
         String haltReason = reason != null && !reason.isBlank() ? reason : "Manually halted by user.";
-        // Review finding ("Risk-profile updates/resume can race with safety state" -- P0, full
-        // context in doUpsert's own comment above): the kill switch itself, so this is the
-        // single most safety-critical instance of the same bug -- a full riskProfileRepo.save()
-        // here would silently overwrite ANY concurrent write to every other field on this
-        // document (a config update mid-flight via doUpsert, a drawdown check writing
-        // dailyRealizedLossQuote, another circuit breaker) with whatever stale values this
-        // method's own `profile` happened to hold at load time. Targeted $set on exactly the
-        // two fields this method actually changes -- tradingHalted can never come back false
-        // from a race with something that never intended to touch it.
-        // Review finding ("resume() can still race with a new halt" -- external review, full
-        // context in RiskProfile.safetyStateVersion's own field javadoc): every tradingHalted
-        // transition -- including this one, the kill switch itself -- must bump the version, so
-        // resume()'s own later race-detection has a real, incrementing signal to compare against.
+        // The kill switch is the single most safety-critical place for the targeted-$set
+        // pattern used throughout this class: a full riskProfileRepo.save() here would silently
+        // overwrite any concurrent write to every other field on this document (a config update
+        // mid-flight via doUpsert, a drawdown check writing dailyRealizedLossQuote, another
+        // circuit breaker) with whatever stale values this method's own `profile` happened to
+        // hold at load time. A targeted $set on exactly the two fields this method changes means
+        // tradingHalted can never come back false from a race with something that never intended
+        // to touch it.
+        // Every tradingHalted transition -- including this one -- bumps safetyStateVersion, so
+        // resume()'s own race detection has a real, incrementing signal to compare against.
         mongoTemplate.updateFirst(
             new org.springframework.data.mongodb.core.query.Query(org.springframework.data.mongodb.core.query.Criteria.where("id").is(profile.getId())),
             new org.springframework.data.mongodb.core.query.Update()
@@ -544,15 +474,11 @@ public class RiskProfileService {
                 .inc("safetyStateVersion", 1),
             RiskProfile.class);
         profile = riskProfileRepo.findById(profile.getId()).orElse(profile);
-        // Review finding ("The claim → Binance network call still has an unavoidable TOCTOU
-        // window" -- external review, third pass, P0, full context in
-        // RiskProfile.executionInFlightCount's own field javadoc): the honest, audited half of
-        // this fix. tradingHalted is already true by this point, so markExecutionStarted()
-        // blocks every NEW execution from here on -- but this check reports whether a
-        // submission was ALREADY past that gate and genuinely in flight to the exchange the
-        // moment this kill switch engaged, rather than leaving that fact silently unknown. Now
-        // reads directly off the SAME re-read `profile` object a few lines above -- no separate
-        // collection lookup needed at all, since this count lives on this document itself.
+        // tradingHalted is already true by this point, so markExecutionStarted() blocks every
+        // new execution from here on -- but this check surfaces whether a submission was
+        // already past that gate and genuinely in flight to the exchange the moment this kill
+        // switch engaged, rather than leaving that fact unknown. Reads directly off the re-read
+        // `profile` object above, since this count lives on the document itself.
         long inFlight = profile.getExecutionInFlightCount();
         if (inFlight > 0) {
             credentialService.audit(userId, credentialId, null, "KILL_SWITCH_ENGAGED_WITH_EXECUTION_IN_FLIGHT",
@@ -565,44 +491,35 @@ public class RiskProfileService {
     }
 
     /**
-     * Review finding ("Resume does not prove existing positions are protected" -- P0): confirmed
-     * real -- the earlier version of this method only checked avgEntryPriceUnverified (kept
-     * below, unchanged). The review's own named gap: a position can sit OPEN with a stale/
-     * cancelled OCO id, or a genuinely unresolved OMS order, or an incomplete fill-ledger
-     * record, or an active critical incident against this credential -- none of which
-     * avgEntryPriceUnverified alone catches -- and resume would clear the halt anyway, letting
-     * new autonomous trades size and risk-check against a credential whose existing state isn't
-     * actually known-safe. Extended with three more synchronous checks, each using data this
-     * codebase already tracks and already trusts elsewhere (Order.status, Position.
-     * ledgerRecordingIncomplete, TradingIncident) -- not new inference, just finally consulted
-     * here too:
-     *   - no unresolved UNKNOWN/RECONCILIATION_REQUIRED order for this credential (the OMS's own
-     *     first-class "we genuinely don't know what happened" state -- see OrderStatus's own
-     *     LEGAL_TRANSITIONS map)
-     *   - no OPEN position with ledgerRecordingIncomplete=true (this codebase's own established
-     *     signal for "a fill genuinely happened but wasn't fully recorded" -- see Position's own
-     *     field javadoc)
+     * Clears a kill switch, but only once every existing position and order for this credential
+     * is confirmed to be in a known-safe state -- a position can sit OPEN with a stale/cancelled
+     * OCO id, a genuinely unresolved OMS order, an incomplete fill-ledger record, or an active
+     * critical incident against the credential, none of which a bare entry-price check alone
+     * would catch, and clearing the halt regardless would let new autonomous trades size and
+     * risk-check against state that isn't actually known-safe. Checks performed, each using data
+     * this codebase already tracks and trusts elsewhere (Order.status, Position.
+     * ledgerRecordingIncomplete, TradingIncident):
+     *   - every OPEN position's entry price is verified (avgEntryPriceUnverified)
+     *   - no OPEN position has an incomplete fill-ledger record (ledgerRecordingIncomplete)
+     *   - no unresolved UNKNOWN/RECONCILIATION_REQUIRED order for this credential (the OMS's
+     *     first-class "we genuinely don't know what happened" state)
      *   - no unresolved CRITICAL incident against this credential
+     *   - for every OPEN position, a live broker call confirms the account's actual current
+     *     balance for that position's base asset (via SymbolRules, not guessed from the symbol
+     *     string) still covers what this application believes it holds
      *
-     * UPDATE ("Resume does not prove existing positions are protected" -- P0, "actual exchange
-     * position/balance" item, now closed): the live re-verification this javadoc used to defer
-     * is implemented below -- for every OPEN position, a real broker call confirms the
-     * account's actual current balance for that position's own base asset (via SymbolRules,
-     * not guessed from the symbol string) still covers what this application believes it holds.
-     * A failure to even PERFORM this check (network error, adapter exception) is itself treated
-     * as a failed check and blocks resume -- same principle as PositionMonitorService's own
-     * checkDrawdown design (inability to verify equity is a risk event, not a free pass), not
-     * silently skipped the way a less careful version of this fix might have.
+     * A failure to even perform that last live check (network error, adapter exception) is
+     * itself treated as a failed check and blocks resume, rather than silently skipped -- the
+     * same principle as PositionMonitorService's own checkDrawdown design, where inability to
+     * verify equity is treated as a risk event, not a free pass.
      */
     public RiskProfile resume(String userId, String credentialId) {
         RiskProfile profile = get(userId, credentialId);
-        // Review finding ("resume() can still race with a new halt" -- external review, full
-        // context in RiskProfile.safetyStateVersion's own field javadoc): captured here, before
-        // any of this method's own safety checks run, specifically so the final write below can
-        // require this exact version to still be current -- a concurrent halt landing anywhere
-        // during this method's own execution (drawdown, circuit breaker, another halt() call)
-        // bumps the version too, making this captured value stale and the final write correctly
-        // lose the race instead of blindly clearing a brand-new halt.
+        // Captured before any of this method's own safety checks run, so the final write below
+        // can require this exact version to still be current -- a concurrent halt landing
+        // anywhere during this method's execution (drawdown, circuit breaker, another halt()
+        // call) bumps the version too, making this captured value stale and the final write
+        // correctly lose the race instead of blindly clearing a brand-new halt.
         long capturedVersion = profile.getSafetyStateVersion();
 
         List<Position> openPositions = positionRepo.findByUserIdAndCredentialIdAndStatus(userId, credentialId, "OPEN");
@@ -639,18 +556,15 @@ public class RiskProfileService {
                 + " unresolved CRITICAL incident(s) exist for this credential and need manual review before autonomous trading can restart.");
         }
 
-        // Review finding ("Resume does not prove existing positions are protected" -- P0,
-        // continued -- "actual exchange position/balance" re-verification): the real live check
-        // this class's own earlier honest-scope note said was deliberately not attempted in the
-        // first pass, closed now. For every OPEN position, verify the account's REAL, current
-        // balance for that position's own base asset is genuinely still there -- not trusting
-        // this application's own stored quantity, which could be stale if a position was closed
-        // or reduced through some path this backend never observed (manual exchange-side action,
-        // a missed reconciliation, etc.). A real broker call, so it's scoped to only run when
-        // there ARE open positions to check (empty accounts pay nothing extra), and a failure to
-        // even perform this check is treated as a failed check, not silently skipped -- same
-        // principle as this codebase's own drawdown-check design (PositionMonitorService's own
-        // checkDrawdown: inability to verify is a risk event, not a free pass).
+        // For every OPEN position, verify the account's real, current balance for that
+        // position's base asset is genuinely still there -- this application's own stored
+        // quantity could be stale if a position was closed or reduced through a path this
+        // backend never observed (manual exchange-side action, a missed reconciliation, etc.).
+        // This is a real broker call, so it only runs when there are open positions to check
+        // (empty accounts pay nothing extra), and a failure to even perform the check is treated
+        // as a failed check rather than silently skipped -- the same principle as
+        // PositionMonitorService's own checkDrawdown design, where inability to verify equity is
+        // a risk event, not a free pass.
         if (!openPositions.isEmpty()) {
             var credential = credentialService.ownedCredential(userId, credentialId);
             var adapter = credentialService.adapterForCredential(credential);
@@ -689,50 +603,29 @@ public class RiskProfileService {
         profile.setTradingHalted(false);
         profile.setHaltReason(null);
         profile.setUpdatedAt(LocalDateTime.now());
-        // Review finding ("resume() can still race with a new halt" -- external review, full
-        // context in RiskProfile.safetyStateVersion's own field javadoc): the actual race fix --
-        // this write now requires safetyStateVersion to still equal what was captured before
-        // this method's own safety checks ran. If it doesn't match, something (a drawdown check,
-        // a circuit breaker, another halt) genuinely changed the safety state during this
-        // method's own execution, and this resume must not proceed to silently clear it.
+        // This write requires safetyStateVersion to still equal what was captured before this
+        // method's safety checks ran. If it doesn't match, something (a drawdown check, a
+        // circuit breaker, another halt) changed the safety state during this method's own
+        // execution, and this resume must not proceed to silently clear it.
         var raceResult = mongoTemplate.updateFirst(
             new org.springframework.data.mongodb.core.query.Query(org.springframework.data.mongodb.core.query.Criteria.where("id").is(profile.getId())
                 .and("safetyStateVersion").is(capturedVersion)),
             new org.springframework.data.mongodb.core.query.Update()
                 .set("tradingHalted", false)
                 .set("haltReason", (Object) null)
-                // Review finding ("autoTradeHalted is still never reset" -- external review,
-                // third pass, confirmed real by direct inspection before any fix was attempted):
-                // RiskEngineService's own circuit breaker sets this true on consecutive
-                // losses/failures, and NOTHING anywhere in this codebase ever set it back to
-                // false -- resume() only ever cleared tradingHalted, leaving a circuit-breaker
-                // halt permanent in practice, with no obvious path to recover short of a manual
-                // database edit. Cleared here rather than building a second, separate
-                // reset-endpoint that would need to duplicate every one of this method's own
-                // existing safety gates (unverified-entry-price positions, incomplete ledger
-                // records, unresolved UNKNOWN/RECONCILIATION_REQUIRED orders, unresolved
-                // CRITICAL incidents, and the live exchange-balance re-verification below) --
-                // resume() is already this codebase's own most rigorous, explicitly
-                // user-initiated safety checkpoint, and a circuit-breaker halt deserves exactly
-                // that same scrutiny before being cleared, not a lighter-weight path.
+                // RiskEngineService's own circuit breaker sets autoTradeHalted true on
+                // consecutive losses/failures; resume() is this codebase's most rigorous,
+                // explicitly user-initiated safety checkpoint, so a circuit-breaker halt
+                // deserves exactly the same scrutiny before being cleared as a manual halt does,
+                // rather than needing a second, lighter-weight reset path that would have to
+                // duplicate every one of this method's own safety gates.
                 .set("autoTradeHalted", false)
                 .set("autoTradeHaltReason", (Object) null)
-                // P3-9 fix ("RiskProfileService.resume -- doesn't reset consecutiveOrderFailures;
-                // next single failure re-trips breaker" -- external review, confirmed real by
-                // direct inspection: AutoTradeService's own circuit breaker (see its own comment
-                // right where it sets tradingHalted=true) trips once consecutiveOrderFailures
-                // reaches circuitBreakerThreshold, and NOTHING before this fix ever reset that
-                // counter back down -- resume() cleared tradingHalted/haltReason but left the
-                // counter sitting at or above the threshold, so the very next order failure
-                // (inc("consecutiveOrderFailures", 1), evaluated against the same threshold)
-                // immediately re-tripped the breaker again, making a circuit-breaker halt
-                // effectively permanent past the very first resume attempt -- exactly the
-                // opposite of what a user-initiated, deliberately-scrutinized resume is supposed
-                // to mean. Reset here, alongside the other safety-state fields this exact
-                // "already this codebase's own most rigorous, explicitly user-initiated safety
-                // checkpoint" method already clears (see this method's own comment on
-                // autoTradeHalted above for why resume(), not a lighter-weight path, is the
-                // right place for this).
+                // AutoTradeService's own circuit breaker trips once consecutiveOrderFailures
+                // reaches circuitBreakerThreshold. Resetting the counter here (alongside the
+                // other safety-state fields this method clears) matters: without it, the very
+                // next order failure after a resume would immediately re-trip the breaker,
+                // since the counter would still sit at or above the threshold.
                 .set("consecutiveOrderFailures", 0)
                 .set("updatedAt", profile.getUpdatedAt())
                 .inc("safetyStateVersion", 1),
@@ -748,17 +641,13 @@ public class RiskProfileService {
         return profile;
     }
 
-    /** Global kill switch: halts auto-trading across every credential this user has configured. */
     /**
-     * Review finding ("Global kill switch still uses full-document save()" -- external review,
-     * confirmed real by direct inspection before any fix was attempted): this loop used to do a
-     * plain, full-object riskProfileRepo.save() per profile -- exactly the same class of bug
-     * this session's own halt()/resume() already fixed for the single-credential kill switch,
-     * just never applied here too. A stale in-memory profile (e.g. one whose
+     * Global kill switch: halts auto-trading across every credential this user has configured.
+     * Uses the same targeted atomic $set + safetyStateVersion increment as halt(), per profile,
+     * rather than a full-document save -- a stale in-memory profile (e.g. one whose
      * dailyRealizedLossQuote or consecutiveOrderFailures was updated by a concurrent trade
-     * evaluation between this loop's own findByUserIdAndAutoTradeEnabledTrue query and this
-     * save) could silently overwrite that concurrent write. Converted to the same targeted
-     * atomic $set + safetyStateVersion increment already proven for halt().
+     * evaluation between this loop's query and the save) must never be able to silently
+     * overwrite that concurrent write.
      */
     public void haltAll(String userId, String reason) {
         for (RiskProfile profile : riskProfileRepo.findByUserIdAndAutoTradeEnabledTrue(userId)) {
@@ -772,17 +661,14 @@ public class RiskProfileService {
                     .inc("safetyStateVersion", 1),
                 RiskProfile.class);
             credentialService.audit(userId, profile.getCredentialId(), null, "KILL_SWITCH_ENGAGED", haltReason);
-            // Review finding ("The execution authorization still has an unavoidable exchange-
-            // boundary race" -- external review, twenty-first pass, P0, confirmed real: this
-            // application's own kill switch is a database flag, not an exchange-side
-            // cancellation -- an execution that already claimed authorization and started its
-            // real network call to the exchange before this halt was recorded can still reach
-            // it. The database flag itself cannot physically stop an in-flight network request
-            // (the review's own explicit framing); what this CAN do is close the discovery gap
-            // immediately, rather than waiting for the next periodic reconciliation cycle
-            // (potentially up to a minute later): trigger a real reconciliation pass for this
-            // exact credential right now, so any order that did slip through this halt is
-            // discovered and its real state recorded as soon as this method returns, not later.
+            // The kill switch is a database flag, not an exchange-side cancellation -- an
+            // execution that already claimed authorization and started its real network call to
+            // the exchange before this halt was recorded can still reach it, and the flag cannot
+            // physically stop an in-flight network request. What this can do is close the
+            // discovery gap immediately rather than waiting for the next periodic
+            // reconciliation cycle (potentially up to a minute later): trigger a real
+            // reconciliation pass for this credential right now, so anything that slipped
+            // through this halt is discovered and recorded as soon as this method returns.
             // Non-fatal, additive -- a failure here must never prevent the halt itself (already
             // durably recorded above) from taking effect.
             try {
@@ -796,50 +682,35 @@ public class RiskProfileService {
     }
 
     /**
-     * Review finding ("Secrets / encryption key rotation and credential revocation story
-     * incomplete" -- external review, nineteenth pass, P1, confirmed real by direct inspection:
-     * this application had a per-credential delete() and a per-user haltAll(), but no single,
-     * immediate response to a suspected account compromise combining every real action one
-     * needs -- "immediate 'disable all trading + force re-auth' path", the review's own exact
-     * ask): the actual fix. Three real, independent actions, each already using this codebase's
-     * own established, working mechanism -- nothing invented here:
-     *  1. haltAll() (above) -- every RiskProfile's own autonomous trading stops immediately.
+     * Single, immediate response to a suspected account compromise, combining three independent
+     * actions, each using this codebase's own established mechanism:
+     *  1. haltAll() -- every RiskProfile's autonomous trading stops immediately.
      *  2. BrokerCredentialService.deactivateAll() -- every broker credential is deactivated,
      *     closing the surface a compromised session/device could otherwise still place manual
-     *     orders through (haltAll alone only stops AUTONOMOUS trading, not manual placement).
-     *  3. User.tokenVersion bumped -- the exact mechanism AuthService.logout() and its own
-     *     refresh-token-reuse detection already use to invalidate every existing JWT for this
-     *     user immediately, forcing genuine re-authentication on every device/session, not just
-     *     this one. The refresh token itself is also cleared, so a stolen refresh token can't be
-     *     used to silently mint a new access token either.
+     *     orders through (haltAll alone only stops autonomous trading, not manual placement).
+     *  3. User.tokenVersion bumped -- the same mechanism AuthService.logout() and its
+     *     refresh-token-reuse detection use to invalidate every existing JWT for this user
+     *     immediately, forcing re-authentication on every device/session. The refresh token is
+     *     also cleared, so a stolen refresh token can't be used to silently mint a new access
+     *     token either.
      *
-     * HONEST SCOPE, stated plainly: this responds to a SUSPECTED COMPROMISE by cutting off
-     * everything this application itself controls immediately. It does NOT rotate or replace
-     * this application's own AES encryption key protecting credentials already at rest (a key
-     * rotation across every existing encrypted credential in the database is separate,
-     * standalone infrastructure work -- re-encrypting historical records under a new key,
-     * deciding how the new key itself is distributed/stored, and a real operational runbook for
-     * when to actually rotate it), and it does NOT revoke the underlying API key on the broker's
-     * OWN side (Binance itself) -- that step is unavoidably manual, since Binance has no
-     * programmatic "revoke this specific key" endpoint this application could call on the user's
-     * behalf. Deactivating the credential here stops THIS application from using it; the user
-     * must still separately revoke the key on Binance's own site if they believe it was
-     * genuinely exposed.
-     */
-    /**
-     * Review finding ("Emergency credential revocation can intentionally disable the very
-     * monitoring needed by existing positions" -- external review, twenty-fourth pass, P1,
-     * confirmed real by direct inspection before this fix: deactivateAll() sets
-     * credential.active=false, and PositionMonitorService's own doReconcile eligibility check
-     * (`if (!credential.isActive()) continue;`) means monitoring genuinely stops for that
-     * credential -- including any position still open on it): the actual fix, scoped honestly --
-     * this does NOT change what emergencyRevokeAll does (a genuine suspected-compromise scenario
-     * correctly means "stop touching this credential at all," which this application's own
-     * kill switch (haltAll alone, without deactivation) already serves as the separate, less
-     * destructive "stop new trades but keep monitoring existing positions" action for). What
-     * this fix adds is honesty about the consequence: the exact count of open positions this
-     * action is about to stop monitoring, computed BEFORE deactivation, returned to the caller
-     * so the response can state it concretely rather than leave it implicit.
+     * Scope: this cuts off everything the application itself controls immediately. It does not
+     * rotate the application's own AES encryption key protecting credentials already at rest
+     * (that is separate infrastructure work -- re-encrypting historical records under a new
+     * key, deciding how the new key is distributed/stored, and an operational runbook for when
+     * to rotate it), and it does not revoke the underlying API key on the broker's own side --
+     * that step is unavoidably manual, since the broker has no programmatic "revoke this
+     * specific key" endpoint. Deactivating the credential here stops this application from using
+     * it; the user must still separately revoke the key on the broker's own site if they believe
+     * it was genuinely exposed.
+     *
+     * Deactivating every credential also stops PositionMonitorService from monitoring any
+     * position still open on them (its reconciliation loop skips inactive credentials), which is
+     * the correct trade-off for a genuine suspected-compromise scenario -- "stop touching this
+     * credential at all" -- as distinct from haltAll() alone, which stops new trades while still
+     * keeping existing positions monitored. The exact count of open positions this action is
+     * about to stop monitoring is computed before deactivation and returned to the caller so the
+     * consequence is stated concretely rather than left implicit.
      */
     public long emergencyRevokeAll(String userId, String reason) {
         String effectiveReason = reason != null && !reason.isBlank() ? reason : "Emergency account revocation requested by user.";
@@ -857,10 +728,10 @@ public class RiskProfileService {
     }
 
     /**
-     * P0-6 fix: the actual gate authorizeLiveAutoTrade checks -- every one of these limits must
-     * be a real, positive value (not the model's own 0/null "disabled" default) before this
-     * codebase will authorize autonomous LIVE trading. See authorizeLiveAutoTrade's own updated
-     * javadoc for why this is checked only at LIVE authorization time, not for every trade.
+     * The gate authorizeLiveAutoTrade checks: every one of these limits must be a real, positive
+     * value (not the model's 0/null "disabled" default) before autonomous LIVE trading can be
+     * authorized. Checked only at LIVE authorization time, not on every trade -- see
+     * authorizeLiveAutoTrade for why that scoping is correct.
      */
     private boolean hasCompleteLiveRiskLimits(RiskProfile profile) {
         return profile.getDailyLossLimitQuote() != null && profile.getDailyLossLimitQuote().signum() > 0
@@ -872,10 +743,10 @@ public class RiskProfileService {
 
     private static final String REQUIRED_PHRASE = "I UNDERSTAND THIS ENABLES AUTONOMOUS LIVE TRADING";
     /**
-     * Audit item P1-5, full context in authorizeLiveAutoTrade's own updated javadoc: the OTP
-     * purpose used for the step-up check below, kept distinct from LOGIN/REGISTER so a stolen
-     * login OTP (or vice versa) can never be replayed as a live-autotrade step-up code, and
-     * AuthService's per-(identifier, purpose) OTP storage keeps the two completely separate.
+     * OTP purpose used for the step-up check in authorizeLiveAutoTrade, kept distinct from
+     * LOGIN/REGISTER so a stolen login OTP (or vice versa) can never be replayed as a
+     * live-autotrade step-up code -- AuthService's per-(identifier, purpose) OTP storage keeps
+     * the two completely separate.
      */
     public static final String STEPUP_OTP_PURPOSE = "LIVE_AUTOTRADE_STEPUP";
 
@@ -893,19 +764,15 @@ public class RiskProfileService {
     /**
      * The second, independent unlock AutoTradeService checks before it will place a LIVE order.
      * Deliberately requires the caller to send back an exact confirmation phrase rather than a
-     * boolean flag — a stray `true` in a request body is too easy to send by accident.
+     * boolean flag -- a stray `true` in a request body is too easy to send by accident.
      *
-     * Audit item P1-5 ("Live-trade-enabling actions do not require step-up authentication" --
-     * external review, confirmed real by direct inspection: this method -- the action that
-     * flips a risk profile into autonomous LIVE auto-trading -- was gated only by an ordinary,
-     * possibly long-lived JWT session plus the REQUIRED_PHRASE above, a static string readable
-     * in the frontend source and not tied to proving who's actually present at the keyboard
-     * right now. Anyone who hijacked an already-authenticated session could enable real-money
-     * autonomous trading with no fresh proof of identity at the exact moment of that specific,
-     * high-consequence action): now also requires a fresh, just-issued OTP (requested via
-     * requestLiveAutoTradeStepUpOtp / POST .../authorize-live-autotrade/request-otp) verified
-     * against the caller's own on-file email/mobile, checked first so a stale/replayed request
-     * never reaches any of the state-changing checks below.
+     * Flipping a risk profile into autonomous LIVE auto-trading is a high-consequence action, so
+     * beyond the confirmation phrase (a static string, not tied to proving who's actually
+     * present right now) it also requires a fresh, just-issued OTP (requested via
+     * requestLiveAutoTradeStepUpOtp) verified against the caller's own on-file email/mobile --
+     * an ordinary, possibly long-lived JWT session alone is not enough proof of identity for
+     * this specific action. The OTP is checked first so a stale/replayed request never reaches
+     * any of the state-changing checks below.
      */
     public RiskProfile authorizeLiveAutoTrade(String userId, String credentialId, String confirmationPhrase, String stepUpOtpCode) {
         if (!REQUIRED_PHRASE.equals(confirmationPhrase)) {
@@ -916,35 +783,26 @@ public class RiskProfileService {
         authService.verifyStepUpOtp(userId, STEPUP_OTP_PURPOSE, stepUpOtpCode);
         RiskProfile profile = get(userId, credentialId);
 
-        // Review finding (P1 #6 — "LIVE auto-trade authorization doesn't revalidate broker
-        // permissions"): confirmed real — the API key's withdrawal/trading permissions were
-        // checked once, at connection time (BrokerCredentialService.requestLiveConnect), and
-        // never again. A user could connect with withdrawals off, then later change that key's
-        // permissions directly on Binance, and this authorization step would have no way to know
-        // — it only checked the confirmation phrase and the stored risk profile. Re-queries the
-        // broker's actual current permissions, the exact same check used at connection time,
-        // right before granting autonomous LIVE authority — refuses and raises an incident on
-        // any drift, rather than trusting a snapshot that may be stale.
+        // The API key's withdrawal/trading permissions are otherwise only checked once, at
+        // connection time (BrokerCredentialService.requestLiveConnect). A user could connect
+        // with withdrawals off, then later change that key's permissions directly on Binance, so
+        // this re-queries the broker's actual current permissions -- the same check used at
+        // connection time -- right before granting autonomous LIVE authority, refusing and
+        // raising an incident on any drift rather than trusting a snapshot that may be stale.
         var credential = credentialService.ownedCredential(userId, credentialId);
         if (credential.getMode() == com.tradevision.model.BrokerMode.LIVE) {
-            // P0-6 fix ("LIVE risk-limit enforcement" -- external review, confirmed real by
-            // direct inspection: every one of these limits could legally sit at its own
-            // "disabled" default (0, or null for maxTotalExposureQuote) and this method would
-            // authorize autonomous LIVE trading anyway -- a fresh credential's risk profile is
-            // 0/disabled everywhere until a user deliberately configures it, and nothing here
-            // ever stopped LIVE authorization from proceeding regardless. A user could enable
-            // real-money autonomous trading with NO daily loss limit, NO per-position cap, NO
-            // account-wide exposure cap, NO drawdown circuit breaker, and NO order-frequency
-            // limit configured at all): refuses authorization outright until every one of these
-            // is a real, non-zero value -- forcing a deliberate choice before real money is put
-            // at risk, rather than silently trading against an effectively unconfigured risk
-            // profile. Scoped to LIVE only (not TESTNET) -- RiskEngineService's own per-trade
-            // checks already treat 0/null as "this specific cap is disabled" by design (see
-            // RiskProfile's own field javadocs), which is the correct, intentional behavior for
+            // Every one of these limits can legally sit at its own "disabled" default (0, or
+            // null for maxTotalExposureQuote) on a fresh profile until a user deliberately
+            // configures it. Without this check, a user could enable real-money autonomous
+            // trading with no daily loss limit, no per-position cap, no account-wide exposure
+            // cap, no drawdown circuit breaker, and no order-frequency limit configured at all.
+            // This refuses authorization outright until every one of these is a real, non-zero
+            // value, forcing a deliberate choice before real money is put at risk. Scoped to
+            // LIVE only (not TESTNET): RiskEngineService's own per-trade checks treat 0/null as
+            // "this specific cap is disabled" by design, which is correct and intentional for
             // TESTNET/paper trading, where an operator may deliberately want fewer limits while
-            // testing. LIVE is different: this is the one gate this codebase has that's
-            // specifically about authorizing REAL MONEY autonomous trading, so it's the right
-            // place to require the full set of limits be deliberately configured.
+            // testing. LIVE is the one gate specifically about authorizing real-money autonomous
+            // trading, so it's the right place to require the full set of limits.
             if (!hasCompleteLiveRiskLimits(profile)) {
                 List<String> missing = new java.util.ArrayList<>();
                 if (profile.getDailyLossLimitQuote() == null || profile.getDailyLossLimitQuote().signum() <= 0) missing.add("dailyLossLimitQuote");
@@ -958,12 +816,9 @@ public class RiskProfileService {
                 throw new IllegalArgumentException("LIVE auto-trade authorization refused: the following risk limits must be configured "
                     + "to a real, positive value first: " + missing + ". Update the risk profile before authorizing autonomous LIVE trading.");
             }
-            // Review finding ("Mongo standalone deployment still weakens the plan/profile
-            // execution atomicity guarantee" -- external review, twenty-fourth pass, P1, full
-            // context in IndexInitializer.checkMongoTransactionSupport's own javadoc): checked
-            // alongside this method's own existing LIVE-specific permission checks -- refuses
-            // outright rather than silently accepting a deployment that will always need the
-            // weaker, sequential fallback claimExecutionAtomicWithPlan already has.
+            // Checked alongside the other LIVE-specific permission checks here: refuses outright
+            // rather than silently accepting a deployment that will always need the weaker,
+            // sequential fallback claimExecutionAtomicWithPlan falls back to.
             if (!startupState.areMongoTransactionsSupported()) {
                 credentialService.audit(userId, credentialId, credential.getBroker(), "LIVE_AUTOTRADE_AUTH_REFUSED_NO_MONGO_TRANSACTIONS",
                     "LIVE auto-trade authorization refused: this MongoDB deployment does not support transactions (confirmed at "
@@ -973,16 +828,13 @@ public class RiskProfileService {
                     + "transactions (confirmed at application startup). Configure a MongoDB replica set and restart the application "
                     + "before authorizing LIVE autonomous trading.");
             }
-            // Audit item P0-1 fix ("Nothing gates autonomous LIVE trading on a real, successful
-            // live order ever having been placed" -- full context in LiveCanaryRecord's own
-            // class javadoc): every check above and below this one is about whether this
-            // credential is ALLOWED to trade LIVE; none of them ever actually sends one real
-            // order through the full pipeline (adapter auth, placement, OMS transitions,
-            // Position creation, real OCO protection) and confirms it genuinely works for THIS
-            // credential before autonomous trading is allowed to start sending LIVE orders
-            // unsupervised for the first time. This is that missing proof -- see
-            // LiveCanaryService.startCanary for how an admin runs one, and
-            // hasRecentPassingCanary's own javadoc for the 24-hour validity window.
+            // Every other check here is about whether this credential is allowed to trade LIVE;
+            // none of them actually sends a real order through the full pipeline (adapter auth,
+            // placement, OMS transitions, Position creation, real OCO protection) to confirm it
+            // genuinely works for this credential before autonomous trading starts sending LIVE
+            // orders unsupervised. This check requires that proof -- see LiveCanaryService.
+            // startCanary for how an admin runs one, and hasRecentPassingCanary for the 24-hour
+            // validity window.
             if (!liveCanaryService.hasRecentPassingCanary(credentialId)) {
                 credentialService.audit(userId, credentialId, credential.getBroker(), "LIVE_AUTOTRADE_AUTH_REFUSED_NO_LIVE_CANARY",
                     "LIVE auto-trade authorization refused: this credential has no PASSED live canary order on record "
@@ -1012,14 +864,12 @@ public class RiskProfileService {
                     "LIVE auto-trade authorization refused: trading permission is no longer enabled on this API key.");
                 throw new IllegalArgumentException("This API key no longer has trading permission enabled on the broker.");
             }
-            // Review finding (P1 #10 — "Withdrawal-permission check relies on
-            // /api/v3/account.canWithdraw"): the withdrawal re-check that used to live here
-            // compared permissions.canWithdraw() — an ACCOUNT-level flag that says nothing about
-            // THIS key's own restrictions, and is essentially always true for a real account
-            // regardless of the key. Replaced with the same key-level apiRestrictions check
-            // BrokerCredentialService now applies at connect/rotation time, reused here so a key
-            // that had its restrictions loosened AFTER connecting is caught on every
-            // re-authorization too, not just once at connect time.
+            // Uses the same key-level apiRestrictions check BrokerCredentialService applies at
+            // connect/rotation time, rather than permissions.canWithdraw() -- an account-level
+            // flag that says nothing about this specific key's own restrictions and is
+            // essentially always true for a real account regardless of the key. Reusing the
+            // key-level check here means a key that had its restrictions loosened after
+            // connecting is caught on every re-authorization too, not just once at connect time.
             try {
                 credentialService.validateLiveKeyRestrictions(userId, credentialId, credential.getBroker(), adapter, apiKey, apiSecret,
                     "LIVE_AUTOTRADE_AUTH_REFUSED");
@@ -1032,15 +882,12 @@ public class RiskProfileService {
 
         profile.setLiveAutoTradeAuthorized(true);
         profile.setUpdatedAt(LocalDateTime.now());
-        // Review finding ("Risk-profile updates/resume can race with safety state" -- P0, full
-        // context in doUpsert's own comment above): this is the review's own named scenario
-        // exactly -- "authorizeLiveAutoTrade reads profile, user changes risk profile (which
-        // should revoke authorization), stale authorize operation saves
-        // liveAutoTradeAuthorized=true anyway." A targeted $set on only the two fields this
-        // method actually changes closes it -- a concurrent doUpsert()'s own intentional
-        // liveAutoTradeAuthorized=false write can no longer be raced past by this method's own
-        // stale in-memory `profile`, since this update never touches or depends on any field
-        // doUpsert also writes.
+        // Without a targeted update, a concurrent doUpsert() call (which intentionally sets
+        // liveAutoTradeAuthorized=false whenever risk limits change) could be raced past: this
+        // method reads the profile, the user changes risk limits, and a stale in-memory
+        // `profile` here would then save liveAutoTradeAuthorized=true anyway. A $set on only the
+        // two fields this method actually changes avoids that, since it never touches or
+        // depends on any field doUpsert also writes.
         mongoTemplate.updateFirst(
             new org.springframework.data.mongodb.core.query.Query(org.springframework.data.mongodb.core.query.Criteria.where("id").is(profile.getId())),
             new org.springframework.data.mongodb.core.query.Update()
@@ -1055,11 +902,10 @@ public class RiskProfileService {
 
     public RiskProfile revokeLiveAutoTrade(String userId, String credentialId) {
         RiskProfile profile = get(userId, credentialId);
-        // Review finding ("Risk-profile updates/resume can race with safety state" -- P0, full
-        // context in doUpsert's own comment above): same targeted-update fix. Revocation is the
-        // more safety-critical direction of this pair -- a full save() here losing a race would
-        // mean a LIVE authorization stays granted when it should have been revoked, not the
-        // safer failure mode.
+        // Same targeted-update approach as elsewhere in this class. Revocation is the more
+        // safety-critical direction of this pair -- a full save() here losing a race would mean
+        // a LIVE authorization stays granted when it should have been revoked, not the safer
+        // failure mode.
         mongoTemplate.updateFirst(
             new org.springframework.data.mongodb.core.query.Query(org.springframework.data.mongodb.core.query.Criteria.where("id").is(profile.getId())),
             new org.springframework.data.mongodb.core.query.Update()

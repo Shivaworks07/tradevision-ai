@@ -5,11 +5,9 @@ import com.tradevision.model.User;
 import java.time.LocalDateTime;
 
 /**
- * Review finding (P1 #6 — "Your admin API leaks security fields"): confirmed real — the /users
- * endpoint was returning the raw User entity, including tokenVersion, refreshTokenHash,
- * refreshTokenExpiry, failedOtpAttempts, and lastFailedOtp. None of those are ever legitimate for
- * an admin dashboard to display, and refreshTokenHash in particular is an authentication
- * internal that should never leave the backend in any API response, hashed or not.
+ * Safe projection of a User for the admin users list: deliberately excludes authentication
+ * internals (tokenVersion, refreshTokenHash, refreshTokenExpiry, failedOtpAttempts,
+ * lastFailedOtp), none of which should ever leave the backend in an API response.
  */
 public record AdminUserDto(
     String id,

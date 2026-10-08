@@ -34,13 +34,9 @@ describe('WatchlistComponent', () => {
   });
 
   it('priceStr should format crypto price correctly', () => {
-    // Review finding ("Frontend test coverage" -- P2): this test was checking a stale
-    // expectation against a formatter that's genuinely, deliberately multi-currency -- read the
-    // real implementation before "fixing" this: prices >= 1000 format in INR (this
-    // application's own home-currency display for larger/whole-coin values), and only smaller
-    // fractional crypto prices (how crypto is typically quoted globally) stay in USD. Not a bug
-    // to fix in the component -- the test's own assumption of pure-USD formatting was simply
-    // written before this threshold-based behavior existed.
+    // priceStr is deliberately multi-currency: prices >= 1000 format in INR (the app's
+    // home-currency display for larger/whole-coin values), while smaller fractional
+    // crypto prices, quoted globally in USD, stay in USD.
     expect(component.priceStr(0.001234)).toContain('$');
     expect(component.priceStr(50000)).toContain('₹');
   });

@@ -441,22 +441,12 @@ export class CryptoTerminalComponent implements OnInit, OnDestroy, AfterViewInit
   }
 
   /**
-   * P3-4 fix ("trading-analyst risk-engine.service.ts -- client 'risk engine' (localStorage,
-   * $10k default) unrelated to server limits" -- external review): confirmed real by direct
-   * inspection -- risk.updateParams() had ZERO callers anywhere in this app before this fix, so
-   * the "Account: $10,000" this panel has always shown was a permanently-stuck, unchangeable
-   * fiction nobody could correct, not a real reflection of anything. This component also has no
-   * concept of "the active broker credential" at all (it's a manual analysis/signal terminal, not
-   * scoped to one auto-trading credential the way the Settings → Broker & Auto-Trade screens
-   * are), so genuinely binding this panel's numbers to a specific credential's server-side
-   * RiskProfile isn't a natural fit here architecturally -- there's no single "the" profile to
-   * bind to. The honest fix that IS in scope: let the user actually set the real capital this
-   * calculator should size against (closing the "silently wrong forever" half of the finding),
-   * and stop this panel implying it's anything more than a manual what-if calculator (see this
-   * component's own updated risk-panel header/tooltip in the template) -- it never has been, and
-   * never silently drove any actual order execution, which only ever happens server-side via
-   * AutoTradeService/RiskEngineService.java's own real, enforced limits, completely independent
-   * of this file.
+   * Lets the user set the capital this manual position-size calculator sizes against,
+   * since this terminal is not scoped to any one broker credential (unlike the
+   * Settings → Broker & Auto-Trade screens) and so has no single server-side
+   * RiskProfile to bind these numbers to. This panel is a what-if calculator only —
+   * it never drives actual order execution, which happens server-side via
+   * AutoTradeService/RiskEngineService.java's own enforced limits, independent of this file.
    */
   onAccountSizeChange(value: number) {
     if (!Number.isFinite(value) || value <= 0) return;

@@ -8,17 +8,11 @@ import org.springframework.data.mongodb.core.mapping.Document;
 import java.time.LocalDateTime;
 
 /**
- * Review finding ("OCO Persistence Failure Has No Reconciliation Path" -- external review, third
- * pass, P1): atomicSetOcoPlaced() (both copies -- AutoTradeService and PositionMonitorService)
- * already correctly DETECTS a modifiedCount == 0 outcome and raises OCO_PLACED_BUT_NOT_RECORDED
- * as a critical incident -- but until this fix, that incident was the end of the story. The
- * review's own named gap: "finding and reconciling the orphaned OCO on the next pass is not
- * implemented. An OCO with a broker identifier exists on Binance but isn't durably in
- * TradeVision's database." A human-readable audit/incident message naming the ocoOrderListId
- * inline is not something a later reconciliation pass can query for -- this is the missing
- * structured record that makes it queryable, so recoverOrphanedOcos() has something concrete to
- * iterate over on every subsequent pass until each one is actually resolved, not just once
- * logged and forgotten.
+ * A structured, queryable record of an OCO that was successfully placed on the broker but
+ * whose placement result failed to persist back onto the owning Position — a durable trace
+ * that an exchange-side protective order exists without a matching local record, so
+ * recoverOrphanedOcos() has something concrete to iterate over on every reconciliation pass
+ * until it is actually resolved, rather than only a one-time incident log entry.
  */
 @Data @NoArgsConstructor
 @Document(collection = "orphaned_ocos")
@@ -37,18 +31,14 @@ public class OrphanedOco {
     private String resolution; // human-readable outcome, set once resolved is true
 
     /**
-     * Review finding ("An active orphan OCO is marked 'resolved' even though the exchange order
-     * remains active" -- external review, fourth pass, P1, confirmed real by direct inspection
-     * before any fix was attempted): "resolved" was being set to true the moment this
-     * application finished PROCESSING an orphan, not the moment the actual dangerous condition
-     * (a live, unattached order on the exchange) was gone -- meaning a genuinely still-active
-     * orphan would never be reconsidered by any later reconciliation pass at all, since
-     * recoverOrphanedOcos only ever queries resolved=false. escalated/escalatedAt are the fix:
-     * a still-active orphan now stays resolved=false (so every future pass keeps re-checking its
-     * real exchange-side state) while escalated=true records that this application HAS already
-     * raised the incident once, so a later pass can deduplicate re-alerting rather than raising
-     * a fresh critical incident every single reconciliation cycle for the same still-unresolved
-     * orphan.
+     * `resolved` reflects whether the actual dangerous condition — a live, unattached order on
+     * the exchange — is gone, not merely whether this application has finished processing the
+     * orphan once; recoverOrphanedOcos only ever queries resolved=false, so a still-active
+     * orphan must stay resolved=false for every future pass to keep re-checking its real
+     * exchange-side state. escalated/escalatedAt record that an incident has already been
+     * raised once for this orphan, so a later pass can deduplicate re-alerting rather than
+     * raising a fresh critical incident every reconciliation cycle for the same still-
+     * unresolved orphan.
      */
     private boolean escalated = false;
     private LocalDateTime escalatedAt;

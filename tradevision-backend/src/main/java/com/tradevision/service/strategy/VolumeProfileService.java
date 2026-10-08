@@ -11,30 +11,14 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Review finding ("Client-Side Signal Generation = Trusting the Browser with Money" — "Port the
- * entire TA engine... to Java on the server"): this is a genuinely verified port of
- * VolumeProfileService.analyze() from trading-analyst/src/app/services/volume-profile.service.ts
- * (the real frontend file, not a rewrite from memory or a description of it).
+ * Builds a volume profile from a candle series: distributes each candle's volume across price
+ * buckets proportionally to how much of the candle's range falls in each bucket, then derives
+ * the point of control (POC), value area high/low (VAH/VAL, the range containing 70% of volume
+ * centered on the POC), and high/low volume nodes (local maxima/minima in the bucket volumes)
+ * used to identify likely support/resistance and thin, fast-moving price areas.
  *
- * HOW "VERIFIED" IS DEFINED HERE, PRECISELY: the real TypeScript file's logic was copied into a
- * standalone harness, compiled with the project's own tsc/typescript (not assumed to behave a
- * certain way), and run against a fixed, seeded set of 100 candles (a simple linear-congruential
- * generator, seed 12345 — fully deterministic, not live/random data). That produced real
- * reference output: exact poc/vah/val/hvns/lvns/currentPrice/priceLocation values. This Java
- * class was then run against the IDENTICAL seeded candle sequence (the same LCG formula,
- * ported exactly), and its output was compared field-by-field against that TypeScript reference
- * output — not hand-traced, not assumed equivalent. Every value matched exactly, including the
- * iterative value-area calculation and the local-max/local-min HVN/LVN detection, which are the
- * two places a subtle logic error would most likely hide. The verification harness and both
- * reference outputs are not part of this deliverable (they lived in a scratch verification
- * directory, not this repository) — this comment states the method precisely so the claim of
- * "verified" is checkable in principle, not just asserted.
- *
- * HONEST SCOPE: verified against ONE seeded dataset covering the ordinary case (100 candles,
- * varied prices/volumes, non-degenerate range). NOT separately verified against the edge cases
- * this method itself branches on (fewer than 20 candles, zero price range, zero total volume) —
- * those branches were read and ported faithfully, but only the main path was cross-checked
- * against real reference output. Still short of a full test suite or property-based testing.
+ * Needs at least 20 candles and a non-degenerate price range and total volume to produce a real
+ * profile; otherwise falls back to {@link #emptyProfile}.
  */
 @Service
 public class VolumeProfileService {

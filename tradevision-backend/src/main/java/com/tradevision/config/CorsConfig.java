@@ -23,14 +23,9 @@ public class CorsConfig {
         cfg.setAllowedOrigins(origins);
         cfg.setAllowedMethods(List.of("GET","POST","PUT","DELETE","OPTIONS","PATCH"));
         cfg.setAllowedHeaders(List.of("*"));
-        // Review finding ("CorsConfig still exposes Authorization" -- external review,
-        // twenty-fourth pass, P2, confirmed real by direct inspection before this fix: this
-        // application moved to HttpOnly-cookie authentication, and a repo-wide search found no
-        // frontend code anywhere that reads an Authorization response header -- exposing it to
-        // browser JS was unnecessary transport surface for a header no longer used as a real
-        // authentication mechanism): removed entirely. If a genuine external API consumer ever
-        // needs to read this header from a response, it can be re-added deliberately then, with
-        // that actual need stated.
+        // No exposed headers are configured: this application authenticates via an HttpOnly
+        // cookie, so no frontend code needs to read an Authorization response header from
+        // browser JS.
         cfg.setAllowCredentials(true);
         cfg.setMaxAge(3600L);
         UrlBasedCorsConfigurationSource src = new UrlBasedCorsConfigurationSource();

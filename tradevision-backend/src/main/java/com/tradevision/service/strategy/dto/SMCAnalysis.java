@@ -3,27 +3,17 @@ package com.tradevision.service.strategy.dto;
 import java.util.List;
 
 /**
- * Review finding ("Client-Side Signal Generation" / "Move this to Angular to Java"): a verified
- * port — see SmcEngineService's own javadoc for the full verification methodology, including a
- * genuine cross-language floating-point display-formatting difference found and documented
- * (never a logic difference) along the way.
+ * Smart Money Concepts analysis: swing structure, order blocks, fair value gaps, liquidity
+ * levels, structure breaks, premium/discount zoning, and a resulting directional bias. See
+ * SmcEngineService for how each component is computed.
  *
- * Review finding ("double still exists throughout strategy calculations" -- external review,
- * twenty-sixth pass, P2): investigated directly, not assumed -- these nested records' own price
- * fields (OrderBlock.top/bottom, LiquidityLevel.price, PremiumDiscount's own levels, etc.) are
- * genuinely different in kind from TradeCallRecord's or CombinedSignal's own price fields, which
- * this same pass DID convert to BigDecimal. Confirmed by reading SmcEngineService directly:
- * these values are constructed early and then RE-READ for further internal arithmetic within
- * the same verified algorithm -- KeyLevel's own construction computes (o.top()+o.bottom())/2
- * from an already-built OrderBlock, for instance. Converting these fields to BigDecimal would
- * require rewriting that internal arithmetic throughout SmcEngineService's own already-verified,
- * exact-match port -- not a boundary-wrapping change like CombinedSignal's, but a genuine rewrite
- * of numerical algorithm internals with no compiler available in this session to catch a mistake
- * in it. These are strategy-analysis indicators (swing/order-block/liquidity levels feeding a
- * composite bias score), not direct order-sizing inputs -- the actual execution path
- * (ServerSignalEngine.Signal's own entry/stopLoss/target, and TradeCallRecord downstream of it)
- * is BigDecimal already. Left as double here deliberately, not by oversight -- matching the
- * review's own explicit carve-out ("For indicators, this is perfectly reasonable").
+ * Price fields throughout these nested records are intentionally {@code double} rather than
+ * BigDecimal. They are strategy-analysis indicators feeding a composite bias score, not
+ * order-sizing inputs — the actual execution path (ServerSignalEngine.Signal's entry/stopLoss/
+ * target, and TradeCallRecord downstream of it) uses BigDecimal. Several of these fields are
+ * also re-read for further internal arithmetic within the same algorithm (e.g. KeyLevel
+ * computing (o.top()+o.bottom())/2 from an already-built OrderBlock), so keeping them as double
+ * avoids mixing numeric types across a single computation.
  */
 public record SMCAnalysis(
     List<SwingPoint> swingHighs, List<SwingPoint> swingLows,

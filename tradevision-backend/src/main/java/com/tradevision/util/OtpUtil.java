@@ -16,13 +16,8 @@ import java.util.regex.Pattern;
 @Component
 public class OtpUtil {
 
-    // P2-17 fix ("20x System.out.println, PII in logs, no correlation IDs" -- external review,
-    // full context in this codebase's own new CorrelationIdFilter javadoc): replaces this
-    // class's own System.out.println calls with proper SLF4J logging, and mobile numbers are
-    // masked (see maskMobile below) everywhere they're logged from here on -- unlike the OTP
-    // console fallback below (a deliberate, explicitly-opted-into local-dev feature), the MSG91
-    // send/failure log lines run in real, production SMS sends and were logging the full mobile
-    // number unconditionally.
+    // Mobile numbers are masked (see maskMobile below) everywhere they're logged, since the
+    // MSG91 send/failure log lines run during real, production SMS sends.
     private static final Logger log = LoggerFactory.getLogger(OtpUtil.class);
 
     // ── To enable real SMS, add these to application.properties ──
@@ -42,13 +37,9 @@ public class OtpUtil {
     @Value("${sms.msg91.template-id:}")       private String msg91TemplateId;
     @Value("${sms.msg91.sender-id:TVISION}")  private String msg91SenderId;
     @Value("${app.otp.hmac-secret}")          private String otpHmacSecret;
-    // Review finding ("OTP is STILL printed to console"): the previous fix left the console
-    // fallback printing the raw code whenever sms.provider was "console" — which is also the
-    // DEFAULT if the property is never set at all. That means a real deployment that simply
-    // forgot to configure SMS_PROVIDER falls silently into logging usable OTPs, not a
-    // deliberate dev choice. This separates "which provider" from "is console output actually
-    // allowed to print the real code" — the latter now defaults to false and must be
-    // consciously turned on for local development, so a misconfigured production deployment
+    // Separate from "which provider" (sms.provider, default "console"): whether console output
+    // is actually allowed to print the real code. Defaults to false and must be consciously
+    // turned on for local development, so a deployment that forgot to configure sms.provider
     // fails loudly instead of quietly leaking OTPs into logs.
     @Value("${app.otp.allow-console-fallback:false}") private boolean allowConsoleFallback;
 
@@ -60,10 +51,9 @@ public class OtpUtil {
     }
 
     /**
-     * Review finding (this doc, "BLOCKER #5" — OTP stored in plaintext): HMAC-SHA256 digest of
-     * the OTP, bound to the identifier and purpose (so the same 6-digit code for two different
-     * users/purposes doesn't hash identically). Stored instead of the raw code; verification
-     * recomputes this and compares digests, never the raw value.
+     * HMAC-SHA256 digest of the OTP, bound to the identifier and purpose so the same 6-digit
+     * code for two different users/purposes doesn't hash identically. Stored instead of the raw
+     * code; verification recomputes this and compares digests, never the raw value.
      */
     public String hashOtp(String otp, String identifier, String purpose) {
         try {
@@ -76,14 +66,11 @@ public class OtpUtil {
         }
     }
 
-    /** Send SMS only */
     /**
-     * Review finding (P1 — "OTP delivery has a functional production bug"): this used to be
-     * void, so AuthService had no way to know whether an OTP actually went anywhere before
-     * telling the user "OTP sent" — a misconfigured provider, or the console fallback being
-     * correctly refused, could mean literally nothing was sent while the user was told
-     * otherwise. Returns true only when delivery genuinely happened (a real send was attempted,
-     * or the explicit dev console fallback fired).
+     * Sends the OTP via the configured provider. Returns true only when delivery genuinely
+     * happened — a real send was attempted, or the explicit dev console fallback fired — so
+     * callers can tell the user accurately whether an OTP actually went anywhere, rather than
+     * assuming success for a misconfigured provider or a correctly-refused console fallback.
      */
     public boolean sendSms(String mobile, String code) {
         return switch (provider) {
@@ -123,18 +110,11 @@ public class OtpUtil {
     }
 
     /**
-     * P2-12 fix ("OtpUtil.sendViaMSG91: Mobile/template concatenated unencoded into URL, authkey
-     * in query string, no mobile validation" -- external review, confirmed real by direct
-     * inspection before this fix): a bare digits-only Indian mobile number, matching exactly what
-     * this method already hardcodes as the "91" country-code prefix immediately below (never
-     * validated against E.164 or any other format before this fix) -- 10 digits, not starting
-     * with 0, matching the real Indian mobile numbering plan this hardcoded "91" prefix already
-     * assumes. Rejecting anything else here means a malformed or malicious value (one embedding
-     * "&otp=000000" or similar to smuggle extra query parameters into the request this method
-     * builds) is never even attempted, not merely rendered harmless by encoding — the review's
-     * own two other fixes below (URL-encoding, authkey moved out of the query string) are the
-     * defense for genuinely-shaped values that still contain characters worth escaping; this is
-     * the defense for values that shouldn't be attempted as a phone number at all.
+     * Matches a bare 10-digit Indian mobile number not starting with 0, consistent with the
+     * hardcoded "91" country-code prefix sendViaMSG91 applies below. Rejecting anything else
+     * means a malformed or malicious value (e.g. one embedding "&otp=000000" to smuggle extra
+     * query parameters into the request this method builds) is never even attempted, rather than
+     * merely rendered harmless by URL-encoding.
      */
     private static final Pattern INDIAN_MOBILE_PATTERN = Pattern.compile("^[1-9]\\d{9}$");
 
@@ -150,12 +130,10 @@ public class OtpUtil {
             return false;
         }
         try {
-            // MSG91 OTP API v5
-            // P2-12 fix, full context in this method's own updated javadoc above: every
-            // caller-influenced value is now URL-encoded before being placed into the query
-            // string — msg91TemplateId and code are both this application's own configured/
-            // generated values (never attacker-influenced), but encoding them too costs nothing
-            // and removes any need to reason about which values are "safe" to skip.
+            // MSG91 OTP API v5. Every value placed into the query string is URL-encoded,
+            // including msg91TemplateId and code which are both this application's own
+            // configured/generated values, since encoding them costs nothing and removes any
+            // need to reason about which values are safe to skip.
             String url = "https://control.msg91.com/api/v5/otp?template_id=" + urlEncode(msg91TemplateId)
                 + "&mobile=" + urlEncode("91" + mobile)
                 + "&otp=" + urlEncode(code);
@@ -163,12 +141,10 @@ public class OtpUtil {
             HttpClient client = HttpClient.newHttpClient();
             HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
-                // P2-12 fix, full context in this method's own updated javadoc above: MSG91's own
-                // API accepts the authkey as a request header (documented alongside the query-
-                // string form) -- moved here so it never appears in the URL itself, where it would
-                // otherwise be captured verbatim by any intermediate proxy's own access log, this
-                // JVM's own HTTP client debug logging if ever enabled, or browser/tool history if
-                // this URL were ever pasted anywhere for debugging.
+                // MSG91 accepts the authkey as a request header (documented alongside the
+                // query-string form); passed here so it never appears in the URL itself, where
+                // it would otherwise be captured verbatim by an intermediate proxy's access log,
+                // HTTP client debug logging, or browser/tool history.
                 .header("authkey", msg91AuthKey)
                 .GET()
                 .build();
@@ -177,11 +153,8 @@ public class OtpUtil {
             log.info("[MSG91] Sent OTP to {} | status: delivered", maskMobile(mobile));
             return response.statusCode() >= 200 && response.statusCode() < 300;
         } catch (Exception e) {
-            // Review finding (this doc, "BLOCKER #6" — OTP production fallback prints the OTP):
-            // this used to append " — OTP: " + code to the failure log. In production, that
-            // means a real SMS provider outage silently starts writing usable OTPs into
-            // application logs, which defeats the whole point of using an OTP. Log the failure,
-            // never the code.
+            // Logs the failure, never the code — an SMS provider outage must not write usable
+            // OTPs into application logs.
             log.warn("[MSG91] Failed to send SMS to {}: {}", maskMobile(mobile), e.getMessage());
             return false;
         }
@@ -193,11 +166,9 @@ public class OtpUtil {
     }
 
     /**
-     * P2-17 fix ("PII in logs" -- external review, full context in this class's own header
-     * comment): keeps only the last 2 digits, e.g. "********89" for a 10-digit Indian mobile --
-     * enough to spot-check which number a log line is about without writing a usable phone
-     * number into application logs. Package-private (not private) so this is directly
-     * unit-testable -- see OtpUtilTest.
+     * Masks a mobile number for logging, keeping only the last 2 digits (e.g. "********89" for a
+     * 10-digit Indian mobile) — enough to spot-check which number a log line is about without
+     * writing a usable phone number into application logs.
      */
     static String maskMobile(String mobile) {
         if (mobile == null || mobile.isBlank()) return "(none)";

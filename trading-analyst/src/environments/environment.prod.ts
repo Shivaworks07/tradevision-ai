@@ -5,7 +5,7 @@ export const environment = {
   binanceFuturesUrl:'https://fapi.binance.com',
   forexUrl:         '/forex-api',     // still proxied via Spring Boot
   yahooUrl:         '/yf-api',        // still proxied via Spring Boot
-  coingeckoUrl:     '/coingecko-api', // review finding (P1 — CSP + CoinGecko): now proxied too, not called directly from the browser
+  coingeckoUrl:     '/coingecko-api', // proxied through the backend rather than called directly from the browser, to satisfy CSP
   appName:          'TradeVision AI',
   version:          '1.0.0',
 };

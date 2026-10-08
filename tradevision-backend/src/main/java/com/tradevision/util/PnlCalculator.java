@@ -1,18 +1,12 @@
 package com.tradevision.util;
 
 /**
- * Review finding ("Financial model still mixes double and BigDecimal" -- external review,
- * sixteenth pass, P2, discovered while investigating that same finding, not a separate report):
- * this exact P&L%/R-multiple formula was duplicated verbatim in two places --
- * CallResultUpdater.updateResult and TradeCallService's own exit-recording path -- confirmed
- * identical by direct textual comparison before extracting, not assumed. Pure mechanical
- * extraction, zero semantic change: same double arithmetic, same rounding (3 decimal places for
- * pnlPct, 2 for pnlR), same "stop-loss distance is zero" edge case (pnlR defaults to 0.0 rather
- * than dividing by zero). Deliberately still double, not BigDecimal -- the broader
- * double-vs-BigDecimal question this same review raised is a separate, larger, higher-risk
- * change (see this session's own conversation history for why that one was deliberately NOT
- * attempted alongside this consolidation) that touches live percentage/ratio arithmetic across
- * several more files and needs its own dedicated, compiler-verified pass.
+ * Computes a closed position's P&L percentage and R-multiple, shared by every exit-recording
+ * path (CallResultUpdater.updateResult and TradeCallService's exit recording) so the formula is
+ * defined in exactly one place. pnlPct is rounded to 3 decimal places, pnlR to 2; when the
+ * stop-loss distance is zero, pnlR defaults to 0.0 rather than dividing by zero. Uses double
+ * arithmetic rather than BigDecimal, consistent with the rest of this percentage/ratio
+ * calculation path.
  */
 public final class PnlCalculator {
 

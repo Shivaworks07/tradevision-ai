@@ -23,58 +23,39 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding ("Multiple plans can duplicate exposure" -- external review, ninth pass,
- * required test: "3 plans, same symbol, same direction, different timeframe -> risk engine ->
- * actual combined exposure should never exceed account limits"): this is that exact test.
+ * Verifies that multiple strategy plans cannot duplicate exposure: 3 plans, same symbol, same
+ * direction, different timeframes, all attempting to buy at once -> combined exposure should
+ * never exceed account limits.
  *
- * Confirmed by direct inspection before writing this test, not assumed: AutoTradeService calls
- * ExposureReservationService.reserve(credentialId, symbol, ...) -- keyed by credentialId and
- * symbol ALONE, with no planId anywhere in that key. This means the architecture already gives
- * the right answer for the review's own named scenario: three different strategy plans (however
- * many, whatever their own individual timeframes) all attempting to buy the same symbol under
- * the same credential all atomically share the exact same exposure counter. There is no
- * per-plan exposure bucket a plan could exploit to bypass the account-level total -- the plan
- * identity is architecturally irrelevant to this specific cap, by construction, not by a check
- * that could be forgotten.
+ * AutoTradeService calls ExposureReservationService.reserve(credentialId, symbol, ...) --
+ * keyed by credentialId and symbol ALONE, with no planId anywhere in that key. This means the
+ * architecture already gives the right answer for this scenario: three different strategy
+ * plans (however many, whatever their own individual timeframes) all attempting to buy the
+ * same symbol under the same credential all atomically share the exact same exposure
+ * counter. There is no per-plan exposure bucket a plan could exploit to bypass the
+ * account-level total -- the plan identity is architecturally irrelevant to this specific cap,
+ * by construction, not by a check that could be forgotten.
  *
  * This is exactly the kind of atomic-concurrency claim that needs a real database to prove --
  * Mockito can only confirm the code calls the right method with the right arguments, not that
  * MongoDB's own atomic findAndModify genuinely serializes three concurrent reservations against
- * the same document correctly.
+ * the same document correctly. ExposureReservationService.reserveTransactionally retries on
+ * WriteConflict/TransientTransactionError (bounded at MAX_TRANSACTION_RETRIES=10, within the
+ * same ClientSession, scoped only to the genuinely-retryable MongoDB error code 112 /
+ * TransientTransactionError condition) so that of the 3 threads racing for the exposure cap,
+ * more than just the single first-attempt winner can commit.
  *
- * CI-review fix ("threeConcurrentPlansSameSymbol_combinedExposureNeverExceedsAccountCap:
- * expected 2, actual 0" -- external review, GitHub Actions integration-test failures, failure
- * 2): the identical root cause and identical fix as PositionSlotReservationIntegrationTest's own
- * updated javadoc describes for failure 1 -- ExposureReservationService.reserveTransactionally
- * had the same missing WriteConflict/TransientTransactionError retry case, so of 3 threads
- * racing for the exposure cap, only the single first-attempt winner ever committed and every
- * other thread's transaction aborted on its first WriteConflict with no retry -- landing at 0
- * successes instead of 2 (the actual account-level cap allows exactly 2 of the 3 attempts
- * through). Per this review's own explicit instruction ("Do not weaken the account-level
- * exposure limit"), the fix is in ExposureReservationService itself, not this test: the same
- * bounded (MAX_TRANSACTION_RETRIES=10), same-ClientSession retry-on-WriteConflict pattern,
- * scoped only to the genuinely-retryable MongoDB error code 112 / TransientTransactionError
- * condition. This test's own existing assertions (exactly 2 of 3 succeed; the real persisted
- * total never exceeds the cap; the exact-remainder boundary case) are unchanged and already
- * constitute the regression test for this fix -- the exact 3-concurrent-attempts-same-symbol
- * scenario the review itself asked be tested is what exposed the bug, so no separate regression
- * test is added here.
- *
- * HONEST LIMITATION, same as every other integration test in this package: `docker ps` succeeds
- * in this sandbox (the Docker daemon itself runs), but every container registry and direct
- * MongoDB binary download are blocked by this sandbox's own egress policy (confirmed via
- * repeated 403 Forbidden responses, not a transient failure) -- so no real MongoDB instance can
- * actually be started here, and I have not executed this test and cannot confirm it passes. The
- * fix above is supported by direct source-level tracing of MongoDB's own documented
- * WriteConflict/TransientTransactionError retry contract and successful compilation only. Run
+ * Requires Docker (via Testcontainers); in some sandboxes the Docker daemon itself runs but
+ * container registries and direct MongoDB binary downloads are blocked by egress policy, so
+ * no real MongoDB instance can actually be started there. Run
  * `mvn test -Dtest=MultiPlanExposureIntegrationTest` on a machine with real registry/Docker
- * access to actually confirm this before trusting it.
+ * access to execute it.
  */
 @Testcontainers(disabledWithoutDocker = true)
-// P1-16 fix: spring.profiles.active now defaults to "prod" (fail-closed), which has no default
-// secrets at all -- without this, this Testcontainers-backed context would fail to start
-// outside a real deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, the
-// same secrets this test always implicitly relied on before that default changed.
+// spring.profiles.active defaults to "prod" (fail-closed), which has no default secrets at
+// all -- without this, this Testcontainers-backed context would fail to start outside a real
+// deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, which has the
+// secrets this test relies on.
 @ActiveProfiles("local")
 @SpringBootTest
 class MultiPlanExposureIntegrationTest {
@@ -99,7 +80,7 @@ class MultiPlanExposureIntegrationTest {
         BigDecimal maxSymbol = BigDecimal.valueOf(1000); // no separate per-symbol cap tighter than total, for this test
         BigDecimal perAttemptValue = BigDecimal.valueOf(400); // three attempts of 400 = 1200, which must NOT all succeed against a 1000 cap
 
-        int attempts = 3; // Plan A (1m), Plan B (5m), Plan C (15m) -- the review's own exact scenario
+        int attempts = 3; // Plan A (1m), Plan B (5m), Plan C (15m)
         ExecutorService executor = Executors.newFixedThreadPool(attempts);
         CountDownLatch startLine = new CountDownLatch(1);
         CountDownLatch allDone = new CountDownLatch(attempts);
@@ -122,7 +103,7 @@ class MultiPlanExposureIntegrationTest {
         assertThat(allDone.await(30, TimeUnit.SECONDS)).isTrue();
         executor.shutdown();
 
-        // The actual claim under test: with a 1000 cap and three concurrent 400-unit attempts
+        // With a 1000 cap and three concurrent 400-unit attempts
         // (1200 combined if all succeeded), at most 2 can ever be accepted (800 total) -- the
         // third MUST be rejected, no matter which "plan" it came from, because the reservation
         // itself has no concept of plan identity at all, only credentialId+symbol.

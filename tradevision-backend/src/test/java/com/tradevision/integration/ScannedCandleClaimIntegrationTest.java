@@ -24,29 +24,18 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding ("Only one backend replica is currently declared" -- external review,
- * twenty-fourth pass, P2, confirmed real by direct inspection: the Mongo locking work allows
- * multiple instances in several areas, but this application should not be horizontally scaled
- * until the remaining lease/execution semantics are proven with multi-instance integration
- * tests -- the scanner's own cross-instance candle-dedup claim (see ScannedCandle's own class
- * javadoc, this session's own P1-6 fix) had never actually been proven against a real MongoDB
- * enforcing the unique index, only against Mockito): the actual proof -- many concurrent
- * "instances" (simulated as concurrent threads, the same standard this codebase's own
- * DistributedLockServiceIntegrationTest already uses for exactly this reason) racing to claim
- * the identical candle, against a real Mongo unique index, not a mock.
+ * Verifies the scanner's cross-instance candle-dedup claim against a real MongoDB enforcing the
+ * unique index, not a mock: many concurrent "instances" (simulated as concurrent threads)
+ * racing to claim the identical candle, against a real Mongo unique index.
  *
- * HONEST LIMITATION, same as every other integration test in this package: `docker ps` fails
- * outright in this sandbox ("docker: not found") -- no Docker daemon is available here, so I
- * have not executed this test and cannot confirm it passes. Run
- * `mvn test -Dtest=ScannedCandleClaimIntegrationTest` on a machine with Docker available to
- * actually confirm this before trusting it, and before scaling this application's own replica
- * count beyond 1 for real autonomous trading, per the review's own explicit caution.
+ * Requires Docker (Testcontainers); run
+ * `mvn test -Dtest=ScannedCandleClaimIntegrationTest` on a machine with Docker available.
  */
 @Testcontainers(disabledWithoutDocker = true)
-// P1-16 fix: spring.profiles.active now defaults to "prod" (fail-closed), which has no default
-// secrets at all -- without this, this Testcontainers-backed context would fail to start
-// outside a real deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, the
-// same secrets this test always implicitly relied on before that default changed.
+// spring.profiles.active defaults to "prod" (fail-closed), which has no default secrets at all
+// -- without this, this Testcontainers-backed context would fail to start outside a real
+// deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, which has the
+// secrets this test relies on.
 @ActiveProfiles("local")
 @SpringBootTest
 class ScannedCandleClaimIntegrationTest {
@@ -97,12 +86,10 @@ class ScannedCandleClaimIntegrationTest {
         assertThat(allDone.await(30, TimeUnit.SECONDS)).isTrue();
         executor.shutdown();
 
-        // The actual claim under test: MongoDB's own unique index on claimKey (created by
-        // IndexInitializer, part of application startup -- this test relies on the real Spring
-        // context actually creating it, not stubbing it) means exactly one concurrent save()
-        // for the identical claimKey can ever succeed, regardless of how many "instances" race
-        // for it simultaneously -- the entire cross-instance dedup guarantee this session's own
-        // ScannedCandle fix depends on rests on this holding against a real database.
+        // MongoDB's unique index on claimKey (created by IndexInitializer, part of application
+        // startup -- this test relies on the real Spring context creating it, not stubbing it)
+        // means exactly one concurrent save() for the identical claimKey can ever succeed,
+        // regardless of how many "instances" race for it simultaneously.
         assertThat(successCount.get()).isEqualTo(1);
         assertThat(duplicateKeyCount.get()).isEqualTo(concurrentAttempts - 1);
     }

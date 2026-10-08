@@ -283,18 +283,10 @@
     </div>
   </section>
 
-  <!-- Accuracy / Trust section.
-       P3 audit fix ("misleading marketing claims" -- external review, confirmed real): this
-       section used to show four specific performance numbers (78% win rate, +4.8%/-1.6% average
-       trade, 3.0x profit factor) under the heading "Transparent. Accountable. Proven." and the
-       claim "shows real win rates -- not cherry-picked numbers." None of those numbers are
-       computed anywhere in this component or backed by any tracked, published result -- they
-       were hardcoded static markup. The one real stats endpoint this app has
-       (TradeCallController#/api/calls/stats) is per-user and authenticated, not a public
-       aggregate, so there is no existing honest data source for a public claim like this. Rather
-       than invent a public aggregate-stats backend just to re-justify these numbers, the specific
-       figures and the "not cherry-picked" claim are removed; the illustrative example below is
-       clearly labeled as such, and the layout/visual design is otherwise preserved. -->
+  <!-- Illustrates the structure of a trade signal (entry, targets, stop loss, R:R) with a
+       labeled sample layout rather than specific performance figures, since the app has no
+       public aggregate-stats endpoint to back real numbers with (the one stats endpoint,
+       TradeCallController#/api/calls/stats, is per-user and authenticated). -->
   <section class="accuracy" id="accuracy">
     <div class="section-inner">
       <div class="section-label">HOW SIGNALS ARE STRUCTURED</div>

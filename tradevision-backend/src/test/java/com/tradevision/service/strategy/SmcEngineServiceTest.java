@@ -11,11 +11,11 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding ("Client-Side Signal Generation" — "Port the entire TA engine... to Java"):
- * tests the actual verified port — see SmcEngineService's own javadoc for the full verification
- * methodology (3 large seeded scenarios, each compared field-by-field against the real
- * TypeScript's own reference output) and the genuine cross-language floating-point display
- * formatting difference found and documented (never a logic difference) along the way.
+ * Tests the Java port of the TA engine's SMC (Smart Money Concepts) analysis against its
+ * TypeScript source -- see SmcEngineService's own javadoc for the full verification methodology
+ * (3 large seeded scenarios, each compared field-by-field against the real TypeScript's own
+ * reference output). Any discrepancy found is a cross-language floating-point display
+ * formatting difference, never a logic difference.
  */
 class SmcEngineServiceTest {
 

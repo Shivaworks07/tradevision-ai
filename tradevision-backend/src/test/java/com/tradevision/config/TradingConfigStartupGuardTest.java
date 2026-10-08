@@ -10,12 +10,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Audit fix (P0-3 follow-up — external re-review of the stop-limit-gap configurability fix,
- * confirmed real: "I saw no bounds check on the value (negative or ≥ 1)" — full context in
- * TradingConfigStartupGuard's own class javadoc). @Value fields aren't populated by any
- * Spring-container magic in a plain unit test -- set directly via ReflectionTestUtils, mirroring
- * exactly what a real application.properties resolution would have produced, same pattern as
- * DevSecretStartupGuardTest's own identical setup.
+ * Verifies TradingConfigStartupGuard's bounds check on the stop-limit gap value (must be
+ * non-negative and less than 1). @Value fields aren't populated by any Spring-container
+ * magic in a plain unit test -- set directly via ReflectionTestUtils, mirroring what a real
+ * application.properties resolution would produce, the same pattern as
+ * DevSecretStartupGuardTest's setup.
  */
 class TradingConfigStartupGuardTest {
 

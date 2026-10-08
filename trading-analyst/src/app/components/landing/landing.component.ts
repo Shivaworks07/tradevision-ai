@@ -110,12 +110,9 @@ export class LandingComponent implements OnInit, OnDestroy {
   pctStr(v: number):   string { return (v >= 0 ? '+' : '') + v.toFixed(2) + '%'; }
 
   ngOnInit() {
-    // Review finding ("Frontend still caches non-secret user profile in localStorage; residual
-    // XSS surface for session continuity" -- external review, nineteenth pass, P1, full context
-    // in AuthService's own sessionReady field comment): this route isn't behind authGuard (it's
-    // the public landing page), so it must await sessionReady itself before checking isLoggedIn
-    // -- otherwise a page load could see isLoggedIn: false for a genuinely logged-in user during
-    // the brief window before the new, async session-restoration check resolves.
+    // This is the public landing page, not behind authGuard, so it must await
+    // sessionReady before checking isLoggedIn — otherwise a logged-in user could
+    // briefly see isLoggedIn: false while session restoration is still resolving.
     this.auth.sessionReady.then(() => {
       if (this.auth.isLoggedIn) {
         this.auth.refreshProfile().subscribe({

@@ -19,51 +19,33 @@ import java.time.LocalDateTime;
 import java.util.Map;
 
 /**
- * Review finding ("Frontend authentication migration is incomplete and currently breaks
- * authenticated APIs" -- P0): confirmed real and fixed -- see UserController's own javadoc for
- * the full root-cause explanation. submit() is the one method here that's genuinely different
- * from the mechanical fix elsewhere: it's a PUBLIC endpoint (/api/feedback permits all in
- * SecurityConfig) that optionally identifies the submitter WHEN they happen to be logged in --
- * previously via an optional Authorization header, now via @AuthenticationPrincipal, which is
- * simply null for an unauthenticated request to a public endpoint and populated exactly when
- * SecurityConfig's own jwtFilter successfully authenticated the request's cookie, regardless of
- * whether the endpoint itself required authentication at all.
+ * Handles user-submitted feedback (bug reports, suggestions, with an optional screenshot),
+ * plus the admin views and actions for triaging it.
+ *
+ * submit() is a public endpoint (SecurityConfig permits /api/feedback without authentication)
+ * that still records which user sent it when the request happens to carry an authenticated
+ * session: @AuthenticationPrincipal is simply null for an anonymous caller and populated when
+ * SecurityConfig's jwtFilter authenticates the request's cookie.
  */
 @RestController
 @RequestMapping("/api/feedback")
 @RequiredArgsConstructor
-// Review finding ("@CrossOrigin still has hardcoded localhost origins" -- external review,
-// thirty-fifth pass, P2, full context in NewsController's own identical fix): removed --
-// CorsConfig's own global CorsFilter already covers this endpoint.
+// CORS is handled centrally by CorsConfig's global CorsFilter; no per-controller
+// @CrossOrigin is needed here.
 public class FeedbackController {
 
     private final FeedbackRepository feedbackRepo;
     private final UserRepository     userRepo;
-    // Review finding (P1 — "Release/version consistency"): optional because BuildProperties is
-    // only registered when the build-info goal actually ran (a Maven build did, not necessarily
-    // a raw `mvn spotless:check` or an IDE run) — falls back to "dev" rather than crash-on-missing.
+    // Optional because BuildProperties is only registered when the build-info goal actually ran
+    // (a full Maven build, not necessarily a raw check or an IDE run); falls back to "dev"
+    // rather than failing when it's absent.
     private final java.util.Optional<BuildProperties> buildProperties;
     /**
-     * P2-13 fix ("FeedbackController.submit: Public, CSRF-exempt, unthrottled, stores 2.8 MB
-     * base64 per request" -- external review, confirmed real by direct inspection before this
-     * fix: submit() is genuinely public (SecurityConfig permits /api/feedback with no
-     * authentication requirement, by design -- see this class's own header javadoc), already
-     * caps each screenshot at ~2.8MB base64 (this class's own existing size-quota check below),
-     * but had NO rate limit at all -- an anonymous scripted caller could submit an unbounded
-     * number of near-2.8MB documents per second, a genuine storage-cost and Mongo-write-capacity
-     * DoS with no authentication barrier in the way): the same DistributedRateLimitService +
-     * ClientIpResolver infrastructure already established for the OTP/account-check endpoints,
-     * reused here rather than a fourth independent implementation of the same per-IP throttling.
-     *
-     * HONEST SCOPE: the review's own suggested fix also names "object storage" (moving the
-     * screenshot itself out of this collection's own documents and into S3/GCS/etc.) -- this
-     * codebase has no object-storage SDK or configured bucket anywhere else, and adding one is a
-     * real infrastructure decision (credentials, bucket lifecycle policy, a new external
-     * dependency) beyond what a single endpoint's own code can decide unilaterally. Left
-     * unaddressed and stated here rather than silently skipped; the size cap already in place
-     * (2.8MB base64 per document) plus this rate limit are the two levers available without that
-     * larger infrastructure change, and together they bound the real worst case (rate x size) to
-     * a small, known number rather than an unbounded one.
+     * Throttles feedback submissions per client IP, reusing the same DistributedRateLimitService
+     * and ClientIpResolver infrastructure used for OTP/account-check endpoints. Since this
+     * endpoint is public and accepts a screenshot of up to ~2.8MB base64 per submission, the
+     * rate limit together with that size cap bounds storage and write load to a small, known
+     * worst case per IP per window.
      */
     private final DistributedRateLimitService distributedRateLimitService;
     private static final int MAX_FEEDBACK_SUBMISSIONS_PER_IP_PER_WINDOW = 30;
@@ -110,9 +92,8 @@ public class FeedbackController {
             return ResponseEntity.badRequest().body(ApiResponse.error("Description is required"));
         if (f.getTitle().length() > 200)
             return ResponseEntity.badRequest().body(ApiResponse.error("Title too long (max 200 chars)"));
-        // Review finding ("feedback screenshot has the same problem" — no size limit): base64
-        // inflates size by ~33% over the raw binary, so this caps the encoded string at roughly
-        // what decodes to 2MB of actual image data, matching the review's suggested ceiling.
+        // base64 inflates size by ~33% over the raw binary, so this caps the encoded string at
+        // roughly what decodes to 2MB of actual image data.
         if (f.getScreenshotBase64() != null && f.getScreenshotBase64().length() > 2_800_000) {
             return ResponseEntity.badRequest().body(ApiResponse.error("Screenshot too large (max ~2MB) — please attach a smaller image."));
         }

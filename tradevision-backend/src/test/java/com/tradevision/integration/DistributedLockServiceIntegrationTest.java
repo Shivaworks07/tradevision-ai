@@ -23,26 +23,19 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding ("Only one integration test uses real Mongo/Testcontainers" -- external review,
- * fourth pass, P2, naming "lock expiry" and "lock generation" among the required real-Mongo
- * scenarios): the same honest gap as PositionSlotReservationIntegrationTest's own javadoc
- * describes -- this session's own lock-generation fencing work (LockGenerationCounter, the
- * generation-aware renew() overload, per-mutation fencing throughout PositionMonitorService and
- * PositionSafetyService) has been verified by hand-tracing logic against Mockito throughout, but
- * never against a real MongoDB actually serializing concurrent acquisition attempts. This is
- * that proof, following the exact same pattern as the existing integration test.
+ * Verifies lock-generation fencing (LockGenerationCounter, the generation-aware renew()
+ * overload, per-mutation fencing throughout PositionMonitorService and PositionSafetyService)
+ * against a real MongoDB actually serializing concurrent acquisition attempts, following the
+ * same pattern as PositionSlotReservationIntegrationTest.
  *
- * HONEST LIMITATION, same as PositionSlotReservationIntegrationTest's own: `docker ps` fails
- * outright in this sandbox ("docker: not found") -- no Docker daemon is available here, so I
- * have not executed this test and cannot confirm it passes. Run
- * `mvn test -Dtest=DistributedLockServiceIntegrationTest` on a machine with Docker available to
- * actually confirm this before trusting it.
+ * Requires Docker (Testcontainers); run
+ * `mvn test -Dtest=DistributedLockServiceIntegrationTest` on a machine with Docker available.
  */
 @Testcontainers(disabledWithoutDocker = true)
-// P1-16 fix: spring.profiles.active now defaults to "prod" (fail-closed), which has no default
-// secrets at all -- without this, this Testcontainers-backed context would fail to start
-// outside a real deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, the
-// same secrets this test always implicitly relied on before that default changed.
+// spring.profiles.active defaults to "prod" (fail-closed), which has no default secrets at all
+// -- without this, this Testcontainers-backed context would fail to start outside a real
+// deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, which has the
+// secrets this test relies on.
 @ActiveProfiles("local")
 @SpringBootTest
 class DistributedLockServiceIntegrationTest {
@@ -88,26 +81,16 @@ class DistributedLockServiceIntegrationTest {
         assertThat(allDone.await(30, TimeUnit.SECONDS)).isTrue();
         executor.shutdown();
 
-        // The actual claim under test: no matter how many instances race for this credential's
-        // reconciliation lock simultaneously, MongoDB's own atomicity (this session's own
-        // insert-based acquisition, not a read-then-write check) means exactly one can ever win
-        // -- the entire safety argument for every per-mutation fencing check added this session
-        // rests on this exact guarantee actually holding against a real database, not a mock.
+        // No matter how many instances race for this credential's reconciliation lock
+        // simultaneously, MongoDB's atomicity (insert-based acquisition, not a read-then-write
+        // check) means exactly one can ever win.
         assertThat(successCount.get()).isEqualTo(1);
     }
 
     /**
-     * Review finding ("One test-quality issue I noticed" -- external review, thirty-fourth
-     * pass, a genuine test defect, not a production one: this test's own name and DisplayName
-     * claimed to prove "generation-aware renewal," but called the plain 3-arg renew() overload
-     * throughout -- proving instance-ownership fencing (a different instanceId now legitimately
-     * owns the document) rather than the generation-fencing guarantee the name claimed. The
-     * production method's own generation-aware 4-arg overload, and every real production
-     * caller's use of it, were never actually exercised by this test at all): renamed to
-     * describe what it genuinely proves -- instance-id fencing -- and left otherwise unchanged,
-     * since that guarantee is itself real and worth keeping a test for. The actual
-     * generation-fencing test the review asks for follows immediately below, as a new,
-     * separate test.
+     * Verifies instance-id fencing: a renewal using the plain 3-arg renew() overload is refused
+     * once a different instance legitimately owns the lock document. The generation-fencing
+     * guarantee (the 4-arg overload) is covered separately below.
      */
     @Test
     @DisplayName("renew: an instance that no longer holds the lock (a different instance has since acquired it) fails to renew against a REAL MongoDB -- instance-id fencing, proven against a real document, not a mock")
@@ -129,11 +112,10 @@ class DistributedLockServiceIntegrationTest {
     }
 
     /**
-     * Review finding, same context as the renamed test's own updated javadoc: this is the
-     * review's own explicitly requested fix -- capture the real generation from
-     * tryAcquireWithDiagnosis's own LockLease, let it expire and be re-acquired by the SAME
-     * instanceId (so instance-id fencing alone could never catch this -- only the generation
-     * check can), then confirm the OLD generation is correctly refused by a real MongoDB.
+     * Verifies generation fencing: capture the generation from tryAcquireWithDiagnosis's
+     * LockLease, let it expire and be re-acquired by the same instanceId (so instance-id fencing
+     * alone could never catch this -- only the generation check can), then confirm the old
+     * generation is correctly refused by a real MongoDB.
      */
     @Test
     @DisplayName("renew: the SAME instanceId re-acquiring after its own lease expired gets a NEW generation -- a renewal carrying the OLD (stale) generation is refused by a real MongoDB, even though the instanceId itself matches. This is the actual generation-fencing guarantee, isolated from instance-id fencing (which alone could not catch this case, since the instanceId is identical both times)")
@@ -151,9 +133,9 @@ class DistributedLockServiceIntegrationTest {
         assertThat(secondLease.acquired()).isTrue();
         assertThat(secondLease.generation()).isGreaterThan(staleGeneration); // confirms the generation genuinely advanced
 
-        // The actual claim under test: a renewal carrying the STALE generation must be refused,
-        // even though "instance-A" is the correct, current instanceId both times -- proving this
-        // is a genuine generation check, not something instance-id fencing alone could catch.
+        // A renewal carrying the stale generation must be refused, even though "instance-A" is
+        // the correct, current instanceId both times -- a genuine generation check, not
+        // something instance-id fencing alone could catch.
         boolean staleGenerationRenews = lockService.renew(credentialId, "instance-A", staleGeneration, Duration.ofSeconds(90));
         assertThat(staleGenerationRenews).isFalse();
 

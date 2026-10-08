@@ -4,27 +4,14 @@ import java.math.BigDecimal;
 import java.util.List;
 
 /**
- * Review finding ("Client-Side Signal Generation = Trusting the Browser with Money" / "Move this
- * to Angular to Java"): the final combined output of SignalCombinerService — see that class's own
- * javadoc for the full verification methodology, including a correction made mid-build after
- * finding this file's FIRST version had silently simplified the real frontend's emoji,
- * punctuation, and had omitted most of the real return object's own fields entirely.
+ * The final trade call produced by SignalCombinerService: the base signal direction/confidence
+ * folded together with multi-timeframe alignment, market regime, SMC bias, order-flow bias, and
+ * volume-profile context, plus a human-readable summary explaining the combined reasoning.
  *
- * Review finding ("double still exists throughout strategy calculations" -- external review,
- * twenty-sixth pass, P2, confirmed real by direct inspection before this fix): entry/stopLoss/
- * target1/target2/target3 are exactly the "prices, SL, TP" the review names specifically.
- * Converted to BigDecimal here at the DTO boundary -- the internal computation this value is
- * built from (ServerSignalEngine's own verified, exact-match algorithm) deliberately stays
- * double throughout, unconverted: rewriting that algorithm's own internal arithmetic to
- * BigDecimal would risk the "exact match" verification it already has, for no real gain, since
- * the algorithm's own precision needs (EMA/RSI/MACD math) are not the same class of concern as a
- * price a real order could be sized from. Confirmed by direct inspection that no caller anywhere
- * in this codebase actually reads these five fields off a CombinedSignal to feed a real
- * calculation (see SignalCombinerService's own two construction sites) -- both real callers
- * (AutonomousScannerService, NoTradeFilterService) explicitly discard them in favor of the
- * original ServerSignalEngine.Signal's own values. Converted anyway, on principle: a future
- * caller reading this DTO's own price fields should get real precision, not an assumption that
- * happens to be safe only because nothing uses them yet.
+ * entry/stopLoss/target1/target2/target3 are BigDecimal at this DTO boundary because they are
+ * the actual prices/SL/TP a real order could be sized from, even though the internal
+ * computation they come from (ServerSignalEngine) works in double throughout for its own
+ * indicator math (EMA/RSI/MACD), which has different precision needs than an order price.
  */
 public record CombinedSignal(
     String direction,  // LONG, SHORT, WAIT

@@ -4,20 +4,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * Review finding ("#2 — Full authoritative strategy engine"): a genuinely bounded, VERIFIED
- * piece of that much larger ask — not a claim that #2 is done. SMC/BOS/CHOCH/order-blocks/FVG/
- * volume-profile/order-flow/CVD/regime-detection remain entirely unported: those are large,
- * deeply interconnected bodies of TypeScript (smc-engine.service.ts, market-regime.service.ts,
- * order-flow.service.ts, volume-profile.service.ts — 1,300+ lines combined) that this pass
- * cannot responsibly replicate without a way to verify the port produces equivalent output.
- *
- * This one piece — fear-greed.service.ts's getSignal/getColor/getEmoji — is different: it's a
- * small, pure, self-contained function (no candle data, no interconnection with the other
- * engines). It was actually verified, not assumed: the original TypeScript was extracted
- * verbatim and run under Node against 19 test cases spanning every threshold boundary, and this
- * Java port is checked against that exact captured output in FearGreedServiceTest — not trusted
- * blind the way porting SMC or order-flow would have to be without a comparable verification
- * harness for algorithms of that size and interconnection.
+ * Classifies the Fear & Greed Index into a trading signal, color and label. This is a Java port
+ * of the original fear-greed.service.ts getSignal/getColor/getEmoji logic, chosen as a standalone
+ * port because it is a small, pure, self-contained function with no candle data or dependency on
+ * the larger strategy-engine code (SMC/BOS/CHOCH/order-blocks/FVG/volume-profile/order-flow/CVD/
+ * regime-detection), which remains in TypeScript. The port is checked against the original
+ * TypeScript's captured output across threshold boundaries in FearGreedServiceTest.
  */
 @Service
 public class FearGreedService {
@@ -27,11 +19,11 @@ public class FearGreedService {
     private final RestTemplate http = new RestTemplate();
 
     /**
-     * Calls the same real upstream ProxyController.fngApi already forwards to
-     * (https://api.alternative.me) directly — not through this backend's own frontend-facing
-     * proxy route, which would be a needless self-call adding latency for no benefit; that route
-     * exists for the BROWSER to reach this API through this backend, not for this backend to
-     * reach it through itself.
+     * Fetches the current Fear &amp; Greed Index directly from the upstream API
+     * (https://api.alternative.me), the same source ProxyController.fngApi forwards to. This
+     * calls the upstream directly rather than going through this backend's own frontend-facing
+     * proxy route, which exists for the browser to reach the API through this backend, not for
+     * this backend to call itself.
      */
     public FearGreedSignal fetchCurrent() {
         try {
@@ -42,11 +34,11 @@ public class FearGreedService {
             int prev = data.size() > 1 ? data.get(1).get("value").asInt() : val;
             return classify(val, prev);
         } catch (Exception e) {
-            return null; // genuinely unavailable — never fabricate a "neutral" reading, same rule the frontend's own fix already established
+            return null; // upstream unavailable — never fabricate a "neutral" reading when the real value is unknown
         }
     }
 
-    /** Ported verbatim from fear-greed.service.ts's getSignal — verified against the original in FearGreedServiceTest. */
+    /** Classifies a Fear &amp; Greed value (and its trend vs. the previous reading) into a signal and reason; ported from fear-greed.service.ts's getSignal. */
     public FearGreedSignal classify(int val, int prev) {
         int trend = val - prev;
         String signal;

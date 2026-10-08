@@ -8,92 +8,54 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 /**
- * P0-7 fix ("Dedicated scheduler pool" -- external review, confirmed real by direct inspection:
- * this application's only scheduling wiring was a bare @EnableScheduling on
- * TradeVisionApplication, with no TaskScheduler bean of its own anywhere in the codebase.
- * Spring Boot's own TaskSchedulingAutoConfiguration then supplies the default -- a
- * ThreadPoolTaskScheduler with pool size 1 (spring.task.scheduling.pool.size defaults to 1,
- * confirmed against Spring Boot's own TaskSchedulingProperties) -- meaning every single
- * @Scheduled method in this application (reconciliation, autonomous scanning, kline/user-data
- * stream polling, stuck-order/signal recovery, incident retry, ML call-result updates) shared
- * ONE thread. A slow autonomous scan (a real network-bound cycle touching every enabled symbol
- * across every credential) or a slow kline poll could -- and in production, eventually would --
- * delay PositionMonitorService's own reconciliation loop, the one @Scheduled job in this
- * codebase actually responsible for detecting and fixing unprotected/naked positions. A blocked
- * reconciliation cycle is not a performance nuisance here, it's a safety gap: every fix this
- * session made to reconciliation (P0-1 through P0-5) is worthless if reconciliation itself can
- * be starved of CPU time by an unrelated, lower-priority scheduled job sharing its only thread.
+ * Supplies separate, dedicated TaskScheduler pools for this application's @Scheduled work,
+ * instead of relying on Spring Boot's default single-thread ThreadPoolTaskScheduler (pool size
+ * 1). With everything sharing one thread, a slow network-bound job — an autonomous scan touching
+ * every enabled symbol across every credential, or a kline poll — could delay
+ * PositionMonitorService's reconciliation loop, the job responsible for detecting and fixing
+ * unprotected/naked positions. A blocked reconciliation cycle is a safety gap, not just a
+ * performance issue, so reconciliation gets its own pool that cannot be starved by unrelated
+ * scheduled work.
  *
- * The actual fix: three separate, dedicated TaskScheduler beans, each with its own bounded pool
- * and its own thread-name prefix (so a thread dump immediately shows which class of scheduled
- * work is running/stuck) -- referenced explicitly via @Scheduled(scheduler = "...") at every
- * call site (see each @Scheduled method's own updated annotation), rather than a single larger
- * shared pool. A single bigger pool would already fix the specific starvation scenario above (a
- * large enough pool means every job gets its own thread in practice), but a genuinely runaway
- * scan or stream-poll task could still, in principle, exhaust a shared pool's queue and delay
- * reconciliation behind it. Separate pools make that structurally impossible: reconciliation's
- * own pool can never be blocked by anything running in the scan or maintenance pool, because
- * they are different threads entirely, not just different queue positions in the same pool.
+ * Each @Scheduled method references one of these pools explicitly via
+ * @Scheduled(scheduler = "..."), and each pool has its own thread-name prefix so a thread dump
+ * immediately shows which class of scheduled work is running or stuck. Separate pools (rather
+ * than one larger shared pool) make cross-job starvation structurally impossible: reconciliation
+ * runs on threads that scan or maintenance work can never occupy.
  *
- *  - reconciliationScheduler: PositionMonitorService's own reconciliation loop ONLY -- the one
- *    scheduled job this application treats as safety-critical. A pool size of 2 (not 1) so a
- *    still-running reconciliation cycle for one credential can never delay this application's
- *    own periodic health/shutdown-related scheduled work from this same pool in the future,
- *    though today it is the sole occupant.
- *  - scanScheduler: the market-data-heavy, naturally bursty jobs -- autonomous signal scanning,
- *    the 1-minute kline stream's own polling fallback, and the Binance user-data-stream
- *    keepalive/reconnect checks. Sized for the current three occupants plus real headroom.
- *  - maintenanceScheduler: the lower-frequency, non-time-critical recovery/bookkeeping jobs --
- *    stuck-order/stuck-signal recovery, incident retry, and ML call-result updates. These can
- *    tolerate being queued behind each other far more readily than reconciliation or live
- *    scanning can, so they share the smallest dedicated pool.
+ *  - reconciliationScheduler: PositionMonitorService's reconciliation loop only — the one
+ *    scheduled job this application treats as safety-critical. Pool size 2, leaving headroom for
+ *    future periodic health/shutdown-related work on the same pool.
+ *  - scanScheduler: the market-data-heavy, naturally bursty jobs — autonomous signal scanning,
+ *    the 1-minute kline stream's polling fallback, and Binance user-data-stream
+ *    keepalive/reconnect checks. Sized for its three occupants plus headroom.
+ *  - maintenanceScheduler: lower-frequency, non-time-critical recovery and bookkeeping jobs —
+ *    stuck-order/stuck-signal recovery, incident retry, and ML call-result updates. These
+ *    tolerate queuing behind each other, so they share the smallest dedicated pool.
  *
- * Every pool is named explicitly (setThreadNamePrefix) for the same reason AsyncConfig's own
- * executors already are -- a thread dump or profiler should never require guessing which
- * @Scheduled method a given thread belongs to.
+ * Every pool is named explicitly (setThreadNamePrefix), matching AsyncConfig's executors, so a
+ * thread dump or profiler never requires guessing which @Scheduled method a thread belongs to.
  *
- * CI-review fix ("MongoDB connection-refused errors from scheduled background reconciliation
- * tasks" -- external review, GitHub Actions integration-test failures, "Additional issue"; full
- * mechanism explained in TradeVisionApplication's own updated javadoc): app.scheduling.enabled
- * turns off REAL @Scheduled timer firing in every Spring-context-backed test (via
- * SchedulingEnablerConfig below), default true everywhere else (set false only in the test JVM,
- * by tradevision-backend/pom.xml's Surefire systemPropertyVariable).
- *
- * This outer class -- the four dedicated TaskScheduler bean definitions themselves -- is
- * deliberately NOT gated by that same property, after a real CI run (confirmed via a downloaded
- * GitHub Actions log archive, same disclosed sandbox-has-no-Docker limitation as everywhere else
- * in this codebase's tests) showed every integration test's ApplicationContext failing to start
- * with "Parameter 8 of constructor in BinanceUserDataStreamService required a bean of type
- * 'org.springframework.scheduling.TaskScheduler' that could not be found." An earlier version of
- * this fix DID gate the whole class (reasoning: a test context that will never fire a @Scheduled
- * method doesn't need to spin up, or later shut down, four live thread pools it will never use)
- * -- but BinanceUserDataStreamService constructor-injects wsReconcileDispatchScheduler directly,
- * by type/name, to dispatch debounced reconciliation work from its own WebSocket listener thread
- * (see that class's own javadoc) -- a real, unconditional dependency on the bean existing, which
- * has nothing to do with whether @Scheduled annotations are being processed anywhere. Gating the
- * bean definitions broke that dependency the moment app.scheduling.enabled=false, in every single
- * test, since nothing else in this codebase injects a TaskScheduler by type/name outside a
- * @Scheduled(scheduler = "...") string reference (which IS a no-op with @EnableScheduling off, so
- * disabling firing there was always safe). Pools created but briefly idle in a test context is a
- * real but minor resource cost; a test suite entirely unable to start its ApplicationContext is
- * not an acceptable trade for it. Production behavior is unchanged either way: matchIfMissing =
- * true already meant every pool was created in every non-test profile before this correction too.
+ * app.scheduling.enabled gates whether @Scheduled timers actually fire (via
+ * SchedulingEnablerConfig below): it is set false only in the test JVM by
+ * tradevision-backend/pom.xml's Surefire configuration, and defaults to true everywhere else.
+ * The TaskScheduler bean definitions in this outer class are deliberately NOT gated by that same
+ * property, because BinanceUserDataStreamService constructor-injects wsReconcileDispatchScheduler
+ * directly, by type/name, to dispatch debounced reconciliation work from its WebSocket listener
+ * thread — an unconditional dependency on the bean existing, independent of whether @Scheduled
+ * annotations are being processed. Gating the bean definitions would break that dependency
+ * whenever app.scheduling.enabled=false. Idle pools in a test context are a minor resource cost
+ * compared to an ApplicationContext that fails to start.
  */
 @Configuration
 public class SchedulingConfig {
 
     /**
-     * CI-review fix (full context in this class's own header javadoc and in
-     * TradeVisionApplication's updated javadoc): @EnableScheduling used to sit directly on
-     * TradeVisionApplication, meaning it was active, unconditionally, in every Spring context
-     * this application ever boots -- including every Testcontainers-backed integration test.
-     * Moved here, onto its own tiny @ConditionalOnProperty-gated configuration class, so that
-     * pom.xml's Surefire-set app.scheduling.enabled=false can turn off REAL @Scheduled timer
-     * firing for Spring-context-backed tests specifically, without
-     * touching the property's default (matchIfMissing = true) for every real deployment profile
-     * (prod, local) or for a developer's own manual "local" run, which still behaves exactly as
-     * it did before this fix -- this is a test-lifecycle fix, not a change to production
-     * scheduling cadence, conditions, or behavior.
+     * Gates @EnableScheduling behind app.scheduling.enabled (default true) so Surefire can turn
+     * off real @Scheduled timer firing specifically for Spring-context-backed tests, without
+     * touching scheduling for any real deployment profile or a developer's manual local run.
+     * This only controls whether @Scheduled timers fire, not production scheduling cadence or
+     * behavior.
      */
     @Configuration
     @ConditionalOnProperty(name = "app.scheduling.enabled", havingValue = "true", matchIfMissing = true)
@@ -135,18 +97,14 @@ public class SchedulingConfig {
     }
 
     /**
-     * P1-18 fix ("WebSocket listener does blocking reconciliation on the socket thread" --
-     * confirmed real, full context in BinanceUserDataStreamService.Listener.onText's own
-     * updated comment): a dedicated pool for the debounced reconciliation BinanceUserDataStreamService
-     * now dispatches to instead of calling PositionMonitorService.reconcileCredential()
-     * synchronously on the WebSocket's own receive thread. Deliberately separate from every
-     * other pool above -- reusing reconciliationScheduler specifically would reintroduce a
-     * milder version of the exact problem this fix closes (a burst of WS-triggered dispatches
-     * competing with, and potentially delaying, the periodic 60s reconciliation sweep that pool
-     * exists to protect). Small (3 threads): this pool's own job is a cheap `schedule()` call
-     * onto a short-delay debounce timer, not the reconciliation work itself, which still runs
-     * on one of these threads but briefly and one credential at a time per burst (the debounce
-     * in Listener.scheduleDebouncedReconcile collapses a burst into a single dispatch).
+     * Dedicated pool for the debounced reconciliation that BinanceUserDataStreamService
+     * dispatches here instead of calling PositionMonitorService.reconcileCredential()
+     * synchronously on the WebSocket's own receive thread. Kept separate from
+     * reconciliationScheduler so a burst of WS-triggered dispatches can never compete with, or
+     * delay, the periodic 60s reconciliation sweep that pool protects. Small (3 threads): this
+     * pool mainly schedules a short-delay debounce timer; the reconciliation work itself runs
+     * briefly and one credential at a time per burst, since the debounce in
+     * Listener.scheduleDebouncedReconcile collapses a burst into a single dispatch.
      */
     @Bean("wsReconcileDispatchScheduler")
     public TaskScheduler wsReconcileDispatchScheduler() {
@@ -160,21 +118,14 @@ public class SchedulingConfig {
     }
 
     /**
-     * Audit item P0-3 fix ("the stuck-triggered-stop-leg detection in
-     * PositionMonitorService.reconcileOcoProtectedPosition/handleStopTriggeredButUnfilled is
-     * correct, but only runs on the main 60-second reconciliationScheduler cadence -- a fast
-     * price move through a resting STOP_LOSS_LIMIT leg's own buffer can sit undetected for up
-     * to a minute" -- confirmed real by direct inspection of that existing, already-tested
-     * detection/flatten logic before this fix; user's own explicit choice between two offered
-     * approaches: "add a fast price watchdog" over changing the OCO leg type Binance is sent,
-     * which this sandbox has no live network path to verify): a dedicated, small, fast-cadence
-     * pool for PositionMonitorService.watchExitProtection, which re-runs that exact same,
-     * already-proven detection+flatten logic every 10 seconds instead of every 60 -- not new
-     * logic, just a much shorter window for the one specific gap the audit named. Deliberately
-     * separate from reconciliationScheduler: this pool's own job acquires the SAME per-credential
-     * lock reconciliationScheduler's own work does (so the two can never run concurrently for one
-     * credential), and giving it its own thread means a slow watchdog pass for one credential can
-     * never delay the 60s pass's own, broader reconciliation work for a different credential.
+     * Fast-cadence pool for PositionMonitorService.watchExitProtection, which re-runs the
+     * stuck-triggered-stop-leg detection and flatten logic every 10 seconds instead of every 60.
+     * A fast price move through a resting STOP_LOSS_LIMIT leg's buffer can otherwise sit
+     * undetected for up to a minute on the main reconciliation cadence. Kept separate from
+     * reconciliationScheduler: this work acquires the same per-credential lock reconciliation
+     * uses, so the two never run concurrently for one credential, and giving it its own thread
+     * means a slow watchdog pass for one credential never delays the 60s pass's broader
+     * reconciliation work for a different credential.
      */
     @Bean("watchdogScheduler")
     public TaskScheduler watchdogScheduler() {
@@ -188,14 +139,12 @@ public class SchedulingConfig {
     }
 
     /**
-     * A named "taskScheduler" bean is still supplied as a safety net -- Spring Boot's own
-     * scheduling infrastructure looks for a bean of this exact name (or type TaskScheduler) when
-     * a @Scheduled method does NOT specify scheduler=..., and without ANY TaskScheduler bean
-     * present at all, adding these three dedicated ones would actually make Spring Boot's own
-     * auto-configuration back off entirely (it only supplies its own default when no
-     * user-defined TaskScheduler exists), leaving any @Scheduled method that forgets to specify
-     * a scheduler with nothing to run on. A small pool (not size 1) so even this fallback path
-     * doesn't reintroduce the single-thread bottleneck this whole fix exists to close.
+     * Fallback bean named "taskScheduler" for any @Scheduled method that omits scheduler=....
+     * Spring Boot's scheduling infrastructure looks for a bean of this exact name (or type
+     * TaskScheduler); since defining the dedicated pools above makes Spring Boot's
+     * auto-configuration back off from supplying its own default, this bean must exist so such a
+     * method still has something to run on. Sized above 1 so this fallback path does not become
+     * a single-thread bottleneck on its own.
      */
     @Bean("taskScheduler")
     public TaskScheduler defaultTaskScheduler() {

@@ -29,9 +29,8 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 
 /**
- * Review finding ("#7 — Unified Portfolio Risk", agreed sequencing 4 -> 6 -> 5 -> 9 -> 7, the
- * final step): verifies the actual aggregation math and the honest "exclude, don't fabricate"
- * rule for unpriceable positions described in PortfolioRiskService's own javadoc.
+ * Verifies the portfolio aggregation math and the rule that an unpriceable position is
+ * excluded from exposure/P&L rather than fabricated.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)

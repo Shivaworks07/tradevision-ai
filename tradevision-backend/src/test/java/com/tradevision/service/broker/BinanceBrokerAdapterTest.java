@@ -15,10 +15,9 @@ import java.math.BigDecimal;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding ("Binance adapter can fabricate a full fill" -- P0): tests the actual fix --
- * see BinanceBrokerAdapter's own resolveExecutedQty() javadoc for the full design. No test file
- * existed for this class at all before this fix, despite it being the one place that actually
- * places real orders against Binance -- confirmed by checking directly, not assumed.
+ * Verifies BinanceBrokerAdapter never fabricates a full fill from an ambiguous or
+ * missing executedQty in the broker's response -- see resolveExecutedQty()'s own
+ * javadoc for the full design.
  *
  * resolveExecutedQty() is accessed via reflection since it's private and this class's
  * RestTemplate is inline-initialized (matching this codebase's own established pattern
@@ -29,12 +28,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class BinanceBrokerAdapterTest {
 
-    // Review finding ("Exchange health is primarily an in-memory metric" -- P1, full context in
-    // ExchangeHealthService's own updated header javadoc): ExchangeHealthService now requires a
-    // MongoTemplate constructor argument -- this test never exercises its actual behavior (it's
-    // only a required dependency for BinanceBrokerAdapter here), so a plain Mockito.mock() is
-    // the right, minimal fix rather than pulling in the full Mockito JUnit extension for this
-    // otherwise-plain test class.
+    // ExchangeHealthService requires a MongoTemplate constructor argument -- this test never
+    // exercises its actual behavior (it's only a required dependency for BinanceBrokerAdapter
+    // here), so a plain Mockito.mock() is the right, minimal choice rather than pulling in the
+    // full Mockito JUnit extension for this otherwise-plain test class.
     private final BinanceBrokerAdapter adapter = new BinanceBrokerAdapter(
         new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class)));
     private final ObjectMapper mapper = new ObjectMapper();
@@ -56,7 +53,7 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("resolveExecutedQty: a response missing executedQty entirely is treated as ZERO filled and UNKNOWN status, never as the full requested quantity -- the actual P0 bug, confirmed fixed by direct execution, not inspection")
+    @DisplayName("resolveExecutedQty: a response missing executedQty entirely is treated as ZERO filled and UNKNOWN status, never as the full requested quantity")
     void missingExecutedQty_neverInfersFullFill() throws Exception {
         JsonNode resp = mapper.readTree("{\"status\":\"FILLED\",\"orderId\":123}"); // executedQty field absent entirely
 
@@ -143,8 +140,7 @@ class BinanceBrokerAdapterTest {
         assertThat(getStatus(result)).isEqualTo("NEW"); // genuine zero with a present field -- not downgraded, unlike the missing-field case
     }
 
-    // ── parseOcoLeg (review finding "Missing broker/OMS test scenarios (missing-executedQty,
-    // OCO-lifecycle, etc.)" -- full context in the method's own javadoc) ────────────────
+    // ── parseOcoLeg ────────────────────────────────────────────────────
 
     private com.tradevision.service.broker.dto.OcoStatusInfo.Leg invokeParseOcoLeg(String legOrderId, JsonNode legResp) throws Exception {
         Method m = BinanceBrokerAdapter.class.getDeclaredMethod("parseOcoLeg", String.class, JsonNode.class);
@@ -166,7 +162,7 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("parseOcoLeg: a partially filled leg computes its average price from the PARTIAL executedQty/cumulativeQuoteQty, not the full requested size -- the actual review scenario (\"partial fills\")")
+    @DisplayName("parseOcoLeg: a partially filled leg computes its average price from the PARTIAL executedQty/cumulativeQuoteQty, not the full requested size")
     void parseOcoLeg_partiallyFilled_computesAveragePriceFromPartialFill() throws Exception {
         JsonNode legResp = mapper.readTree("{\"side\":\"SELL\",\"type\":\"STOP_LOSS_LIMIT\",\"status\":\"PARTIALLY_FILLED\",\"executedQty\":\"0.4\",\"cummulativeQuoteQty\":\"38.0\"}");
 
@@ -178,7 +174,7 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("parseOcoLeg: the still-pending leg of an OCO pair (executedQty genuinely zero, the OTHER leg is the one that triggered) is priced at zero, not a division-by-zero exception -- the actual review scenario (\"ALL_DONE with and without a filled leg\")")
+    @DisplayName("parseOcoLeg: the still-pending leg of an OCO pair (executedQty genuinely zero, the OTHER leg is the one that triggered) is priced at zero, not a division-by-zero exception")
     void parseOcoLeg_stillPendingLeg_pricedAtZero_noDivisionByZero() throws Exception {
         JsonNode legResp = mapper.readTree("{\"side\":\"SELL\",\"type\":\"LIMIT_MAKER\",\"status\":\"NEW\",\"executedQty\":\"0\",\"cummulativeQuoteQty\":\"0\"}");
 
@@ -189,9 +185,7 @@ class BinanceBrokerAdapterTest {
         assertThat(leg.price()).isEqualByComparingTo("0"); // must not throw ArithmeticException on a zero-divisor
     }
 
-    // ── buildOrderResultOrUnknown / buildOcoResultOrFailure (review finding "Broker response can
-    // be treated as successful without mandatory broker IDs" -- P0, full context in both
-    // methods' own javadoc) ────────────────
+    // ── buildOrderResultOrUnknown / buildOcoResultOrFailure ────────────────
 
     private Object invokeBuildOrderResultOrUnknown(JsonNode resp, String rawJson, Object resolved, BigDecimal fillPrice,
                                                      String fallbackClientOrderId, String symbol, java.util.List<Fill> fills) throws Exception {
@@ -216,7 +210,7 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("buildOrderResultOrUnknown: a response missing orderId entirely is reported as UNKNOWN, never as a false success -- the actual review fix (\"Broker response can be treated as successful without mandatory broker IDs\")")
+    @DisplayName("buildOrderResultOrUnknown: a response missing orderId entirely is reported as UNKNOWN, never as a false success")
     void buildOrderResultOrUnknown_missingOrderId_reportsUnknownNotSuccess() throws Exception {
         JsonNode resp = mapper.readTree("{\"status\":\"FILLED\",\"executedQty\":\"1.0\"}"); // no orderId at all
         Object resolved = invokeResolveExecutedQty(resp, "FILLED", new BigDecimal("1.0"), "BTCUSDT");
@@ -249,7 +243,7 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("buildOcoResultOrFailure: a response missing orderListId entirely is reported as a failure, never as a false success -- the actual review fix (\"Broker response can be treated as successful without mandatory broker IDs\")")
+    @DisplayName("buildOcoResultOrFailure: a response missing orderListId entirely is reported as a failure, never as a false success")
     void buildOcoResultOrFailure_missingOrderListId_reportsFailureNotSuccess() throws Exception {
         JsonNode resp = mapper.readTree("{}"); // no orderListId at all
 
@@ -261,24 +255,22 @@ class BinanceBrokerAdapterTest {
     }
 
     // ---------------------------------------------------------------------------------------
-    // P0-1 fix ("Non-idempotent retry of MARKET order placement -> duplicate real orders"):
-    // confirmed real by direct inspection -- call()'s own retry loop used to resend an identical
-    // POST /api/v3/order (or /api/v3/orderList/oco) up to 3x on any timeout/5xx, INCLUDING when
-    // the first attempt actually succeeded on Binance's side and only the response was lost.
-    // Binance's newClientOrderId/listClientOrderId dedup only rejects a retry while the original
-    // order/list is still OPEN -- once it has filled, a resend with the same id is accepted as a
-    // genuine second order, not rejected as a duplicate. The fix: order/OCO placement now passes
-    // idempotent=false into signedPost, so call() makes exactly ONE attempt for those two calls
-    // and never resends them -- the existing verify-by-clientOrderId recovery (tryRecoverOrder-
-    // ByClientId / tryRecoverOcoByListClientOrderId) is what resolves an ambiguous outcome, and
-    // it runs before any second network request, not after one has already gone out.
+    // Blindly resending POST /api/v3/order (or /api/v3/orderList/oco) up to 3x on any
+    // timeout/5xx is unsafe INCLUDING when the first attempt actually succeeded on Binance's
+    // side and only the response was lost. Binance's newClientOrderId/listClientOrderId dedup
+    // only rejects a retry while the original order/list is still OPEN -- once it has filled,
+    // a resend with the same id is accepted as a genuine second order, not rejected as a
+    // duplicate. Order/OCO placement therefore passes idempotent=false into signedPost, so
+    // call() makes exactly ONE attempt for those two calls and never resends them -- the
+    // existing verify-by-clientOrderId recovery (tryRecoverOrderByClientId /
+    // tryRecoverOcoByListClientOrderId) is what resolves an ambiguous outcome, and it runs
+    // before any second network request, not after one has already gone out.
     //
-    // http is a private final field, inline-initialized in the class body (this codebase's own
-    // established pattern -- see this test file's own class javadoc) rather than constructor-
-    // injected, so it isn't mockable through the constructor. Reflection swaps it for a Mockito
-    // mock here specifically to make this retry-vs-no-retry behavior directly testable without a
-    // real network call, the same reasoning already used for resolveExecutedQty/buildOcoResult-
-    // OrFailure above.
+    // http is a private final field, inline-initialized in the class body rather than
+    // constructor-injected, so it isn't mockable through the constructor. Reflection swaps it
+    // for a Mockito mock here specifically to make this retry-vs-no-retry behavior directly
+    // testable without a real network call, the same reasoning already used for
+    // resolveExecutedQty/buildOcoResultOrFailure above.
     // ---------------------------------------------------------------------------------------
 
     private void injectMockRestTemplate(BinanceBrokerAdapter target, org.springframework.web.client.RestTemplate mockHttp) throws Exception {
@@ -329,31 +321,29 @@ class BinanceBrokerAdapterTest {
     }
 
     // ---------------------------------------------------------------------------------------
-    // Audit item P2 ("secrets leaking in BinanceBrokerAdapter exception messages"): external
-    // review, confirmed real by direct inspection but narrower than the audit's wording -- the
-    // raw API key/secret never reach a log, exception, or persisted record anywhere in this
-    // class. What DOES leak on a network-level failure (RestClientException / Jackson parse
-    // failure, as opposed to an HTTP error response from Binance itself) is Spring's own
+    // The raw API key/secret never reach a log, exception, or persisted record anywhere in
+    // this class. What DOES leak on a network-level failure (RestClientException / Jackson
+    // parse failure, as opposed to an HTTP error response from Binance itself) is Spring's own
     // ResourceAccessException#getMessage() format: "I/O error on POST request for \"<url>\":
     // <cause>" -- and <url> is the FULL signed request URL, including the HMAC "signature"
-    // query parameter. Before the fix, executeHttpRequest's catch block put e.getMessage()
-    // (the whole URL-embedding string) straight into BinanceApiException's message, which
-    // flows into OrderResult.errorMessage() / OcoOrderResult.errorMessage() and from there into
-    // Order.failureReason and TradingIncident.message -- both persisted, and the incident is
-    // also emailed/webhooked. A signed URL alone doesn't let anyone replay the exact request
-    // (the signature is single-use and time-boxed), but it's still a credential-derived secret
-    // that has no business sitting in an audit trail. The fix: sanitizedNetworkFailureReason()
-    // builds the message from only the root cause's simple class name + message (e.g.
-    // "SocketTimeoutException: Read timed out"), never the outer exception's URL-embedding
-    // text; the full original exception is still logged server-side via log.warn for real
-    // debugging. This test simulates exactly that shape of failure (a ResourceAccessException
-    // wrapping a SocketTimeoutException, with a fake-but-distinctive signature value standing
-    // in for a real HMAC) and asserts the signature/URL never reaches errorMessage(), while the
-    // cause's own message still does, so the failure is still diagnosable.
+    // query parameter. That message must never flow unsanitized into BinanceApiException's
+    // message, since it flows from there into OrderResult.errorMessage() /
+    // OcoOrderResult.errorMessage() and from there into Order.failureReason and
+    // TradingIncident.message -- both persisted, and the incident is also emailed/webhooked. A
+    // signed URL alone doesn't let anyone replay the exact request (the signature is
+    // single-use and time-boxed), but it's still a credential-derived secret that has no
+    // business sitting in an audit trail. sanitizedNetworkFailureReason() builds the message
+    // from only the root cause's simple class name + message (e.g. "SocketTimeoutException:
+    // Read timed out"), never the outer exception's URL-embedding text; the full original
+    // exception is still logged server-side via log.warn for real debugging. This test
+    // simulates exactly that shape of failure (a ResourceAccessException wrapping a
+    // SocketTimeoutException, with a fake-but-distinctive signature value standing in for a
+    // real HMAC) and asserts the signature/URL never reaches errorMessage(), while the cause's
+    // own message still does, so the failure is still diagnosable.
     // ---------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("P2: a network-level failure's BinanceApiException/OrderResult.errorMessage() never contains the signed request URL or HMAC signature, only the sanitized root-cause reason")
+    @DisplayName("placeOrder: a network-level failure's BinanceApiException/OrderResult.errorMessage() never contains the signed request URL or HMAC signature, only the sanitized root-cause reason")
     void placeOrder_networkFailure_doesNotLeakSignedUrlOrSignatureIntoErrorMessage() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);
@@ -382,8 +372,8 @@ class BinanceBrokerAdapterTest {
                 org.mockito.Mockito.any(), org.mockito.Mockito.eq(String.class)))
             .thenThrow(networkFailure);
         // The placement POST throwing triggers this class's own clientOrderId-based recovery
-        // lookup (review item #9, see tryRecoverOrderByClientId) before it reports failure --
-        // mock that GET to positively confirm the order never existed (no orderId in the
+        // lookup (see tryRecoverOrderByClientId) before it reports failure -- mock that GET to
+        // positively confirm the order never existed (no orderId in the
         // response), so the method under test falls through to returning the ORIGINAL
         // BinanceApiException's (sanitized) message, which is what this test is actually about.
         // Otherwise an unstubbed GET returns null to Mockito's default and fails with an
@@ -405,11 +395,11 @@ class BinanceBrokerAdapterTest {
         assertThat(result.errorMessage()).contains("Read timed out");
     }
 
-    // ── P1-8: 418/429 handling honors Retry-After and opens a shared circuit, rather than a
+    // ── 418/429 handling honors Retry-After and opens a shared circuit, rather than a
     // blind generic-exponential-backoff retry that extends a real IP ban ────────────────────
 
     @Test
-    @DisplayName("P1-8: a 429 with Retry-After is retried exactly once that honored wait later (not a generic exponential guess), and succeeds once the limit lifts")
+    @DisplayName("call: a 429 with Retry-After is retried exactly once after that honored wait (not a generic exponential guess), and succeeds once the limit lifts")
     void call_429WithRetryAfter_honorsWaitThenRetries() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);
@@ -437,7 +427,7 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P1-8: a 418 (IP ban) is NEVER retried within the same call, even though it used to be retried like a transient 5xx -- retrying into an active ban is exactly what extends it")
+    @DisplayName("call: a 418 (IP ban) is NEVER retried within the same call, unlike a transient 5xx -- retrying into an active ban is exactly what extends it")
     void call_418_neverRetriedWithinSameCall() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);
@@ -464,7 +454,7 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P1-8: after a 418, a completely SEPARATE later call fails fast with NO network request at all while the ban is still in effect -- the actual \"stop all REST for the ban duration\" review fix, a shared circuit not just a per-call retry decision")
+    @DisplayName("call: after a 418, a completely SEPARATE later call fails fast with NO network request at all while the ban is still in effect -- REST calls stop for the whole ban duration via a shared circuit, not just a per-call retry decision")
     void call_afterBan_laterCallShortCircuitsWithoutNetworkCall() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);
@@ -498,10 +488,10 @@ class BinanceBrokerAdapterTest {
         org.mockito.Mockito.verifyNoInteractions(mockHttp);
     }
 
-    // ── P1-3: public (unsigned) market-data calls must share the SAME circuit as signed calls ──
+    // ── Public (unsigned) market-data calls must share the SAME circuit as signed calls ──
 
     @Test
-    @DisplayName("P1-3: a 418 ban opened by a SIGNED call also blocks a later PUBLIC market-data call with no network request at all -- before this fix, public calls bypassed the circuit entirely")
+    @DisplayName("call: a 418 ban opened by a SIGNED call also blocks a later PUBLIC market-data call with no network request at all")
     void call_afterBanFromSignedCall_publicCallAlsoShortCircuits() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);
@@ -523,9 +513,7 @@ class BinanceBrokerAdapterTest {
         org.mockito.Mockito.clearInvocations(mockHttp);
 
         // A PUBLIC, unsigned market-data call right after -- must fail immediately, without ever
-        // touching mockHttp at all, since the exact same 120-second ban is still active. Before
-        // this fix, getCurrentPrice called http.exchange(...) directly and had no idea any
-        // circuit existed, so this would have gone straight to the network.
+        // touching mockHttp at all, since the exact same 120-second ban is still active.
         Exception thrown = null;
         try {
             adapter.getCurrentPrice("BTCUSDT", com.tradevision.model.BrokerMode.TESTNET);
@@ -537,7 +525,7 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P1-3: a 418 ban opened by a PUBLIC market-data call also blocks a later SIGNED call -- the circuit is genuinely shared in both directions, not just signed-to-signed")
+    @DisplayName("call: a 418 ban opened by a PUBLIC market-data call also blocks a later SIGNED call -- the circuit is genuinely shared in both directions, not just signed-to-signed")
     void call_afterBanFromPublicCall_signedCallAlsoShortCircuits() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);
@@ -569,7 +557,7 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P1-3: getCurrentPrice (a GET, genuinely idempotent): a 503 IS retried up to MAX_RETRIES through the shared circuit path, same as a signed call")
+    @DisplayName("getCurrentPrice (a GET, genuinely idempotent): a 503 IS retried up to MAX_RETRIES through the shared circuit path, same as a signed call")
     void getCurrentPrice_transientFailure_stillRetriesThroughSharedPath() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);
@@ -591,7 +579,7 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("getBalance (a GET, genuinely idempotent): a 503 IS retried up to MAX_RETRIES -- this fix must not silently disable retries for the calls that were always safe to retry")
+    @DisplayName("getBalance (a GET, genuinely idempotent): a 503 IS retried up to MAX_RETRIES, since GET calls were always safe to retry")
     void getBalance_transientFailureOnIdempotentCall_stillRetries() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);
@@ -623,7 +611,7 @@ class BinanceBrokerAdapterTest {
         }
     }
 
-    // ── P1-1: PAPER credentials must never reach the real adapter's mutating calls ──
+    // ── PAPER credentials must never reach the real adapter's mutating calls ──
 
     @Test
     @DisplayName("placeOrder with BrokerMode.PAPER throws instead of hitting the real exchange")
@@ -663,10 +651,10 @@ class BinanceBrokerAdapterTest {
             .hasMessageContaining("PAPER");
     }
 
-    // ── P1-10: the real key-level apiRestrictions check, not the account-level canWithdraw flag ──
+    // ── The real key-level apiRestrictions check, not the account-level canWithdraw flag ──
 
     @Test
-    @DisplayName("P1-10: getApiKeyRestrictions reads the real key-level fields from /sapi/v1/account/apiRestrictions, not /api/v3/account")
+    @DisplayName("getApiKeyRestrictions reads the real key-level fields from /sapi/v1/account/apiRestrictions, not /api/v3/account")
     void getApiKeyRestrictions_readsRealKeyLevelFields() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);
@@ -696,7 +684,7 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P1-10: getApiKeyRestrictions defaults every field to the UNSAFE reading when the broker's response is missing it, never assuming a missing restriction means safe")
+    @DisplayName("getApiKeyRestrictions defaults every field to the UNSAFE reading when the broker's response is missing it, never assuming a missing restriction means safe")
     void getApiKeyRestrictions_missingFields_defaultToUnsafe() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);
@@ -720,7 +708,7 @@ class BinanceBrokerAdapterTest {
         assertThat(result.enableSpotAndMarginTrading()).isFalse(); // unsafe: cannot assume trading is enabled
     }
 
-    // ── P2-3: getSymbolRules PERCENT_PRICE_BY_SIDE / NOTIONAL maxNotional / applyMinToMarket
+    // ── getSymbolRules PERCENT_PRICE_BY_SIDE / NOTIONAL maxNotional / applyMinToMarket
     // parsing, doPlaceOrder/placeExitOco pre-submit notional+band gating, and the -1013
     // cache-eviction behavior ────────────────────────────────────────────────────────────
 
@@ -735,7 +723,7 @@ class BinanceBrokerAdapterTest {
             + "]}]}";
 
     @Test
-    @DisplayName("P2-3: getSymbolRules parses maxNotional/applyMinToMarket/applyMaxToMarket from the NOTIONAL filter and multiplierUp/multiplierDown from PERCENT_PRICE_BY_SIDE -- previously discarded entirely")
+    @DisplayName("getSymbolRules parses maxNotional/applyMinToMarket/applyMaxToMarket from the NOTIONAL filter and multiplierUp/multiplierDown from PERCENT_PRICE_BY_SIDE")
     void getSymbolRules_parsesNewNotionalAndPercentPriceFields() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);
@@ -757,7 +745,7 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P2-3: getSymbolRules defaults maxNotional/multiplierUp/multiplierDown to ZERO when a symbol's filters omit them entirely, never a false positive band/max-notional rejection downstream")
+    @DisplayName("getSymbolRules defaults maxNotional/multiplierUp/multiplierDown to ZERO when a symbol's filters omit them entirely, never a false positive band/max-notional rejection downstream")
     void getSymbolRules_missingOptionalFilters_defaultToZero() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);
@@ -795,7 +783,7 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P2-3: doPlaceOrder rejects a MARKET order whose notional falls below minNotional when applyMinToMarket=true, WITHOUT ever sending the real POST /api/v3/order -- the actual pre-submit gating fix")
+    @DisplayName("doPlaceOrder rejects a MARKET order whose notional falls below minNotional when applyMinToMarket=true, WITHOUT ever sending the real POST /api/v3/order")
     void doPlaceOrder_rejectsBelowMinNotional_whenApplyMinToMarketTrue() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);
@@ -819,7 +807,7 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P2-3: doPlaceOrder rejects a MARKET order whose notional exceeds maxNotional when applyMaxToMarket=true, WITHOUT ever sending the real POST /api/v3/order")
+    @DisplayName("doPlaceOrder rejects a MARKET order whose notional exceeds maxNotional when applyMaxToMarket=true, WITHOUT ever sending the real POST /api/v3/order")
     void doPlaceOrder_rejectsAboveMaxNotional_whenApplyMaxToMarketTrue() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);
@@ -843,7 +831,7 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P2-3: doPlaceOrder does NOT reject on notional when applyMinToMarket=false for this symbol -- the filter genuinely doesn't apply to MARKET orders here, so the order proceeds to real submission")
+    @DisplayName("doPlaceOrder does NOT reject on notional when applyMinToMarket=false for this symbol -- the filter genuinely doesn't apply to MARKET orders here, so the order proceeds to real submission")
     void doPlaceOrder_doesNotGateOnNotional_whenApplyMinToMarketFalse() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);
@@ -875,7 +863,7 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P2-3: placeExitOco rejects when either leg's own notional falls below minNotional, WITHOUT ever sending the real POST /api/v3/orderList/oco -- leaving a filled position temporarily unprotected is the alternative this specifically avoids")
+    @DisplayName("placeExitOco rejects when either leg's own notional falls below minNotional, WITHOUT ever sending the real POST /api/v3/orderList/oco -- leaving a filled position temporarily unprotected is the alternative this specifically avoids")
     void placeExitOco_rejectsWhenLegNotionalBelowMinimum() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);
@@ -903,7 +891,7 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P2-3: placeExitOco rejects when a leg's price falls outside the PERCENT_PRICE_BY_SIDE band around the current price, WITHOUT ever sending the real POST /api/v3/orderList/oco")
+    @DisplayName("placeExitOco rejects when a leg's price falls outside the PERCENT_PRICE_BY_SIDE band around the current price, WITHOUT ever sending the real POST /api/v3/orderList/oco")
     void placeExitOco_rejectsWhenPriceOutsidePercentPriceBand() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);
@@ -927,7 +915,7 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P2-3: placeExitOco places the real OCO when both legs' notional and prices are within bounds -- the gating logic doesn't over-reject genuinely valid OCOs")
+    @DisplayName("placeExitOco places the real OCO when both legs' notional and prices are within bounds -- the gating logic doesn't over-reject genuinely valid OCOs")
     void placeExitOco_placesOco_whenWithinAllBounds() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);
@@ -951,7 +939,7 @@ class BinanceBrokerAdapterTest {
         assertThat(result.ocoOrderListId()).isEqualTo("555");
     }
 
-    // ── P2-3: -1013 ("Filter failure") cache eviction ──────────────────────────────────────
+    // ── -1013 ("Filter failure") cache eviction ──────────────────────────────────────
 
     private void invokeEvictSymbolRulesCacheOnFilterFailure(BinanceBrokerAdapter target, String symbol,
                                                               com.tradevision.model.BrokerMode mode, Object exception) throws Exception {
@@ -968,13 +956,13 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P2-3: extractBinanceErrorCode reads Binance's own {\"code\":-1013,...} error body correctly")
+    @DisplayName("extractBinanceErrorCode reads Binance's own {\"code\":-1013,...} error body correctly")
     void extractBinanceErrorCode_parsesRealErrorCode() throws Exception {
         assertThat(invokeExtractBinanceErrorCode(adapter, "{\"code\":-1013,\"msg\":\"Filter failure: NOTIONAL\"}")).isEqualTo(-1013);
     }
 
     @Test
-    @DisplayName("P2-3: extractBinanceErrorCode returns null for a missing code, unparseable JSON, or a null/blank body, never a fabricated value")
+    @DisplayName("extractBinanceErrorCode returns null for a missing code, unparseable JSON, or a null/blank body, never a fabricated value")
     void extractBinanceErrorCode_returnsNullForMissingOrUnparseableBody() throws Exception {
         assertThat(invokeExtractBinanceErrorCode(adapter, "{\"msg\":\"no code field\"}")).isNull();
         assertThat(invokeExtractBinanceErrorCode(adapter, "not json at all")).isNull();
@@ -983,7 +971,7 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P2-3: a -1013 (\"Filter failure\") error evicts the cached symbol rules, so the very next lookup re-fetches from Binance instead of repeating the same stale validation")
+    @DisplayName("a -1013 (\"Filter failure\") error evicts the cached symbol rules, so the very next lookup re-fetches from Binance instead of repeating the same stale validation")
     void evictSymbolRulesCacheOnFilterFailure_1013_evictsCacheEntry() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);
@@ -1012,7 +1000,7 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P2-3: a non-(-1013) error code leaves the cached symbol rules untouched -- eviction is specific to filter failures, not every broker error")
+    @DisplayName("a non-(-1013) error code leaves the cached symbol rules untouched -- eviction is specific to filter failures, not every broker error")
     void evictSymbolRulesCacheOnFilterFailure_otherCode_leavesCacheIntact() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);
@@ -1035,14 +1023,14 @@ class BinanceBrokerAdapterTest {
             org.mockito.Mockito.any(), org.mockito.Mockito.eq(String.class));
     }
 
-    // ── P2-16: market-data fetch failures no longer leak the raw upstream error into the
+    // ── Market-data fetch failures must not leak the raw upstream error into the
     // client-facing exception message -- GlobalExceptionHandler.handleBadState returns an
     // IllegalStateException's message to the client verbatim, so this adapter must never put
     // anything from the underlying exception (which can carry a raw Binance response body, a
     // hostname, or another internal client-library detail) into that message ─────────────────
 
     @Test
-    @DisplayName("P2-16: getCurrentPrice failure does not leak the underlying exception's own message into the IllegalStateException surfaced to the caller")
+    @DisplayName("getCurrentPrice failure does not leak the underlying exception's own message into the IllegalStateException surfaced to the caller")
     void getCurrentPrice_upstreamFailure_doesNotLeakUnderlyingExceptionMessage() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);
@@ -1063,7 +1051,7 @@ class BinanceBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P2-16: createListenKey failure does not leak Binance's own raw response body into the IllegalStateException surfaced to the caller")
+    @DisplayName("createListenKey failure does not leak Binance's own raw response body into the IllegalStateException surfaced to the caller")
     void createListenKey_noListenKeyReturned_doesNotLeakRawResponseBody() throws Exception {
         var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
         var adapter = new BinanceBrokerAdapter(exchangeHealth);

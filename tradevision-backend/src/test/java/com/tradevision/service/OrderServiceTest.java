@@ -25,34 +25,26 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Review finding ("#4 — OMS", the recommended starting point of the autonomous-engine work):
- * the OMS's own state-transition correctness is the single most foundational thing to verify
- * before anything else — every later piece (fill ledger, position ledger, latency tracking)
- * assumes this state machine is actually trustworthy.
+ * Verifies the OMS's order state-transition machine, which every later piece
+ * (fill ledger, position ledger, latency tracking) depends on being correct.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
 class OrderServiceTest {
 
     @Mock OrderRepository orderRepo;
-    // Review finding ("Real-world order recovery needs to cover process crashes, not only HTTP
-    // errors" -- P1, full context in OrderService.recoverStuckSubmittingOrders's own javadoc):
-    // needed now that OrderService raises a critical incident for orders stuck in SUBMITTING.
+    // OrderService raises a critical incident for orders stuck in SUBMITTING.
     @Mock IncidentService incidentService;
-    // Review finding ("Order state transitions not atomic across replicas" -- P1, full context
-    // in OrderService.transition's own javadoc): needed now that every status transition goes
-    // through a real conditional database update.
+    // Every status transition goes through a real conditional database update.
     @Mock org.springframework.data.mongodb.core.MongoTemplate mongoTemplate;
-    // Review finding ("There is still no authoritative event ledger" -- P1, full context in
-    // TradeEvent's own javadoc): needed now that every transition and create() records a real
-    // event. Unstubbed calls to save() safely return null by default (an object-returning
-    // Mockito default), which is fine here since neither create() nor transition() ever reads
-    // that return value -- unlike the MongoTemplate/UpdateResult case, no default stub is needed
-    // for existing tests to keep passing.
+    // Every transition and create() records a real event. Unstubbed calls to save() safely
+    // return null by default (an object-returning Mockito default), which is fine here since
+    // neither create() nor transition() ever reads that return value -- unlike the
+    // MongoTemplate/UpdateResult case, no default stub is needed for existing tests to keep
+    // passing.
     @Mock com.tradevision.repository.TradeEventRepository tradeEventRepo;
     @Mock com.tradevision.config.ShutdownState shutdownState;
-    // Review finding (P1-4 -- "Orders stuck in SUBMITTING are never resolved against the
-    // exchange"): needed now that recoverStuckSubmittingOrders actually queries the broker.
+    // recoverStuckSubmittingOrders queries the broker to resolve stuck orders.
     @Mock com.tradevision.repository.BrokerCredentialRepository credentialRepo;
     @Mock BrokerCredentialService credentialService;
     @Mock com.tradevision.service.broker.BrokerAdapter adapter;
@@ -61,8 +53,7 @@ class OrderServiceTest {
     @BeforeEach
     void setup() {
         when(orderRepo.save(any())).thenAnswer(i -> i.getArguments()[0]);
-        // Review finding's own design (full context in OrderService.transition's own javadoc):
-        // a realistic "the conditional update succeeded" default -- same reasoning as this
+        // A realistic "the conditional update succeeded" default -- same pattern as this
         // codebase's other @BeforeEach defaults elsewhere (RealizedPnlService, PositionLedgerService,
         // etc.) -- an unstubbed updateFirst() would otherwise return null (Mockito's default for
         // an object return type), NPEing every existing test that reaches ANY state transition,
@@ -148,19 +139,13 @@ class OrderServiceTest {
         assertThat(o.getFilledQuantity()).isEqualByComparingTo("0");
     }
 
-    // ── P1-14: EXPIRED/EXPIRED_IN_MATCH classification ──────────
+    // ── EXPIRED/EXPIRED_IN_MATCH classification ──────────
 
     /**
-     * P1-14 fix ("MARKET order EXPIRED/EXPIRED_IN_MATCH misclassified"): confirmed real --
-     * classification used to look ONLY at executedQty, so a broker-confirmed terminal status
-     * of EXPIRED with zero fill landed on ACKNOWLEDGED (non-terminal -- reconcileEntryOrders
-     * would poll it forever, since Binance will never send a further update for an order it
-     * already considers finished) and EXPIRED_IN_MATCH with a partial fill landed on
-     * PARTIALLY_FILLED (equally non-terminal, implying more fills may still arrive, which they
-     * never will). Table test over exactly the audit's own required matrix: NEW/PARTIALLY_FILLED
-     * /FILLED behave as before (untouched by this fix); EXPIRED/EXPIRED_IN_MATCH now become the
-     * OMS's own terminal OrderStatus.EXPIRED regardless of qty, with whatever quantity genuinely
-     * filled before expiry still recorded rather than lost.
+     * A broker-confirmed terminal status of EXPIRED or EXPIRED_IN_MATCH must always
+     * map to the OMS's own terminal OrderStatus.EXPIRED regardless of executed quantity,
+     * with whatever quantity genuinely filled before expiry still recorded rather than
+     * lost. NEW/PARTIALLY_FILLED/FILLED are unaffected and classify as before.
      */
     @Test
     @DisplayName("recordBrokerResult: broker status EXPIRED with zero fill -> terminal EXPIRED, not ACKNOWLEDGED")
@@ -234,7 +219,7 @@ class OrderServiceTest {
     }
 
     @Test
-    @DisplayName("recordBrokerResult: broker status FILLED is unaffected by the EXPIRED fix -- still reaches FILLED with filledAt set")
+    @DisplayName("recordBrokerResult: broker status FILLED still reaches FILLED with filledAt set")
     void filledStatus_stillReachesFilled_unaffectedByExpiredFix() {
         Order o = newOrder();
         service.markRiskAccepted(o);
@@ -249,7 +234,7 @@ class OrderServiceTest {
     }
 
     @Test
-    @DisplayName("recordBrokerResult: broker status NEW with zero fill is unaffected by the EXPIRED fix -- still ACKNOWLEDGED, not EXPIRED")
+    @DisplayName("recordBrokerResult: broker status NEW with zero fill stays ACKNOWLEDGED, not EXPIRED")
     void newStatus_stillAcknowledged_unaffectedByExpiredFix() {
         Order o = newOrder();
         service.markRiskAccepted(o);
@@ -263,7 +248,7 @@ class OrderServiceTest {
     }
 
     @Test
-    @DisplayName("recordBrokerResult: broker status PARTIALLY_FILLED is unaffected by the EXPIRED fix -- still PARTIALLY_FILLED, not EXPIRED (more fills may genuinely still arrive)")
+    @DisplayName("recordBrokerResult: broker status PARTIALLY_FILLED stays PARTIALLY_FILLED, not EXPIRED (more fills may genuinely still arrive)")
     void partiallyFilledStatus_stillPartiallyFilled_unaffectedByExpiredFix() {
         Order o = newOrder();
         service.markRiskAccepted(o);
@@ -276,7 +261,7 @@ class OrderServiceTest {
         assertThat(o.getStatus()).isEqualTo(OrderStatus.PARTIALLY_FILLED);
     }
 
-    // ── UNKNOWN handling — the review's own explicit priority ────
+    // ── UNKNOWN handling ──────────────────────────────────────────
 
     @Test
     @DisplayName("recordBrokerResult: status=UNKNOWN moves to UNKNOWN regardless of the success flag — never silently folded into REJECTED or FILLED")
@@ -412,9 +397,7 @@ class OrderServiceTest {
         assertThatThrownBy(() -> service.recordBrokerResult(o, result)).isInstanceOf(IllegalStateException.class);
     }
 
-    // ── generateClientOrderId (review items "OMS clientOrderId doesn't match the actual broker
-    // clientOrderId" and "Autonomous path's sig-<UUID> client order ID may exceed Binance's
-    // length limit" -- full context in the method's own javadoc) ──────────────
+    // ── generateClientOrderId ──────────────────────────────────────────────────
 
     @Test
     @DisplayName("generateClientOrderId: stays within Binance's own documented 36-character limit even for a full-length UUID basis, unlike the old \"sig-\" + UUID format it replaces (4 + 36 = 40, over the limit)")
@@ -456,7 +439,7 @@ class OrderServiceTest {
     }
 
     @Test
-    @DisplayName("generateClientOrderId: every OCO-family prefix this codebase actually uses (entry, resize, late-fill, remainder) stays within Binance's 36-character limit for a real position id plus a realistic timestamp-length suffix -- the actual review fix (\"OCO client IDs are STILL TOO LONG\"), confirmed for every real call site, not just the general case")
+    @DisplayName("generateClientOrderId: every OCO-family prefix this codebase actually uses (entry, resize, late-fill, remainder) stays within Binance's 36-character limit for a real position id plus a realistic timestamp-length suffix")
     void generateClientOrderId_everyOcoPrefix_staysWithinLengthLimit() {
         String positionId = java.util.UUID.randomUUID().toString();
         long timestamp = System.currentTimeMillis();
@@ -467,8 +450,7 @@ class OrderServiceTest {
         assertThat(OrderService.generateClientOrderId("tv-rem", positionId + ":REMAINDER:" + timestamp).length()).isLessThanOrEqualTo(36);
     }
 
-    // ── recordOcoCancelResult (review item "OMS not actually authoritative" -- full context in
-    // the method's own javadoc) ──────────────────────────────────────────
+    // ── recordOcoCancelResult ──────────────────────────────────────────────────
 
     @Test
     @DisplayName("recordOcoCancelResult: a successful cancel transitions the matching OMS Order all the way to CANCELLED (via CANCEL_PENDING)")
@@ -516,8 +498,7 @@ class OrderServiceTest {
         verify(orderRepo, never()).findByCredentialIdAndSymbolAndBrokerOrderId(any(), any(), any());
     }
 
-    // ── recordOcoFillResult (review finding "OCO OMS still doesn't become FILLED when a leg
-    // fills" -- full context in the method's own javadoc) ──────────────
+    // ── recordOcoFillResult ───────────────────────────────────────────
 
     @Test
     @DisplayName("recordOcoFillResult: a full fill transitions the matching OMS Order to FILLED")
@@ -565,8 +546,7 @@ class OrderServiceTest {
         verify(orderRepo, never()).findByCredentialIdAndSymbolAndBrokerOrderId(any(), any(), any());
     }
 
-    // ── transition atomicity (review finding "Order state transitions not atomic across
-    // replicas" -- full context in transition's own javadoc) ────────────────
+    // ── transition atomicity ───────────────────────────────────────────────
 
     @Test
     @DisplayName("markRiskAccepted: a successful conditional update (modifiedCount=1, the default stub) transitions normally, no exception")
@@ -579,7 +559,7 @@ class OrderServiceTest {
     }
 
     @Test
-    @DisplayName("markRiskAccepted: a lost race (another process already changed the status first -- modifiedCount=0) throws a clear, distinct exception rather than silently succeeding with a stale write -- the actual review fix")
+    @DisplayName("markRiskAccepted: a lost race (another process already changed the status first -- modifiedCount=0) throws a clear, distinct exception rather than silently succeeding with a stale write")
     void markRiskAccepted_lostRace_throwsClearException() {
         Order o = newOrder();
         when(mongoTemplate.updateFirst(any(), any(org.springframework.data.mongodb.core.query.Update.class), eq(Order.class)))
@@ -590,8 +570,7 @@ class OrderServiceTest {
             .hasMessageContaining("Lost a race");
     }
 
-    // ── trade event ledger (review finding "There is still no authoritative event ledger" --
-    // full context in TradeEvent's own javadoc) ────────────────
+    // ── trade event ledger ────────────────────────────────────────
 
     @Test
     @DisplayName("create: records an ORDER_CREATED trade event -- the actual start of an order's own event timeline")
@@ -627,11 +606,10 @@ class OrderServiceTest {
         assertThat(result.getStatus()).isEqualTo(OrderStatus.RISK_ACCEPTED);
     }
 
-    // ── recoverStuckSubmittingOrders (review finding "Real-world order recovery needs to cover
-    // process crashes, not only HTTP errors" -- P1, full context in the method's own javadoc) ──
+    // ── recoverStuckSubmittingOrders ────────────────────────────────────────
 
     @Test
-    @DisplayName("recoverStuckSubmittingOrders: an order stuck in SUBMITTING is marked UNKNOWN and a CRITICAL incident is raised -- the actual review fix, covering the crash case no HTTP-error-based recovery could ever see")
+    @DisplayName("recoverStuckSubmittingOrders: an order stuck in SUBMITTING is marked UNKNOWN and a CRITICAL incident is raised, covering the process-crash case that HTTP-error-based recovery alone could never see")
     void recoverStuckSubmittingOrders_marksUnknownAndRaisesIncident() {
         Order stuck = new Order();
         stuck.setId("order1");
@@ -661,9 +639,7 @@ class OrderServiceTest {
     }
 
     /**
-     * Review finding ("Graceful shutdown does not stop @Scheduled work or WebSocket listeners
-     * from starting new work" -- external review, nineteenth pass, P1, confirmed real by direct
-     * inspection: this scheduled method had no shutdown-awareness at all before this fix).
+     * Graceful shutdown must stop this scheduled method from starting new work.
      */
     @Test
     @DisplayName("recoverStuckSubmittingOrders: does nothing at all when the process is shutting down")
@@ -696,12 +672,9 @@ class OrderServiceTest {
     }
 
     /**
-     * Review finding ("Recovery after exchange submission still needs a stronger state
-     * boundary" -- external review, twentieth pass, P1, full context in
-     * Order.exchangeCallStartedAt's own field javadoc): the actual tests proving the new
-     * distinction. Both cases still mark UNKNOWN and escalate -- this fix never auto-resolves
-     * anything -- but the incident message content genuinely differs, giving a human reviewing
-     * it a materially more informative starting point.
+     * Whether or not exchangeCallStartedAt was set changes the incident message's wording,
+     * even though both cases still mark UNKNOWN and escalate, giving a human reviewing
+     * the incident a materially more informative starting point.
      */
     @Test
     @DisplayName("recoverStuckSubmittingOrders: exchangeCallStartedAt is null -- the incident message states this order likely never reached the exchange at all")
@@ -737,7 +710,7 @@ class OrderServiceTest {
             argThat(reason -> reason.toString().contains("was actually sent")));
     }
 
-    // ── P1-4: actual broker verification after marking UNKNOWN ──
+    // ── Broker verification after marking UNKNOWN ──
 
     private com.tradevision.model.BrokerCredential activeCredential() {
         var credential = new com.tradevision.model.BrokerCredential();
@@ -757,7 +730,7 @@ class OrderServiceTest {
     }
 
     @Test
-    @DisplayName("P1-4: broker confirms the order actually FILLED -- transitions the order to FILLED with the real broker order id, instead of leaving it at UNKNOWN forever")
+    @DisplayName("recoverStuckSubmittingOrders: broker confirms the order actually FILLED -- transitions the order to FILLED with the real broker order id, instead of leaving it at UNKNOWN forever")
     void recoverStuckSubmittingOrders_brokerConfirmsFilled_transitionsToFilled() {
         Order stuck = stuckOrder();
         when(orderRepo.findByStatusAndCreatedAtBefore(eq(OrderStatus.SUBMITTING), any())).thenReturn(List.of(stuck));
@@ -773,12 +746,12 @@ class OrderServiceTest {
 
         assertThat(stuck.getStatus()).isEqualTo(OrderStatus.FILLED);
         assertThat(stuck.getBrokerOrderId()).isEqualTo("real-broker-order-99");
-        // No longer left at UNKNOWN -- PositionMonitorService.reconcileEntryOrders' own existing
-        // "FILLED BUY order with no Position yet" sweep can now find and protect it.
+        // Not left at UNKNOWN, so PositionMonitorService.reconcileEntryOrders' own
+        // "FILLED BUY order with no Position yet" sweep can find and protect it.
     }
 
     @Test
-    @DisplayName("P1-4: broker confirms the order genuinely never existed (-2013) -- transitions to REJECTED, safe to treat as never having happened")
+    @DisplayName("recoverStuckSubmittingOrders: broker confirms the order genuinely never existed (-2013) -- transitions to REJECTED, safe to treat as never having happened")
     void recoverStuckSubmittingOrders_brokerConfirmsNeverExisted_transitionsToRejected() {
         Order stuck = stuckOrder();
         when(orderRepo.findByStatusAndCreatedAtBefore(eq(OrderStatus.SUBMITTING), any())).thenReturn(List.of(stuck));
@@ -794,10 +767,10 @@ class OrderServiceTest {
         assertThat(stuck.getStatus()).isEqualTo(OrderStatus.REJECTED);
     }
 
-    // ── P1-2: "partial fills on CANCELED/EXPIRED being dropped as REJECTED" ──
+    // ── Partial fills on CANCELED/EXPIRED must not be dropped as REJECTED ──
 
     @Test
-    @DisplayName("P1-2: broker confirms the order was CANCELED but PARTIALLY filled first -- the real fill is preserved (PARTIALLY_FILLED), not discarded as REJECTED")
+    @DisplayName("recoverStuckSubmittingOrders: broker confirms the order was CANCELED but PARTIALLY filled first -- the real fill is preserved (PARTIALLY_FILLED), not discarded as REJECTED")
     void recoverStuckSubmittingOrders_brokerConfirmsCanceledWithPartialFill_preservesFill() {
         Order stuck = stuckOrder(); // requestedQuantity = 1.0
         when(orderRepo.findByStatusAndCreatedAtBefore(eq(OrderStatus.SUBMITTING), any())).thenReturn(List.of(stuck));
@@ -811,15 +784,15 @@ class OrderServiceTest {
 
         service.recoverStuckSubmittingOrders();
 
-        // Before this fix: this landed on REJECTED, with filledQuantity never even read -- real
-        // coins already bought on the exchange, with no Order/Position ever reflecting them.
+        // A CANCELED status with a nonzero executed quantity means real coins were
+        // already bought on the exchange, so the fill must be preserved, not discarded.
         assertThat(stuck.getStatus()).isEqualTo(OrderStatus.PARTIALLY_FILLED);
         assertThat(stuck.getFilledQuantity()).isEqualByComparingTo(BigDecimal.valueOf(0.4));
         assertThat(stuck.getBrokerOrderId()).isEqualTo("real-broker-order-99");
     }
 
     @Test
-    @DisplayName("P1-2: broker confirms the order EXPIRED but was FULLY filled first -- the real fill is preserved (recordBrokerResult's own dedicated EXPIRED branch, now legal from UNKNOWN), not discarded as REJECTED")
+    @DisplayName("recoverStuckSubmittingOrders: broker confirms the order EXPIRED but was FULLY filled first -- the real fill is preserved via recordBrokerResult's dedicated EXPIRED branch, not discarded as REJECTED")
     void recoverStuckSubmittingOrders_brokerConfirmsExpiredWithFullFill_preservesFill() {
         Order stuck = stuckOrder(); // requestedQuantity = 1.0
         when(orderRepo.findByStatusAndCreatedAtBefore(eq(OrderStatus.SUBMITTING), any())).thenReturn(List.of(stuck));
@@ -833,17 +806,17 @@ class OrderServiceTest {
 
         service.recoverStuckSubmittingOrders();
 
-        // recordBrokerResult's own EXPIRED branch is checked ahead of the generic quantity-based
-        // classification (matching its "P1-14" fix -- the exchange's own reported terminal
-        // status always wins), so this correctly lands on EXPIRED with the real quantity
-        // recorded, not on REJECTED with the fill discarded (the bug this fix closes) and not on
-        // FILLED either (status already says EXPIRED, not FILLED).
+        // recordBrokerResult's EXPIRED branch is checked ahead of the generic quantity-based
+        // classification, since the exchange's own reported terminal status always wins,
+        // so this correctly lands on EXPIRED with the real quantity recorded, not on
+        // REJECTED with the fill discarded and not on FILLED either (status already
+        // says EXPIRED, not FILLED).
         assertThat(stuck.getStatus()).isEqualTo(OrderStatus.EXPIRED);
         assertThat(stuck.getFilledQuantity()).isEqualByComparingTo(BigDecimal.valueOf(1.0));
     }
 
     @Test
-    @DisplayName("P1-2: broker confirms the order EXPIRED with a genuine PARTIAL fill -- lands on the dedicated EXPIRED branch with the real quantity recorded, not discarded")
+    @DisplayName("recoverStuckSubmittingOrders: broker confirms the order EXPIRED with a genuine PARTIAL fill -- lands on the dedicated EXPIRED branch with the real quantity recorded, not discarded")
     void recoverStuckSubmittingOrders_brokerConfirmsExpiredWithPartialFill_preservesFill() {
         Order stuck = stuckOrder(); // requestedQuantity = 1.0
         when(orderRepo.findByStatusAndCreatedAtBefore(eq(OrderStatus.SUBMITTING), any())).thenReturn(List.of(stuck));
@@ -862,7 +835,7 @@ class OrderServiceTest {
     }
 
     @Test
-    @DisplayName("P1-2: broker confirms CANCELED with genuinely ZERO fill -- still safely treated as REJECTED, same as before this fix (nothing real to lose)")
+    @DisplayName("recoverStuckSubmittingOrders: broker confirms CANCELED with genuinely ZERO fill -- still safely treated as REJECTED, since there is nothing real to lose")
     void recoverStuckSubmittingOrders_brokerConfirmsCanceledWithZeroFill_stillRejected() {
         Order stuck = stuckOrder();
         when(orderRepo.findByStatusAndCreatedAtBefore(eq(OrderStatus.SUBMITTING), any())).thenReturn(List.of(stuck));
@@ -880,7 +853,7 @@ class OrderServiceTest {
     }
 
     @Test
-    @DisplayName("P1-4: broker verification itself fails (network error, not a confirmed absence) -- transitions to RECONCILIATION_REQUIRED, not silently treated as rejected")
+    @DisplayName("recoverStuckSubmittingOrders: broker verification itself fails (network error, not a confirmed absence) -- transitions to RECONCILIATION_REQUIRED, not silently treated as rejected")
     void recoverStuckSubmittingOrders_verificationFails_transitionsToReconciliationRequired() {
         Order stuck = stuckOrder();
         when(orderRepo.findByStatusAndCreatedAtBefore(eq(OrderStatus.SUBMITTING), any())).thenReturn(List.of(stuck));
@@ -897,7 +870,7 @@ class OrderServiceTest {
     }
 
     @Test
-    @DisplayName("P1-4: credential is missing or inactive -- leaves the order at UNKNOWN rather than throwing, same safe fallback as before this fix")
+    @DisplayName("recoverStuckSubmittingOrders: credential is missing or inactive -- leaves the order at UNKNOWN rather than throwing")
     void recoverStuckSubmittingOrders_credentialMissing_leavesAtUnknown() {
         Order stuck = stuckOrder();
         when(orderRepo.findByStatusAndCreatedAtBefore(eq(OrderStatus.SUBMITTING), any())).thenReturn(List.of(stuck));
@@ -910,16 +883,10 @@ class OrderServiceTest {
     }
 
     /**
-     * Review finding, same context as the two tests above: the actual write site -- proving
-     * markExchangeCallStarted stamps the field, and does so as a plain, non-fatal field write
-     * (same pattern as recordProtectionPlaced), never blocking or altering the caller's own flow.
-     */
-    /**
-     * Review finding (P1 #12 -- "Order state written by whole-document save() with no
-     * optimistic locking"): markExchangeCallStarted now writes via a targeted mongoTemplate
-     * field-level $set (OrderService.fieldUpdate) instead of a whole-document orderRepo.save() --
-     * see fieldUpdate's own javadoc for why. Asserted here by verifying the mongoTemplate call
-     * rather than orderRepo.save().
+     * markExchangeCallStarted stamps the field as a plain, non-fatal field write (same
+     * pattern as recordProtectionPlaced), never blocking or altering the caller's own flow.
+     * It writes via a targeted mongoTemplate field-level $set rather than a whole-document
+     * orderRepo.save(), so this is asserted by verifying the mongoTemplate call.
      */
     @Test
     @DisplayName("markExchangeCallStarted: stamps exchangeCallStartedAt via a targeted field update, matching the same pure-field-stamp pattern as recordProtectionPlaced")
@@ -949,10 +916,7 @@ class OrderServiceTest {
         service.markExchangeCallStarted(order); // must not throw
     }
 
-    // ── recordOcoPlacementResult (review finding "OrderService state transition is STILL not
-    // actually atomic for broker results" -- external review, seventeenth pass, P0, full context
-    // in atomicUpdate's own javadoc -- this method had zero existing test coverage before this
-    // fix, despite having the exact same assertLegal()-then-plain-save() bug the review named) ──
+    // ── recordOcoPlacementResult ──────────────────────────────────────────────
 
     @Test
     @DisplayName("recordOcoPlacementResult: a successful OCO placement moves SUBMITTING -> ACKNOWLEDGED with the real broker order id recorded")
@@ -982,7 +946,7 @@ class OrderServiceTest {
     }
 
     @Test
-    @DisplayName("recordOcoPlacementResult: a lost race (another process already changed the status first) throws a clear exception -- the actual review fix, proving this method's own atomic update genuinely guards against a concurrent stale write")
+    @DisplayName("recordOcoPlacementResult: a lost race (another process already changed the status first) throws a clear exception, proving this method's own atomic update genuinely guards against a concurrent stale write")
     void recordOcoPlacementResult_lostRace_throwsClearException() {
         Order o = newOrder();
         service.markRiskAccepted(o);

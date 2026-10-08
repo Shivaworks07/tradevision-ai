@@ -7,57 +7,47 @@ import org.springframework.stereotype.Service;
 import java.util.List;
 
 /**
- * The real thing, not another patch: an independent, backend-computed trading signal, faithfully
- * ported from the live frontend's ta-engine.service.ts analyze() function — the same weighted
- * scoring across trend/RSI/MACD/Bollinger/stochastic/ADX/Williams%R/VWAP/OBV/volume/patterns/
- * divergence, the same decision thresholds, the same S/R-aware stop-loss and R-multiple targets.
+ * An independent, backend-computed trading signal, faithfully ported from the live frontend's
+ * ta-engine.service.ts analyze() function — the same weighted scoring across trend/RSI/MACD/
+ * Bollinger/stochastic/ADX/Williams%R/VWAP/OBV/volume/patterns/divergence, the same decision
+ * thresholds, the same S/R-aware stop-loss and R-multiple targets. This exists so the server can
+ * independently verify a client-submitted signal's claimed direction rather than trusting it
+ * outright; see NoTradeFilterService for how this second opinion is wired into that check.
  *
- * VERIFIED, not assumed: this port was cross-checked by running the actual extracted TypeScript
- * logic in Node.js against this Java port, compiled and run standalone, on multiple identical
- * synthetic candle datasets covering WAIT, LONG, and SHORT outcomes. Every field matched
- * bit-for-bit (full double precision) in every case tested. That verification is real but not
- * exhaustive — it does not prove correctness for every possible candle sequence, only that the
- * translation is faithful across the cases actually run.
+ * This port was cross-checked by running the extracted TypeScript logic in Node.js against this
+ * Java port on multiple synthetic candle datasets covering WAIT, LONG, and SHORT outcomes, with
+ * every field matching bit-for-bit (full double precision). That verification covers the cases
+ * actually run, not every possible candle sequence.
  *
- * Honest scope, stated plainly -- this list is deliberately kept current, not written once and
- * left stale, precisely because overstating this engine's completeness is a real, named risk
- * (external review, nineteenth pass, P1: "don't describe the server as 100% identical to the
- * frontend's complete strategy engine. It isn't yet."):
+ * Scope, kept current rather than written once and left to go stale:
  *  - ML weight adjustment (the frontend's per-symbol adaptive weight learning from win/loss
  *    history) is PARTIALLY ported: the same 4 of 11 weight variables MLWeightService.recordOutcome
  *    actually learns (rsi, macd, patterns, volume) are adaptive here too, matching the frontend's
- *    own real behavior for exactly those 4 -- not an invented superset. The other 7 stay fixed at
+ *    own real behavior for exactly those 4 — not an invented superset. The other 7 stay fixed at
  *    their existing defaults (matching the frontend's own defaultMLMemory). See analyze()'s own
- *    updated javadoc below for the full detail.
+ *    javadoc below for the full detail.
  *  - Multi-timeframe context (analyzeWithMTF) is NOT ported — this is the single-timeframe core
  *    analyze() only.
  *  - Smart-money-concepts analysis, order-flow analysis, and volume-profile analysis — to
  *    whatever extent the frontend's own complete strategy represents any of these — are NOT
  *    ported here at all. This engine is the weighted-indicator core described above, not a
  *    full reproduction of every analytical component the frontend may draw on.
- *  - This does not replace the frontend's own computation or become the auto-trade trigger by
- *    itself; it is wired in as an independent second opinion the client's claimed direction must
- *    agree with. See NoTradeFilterService.
  */
 @Service
 public class ServerSignalEngine {
 
-    // Review finding ("Execution" — "slippage by strategy/volatility"): "by strategy" remains
-    // blocked (strategy versioning was never built — a much larger, separately-scoped ask), but
-    // "by volatility" doesn't need that infrastructure — atrPercent (ATR as a percentage of
-    // price, a standard normalized volatility measure) was already computed internally for
-    // stop-loss sizing, just never exposed on this record. Backward-compatible 11-arg
-    // convenience constructor below — all 9 existing test construction sites across this
+    // atrPercent (ATR as a percentage of price, a standard normalized volatility measure) is
+    // exposed here so slippage can eventually be analyzed by volatility even though it's already
+    // computed internally in analyze() below for stop-loss sizing. Backward-compatible 11-arg
+    // convenience constructor below lets every existing test construction site across this
     // codebase continue to compile unchanged, same pattern as Fill's own earlier extension.
     public record Signal(String direction, String signalLabel, double confidence,
                           double entry, double stopLoss, double target1, double target2, double target3,
                           double bullScore, double bearScore, double net, double atrPercent,
-                          // Review finding ("Strategy engine is not the complete strategy
-                          // actually represented by the frontend" -- P1, full context in
-                          // MLWeightService's own javadoc): the 4 raw indicator values the
-                          // frontend's own updateMLFromOutcome needs to later credit/penalize
-                          // the right weight once this signal's real trade outcome is known --
-                          // captured here, at signal-generation time, since they're already
+                          // The 4 raw indicator values the frontend's own updateMLFromOutcome
+                          // needs to later credit/penalize the right weight once this signal's
+                          // real trade outcome is known -- see MLWeightService's own javadoc.
+                          // Captured here, at signal-generation time, since they're already
                           // computed internally in analyze() below and would otherwise be lost
                           // the moment this method returns.
                           double rsi14, boolean macdBull, java.util.List<String> patterns, double volumeRatio) {
@@ -84,21 +74,15 @@ public class ServerSignalEngine {
     }
 
     /**
-     * Review finding ("Strategy engine is not the complete strategy actually represented by the
-     * frontend" -- P1): the read side of the ML weight port -- this class's own header comment
-     * used to disclose that adaptive weighting was NOT ported here at all, fixed weights only.
-     * That gap is now closed for the same 4 weights MLWeightService.recordOutcome actually
-     * learns (rsi, macd, patterns, volume -- see MLWeights's own class javadoc for why only
-     * these 4 of the 11 declared weight variables below are ever adaptive, matching the
+     * The read side of the ML weight port: applies the same 4 weights MLWeightService.recordOutcome
+     * actually learns (rsi, macd, patterns, volume — see MLWeights's own class javadoc for why
+     * only these 4 of the 11 declared weight variables below are ever adaptive, matching the
      * frontend's own real behavior exactly, not an invented superset). The other 7 stay fixed at
-     * their existing defaults, exactly as before this change -- this is additive to the existing
-     * scoring logic, not a rewrite of it.
+     * their existing defaults.
      *
      * `weights` is nullable and this overload is null-safe throughout: a null value (no learned
      * weights recorded yet for this symbol, or a caller that doesn't want adaptive weighting at
-     * all) falls back to the exact same fixed 1.0/1.3 defaults this method has always used --
-     * this is a strict superset of the old behavior, never a behavior change for a caller that
-     * doesn't opt in.
+     * all) falls back to the same fixed 1.0/1.3 defaults every weight uses by default.
      */
     public Signal analyze(List<Candle> candles, com.tradevision.model.MLWeights weights) {
         int n = candles.size();

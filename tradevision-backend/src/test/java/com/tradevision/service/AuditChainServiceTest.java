@@ -18,10 +18,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 
 /**
- * Review finding ("immutable external audit export" -- external review, P3, full context in
- * BrokerAuditLog's own class javadoc): the actual tests proving the hash chain works, detects
- * tampering, and — stated honestly rather than glossed over — genuinely does not claim strict
- * ordering under concurrent writes.
+ * Verifies the hash chain works, detects tampering, and does not claim strict ordering under
+ * concurrent writes.
  */
 @ExtendWith(MockitoExtension.class)
 class AuditChainServiceTest {

@@ -6,12 +6,9 @@ import { environment } from '../../environments/environment';
 import { authInterceptor } from './auth.interceptor';
 
 /**
- * P2-15 fix ("auth.interceptor.ts retries ANY 403 once, including non-idempotent POST/PUT/DELETE
- * requests" -- external review, full context in auth.interceptor.ts's own updated javadoc): this
- * file did not exist before this fix -- the interceptor had zero direct test coverage previously.
- * Proves both halves of the fix: a bodiless (CSRF-cookie-timing) 403 is still retried exactly
- * once, on any method including POST; a bodied (genuine business-logic) 403 is surfaced
- * immediately on a POST and never retried, closing the double-submission risk the review raised.
+ * Covers authInterceptor's 403-retry behavior: a bodiless (CSRF-cookie-timing) 403 is
+ * retried exactly once, on any method including POST; a bodied (genuine business-logic)
+ * 403 is surfaced immediately on a POST and never retried, avoiding a double submission.
  */
 describe('authInterceptor', () => {
   let http: HttpClient;

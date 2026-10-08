@@ -33,10 +33,9 @@ export class BrokerSettingsComponent implements OnInit {
   loading = signal(false);
   message = signal<{ type: 'ok' | 'error'; text: string } | null>(null);
 
-  // Pagination: the credential list and order history used to render fully expanded, pushing
-  // the manual-order/auto-trade sections below a long scroll once more than a couple of
-  // credentials or orders existed. Paged client-side (both endpoints return the full list in
-  // one call today) so the page stays a fixed, short height no matter how many accumulate.
+  // Paged client-side (both endpoints return the full list in one call) so the credential
+  // list and order history stay a fixed, short height no matter how many accumulate, keeping
+  // the manual-order/auto-trade sections below reachable without a long scroll.
   readonly credPageSize = 5;
   readonly ordPageSize = 8;
   credPage = signal(0);
@@ -62,18 +61,14 @@ export class BrokerSettingsComponent implements OnInit {
   // Connect form
   connectApiKey = '';
   connectApiSecret = '';
-  // P3-10 fix ("PAPER mode requires 'live authorization' and isn't selectable in UI" -- external
-  // review, confirmed real by direct inspection: PAPER was a fully working backend mode with
-  // literally no way to select it here -- connect() always hardcoded 'TESTNET'). PAPER still uses
-  // a real (testnet) API key for the same one-time permission check TESTNET does (see
-  // BrokerCredentialService.doConnect's own PAPER-routing comment on the backend) -- it just never
-  // sends an authenticated order afterward -- so it reuses this same form and fields, only the
-  // mode selector is new.
+  // PAPER mode uses a real (testnet) API key for the same one-time permission check TESTNET
+  // does (see BrokerCredentialService.doConnect's PAPER-routing on the backend) but never
+  // sends an authenticated order afterward, so it reuses this same form and fields.
   connectMode: 'TESTNET' | 'PAPER' = 'TESTNET';
 
   // LIVE connect form — deliberately separate fields from the TESTNET connect form above:
-  // review finding ("P0 #1") — a LIVE credential needs your actual Binance mainnet API
-  // key/secret, never the testnet ones, since Binance treats them as genuinely different keys.
+  // a LIVE credential needs the actual Binance mainnet API key/secret, never the testnet
+  // ones, since Binance treats them as genuinely different keys.
   liveConnectApiKey = '';
   liveConnectApiSecret = '';
 
@@ -81,8 +76,7 @@ export class BrokerSettingsComponent implements OnInit {
   testSymbol = 'BTCUSDT';
   testSide: 'BUY' | 'SELL' = 'BUY';
   testQuantity: number | null = null;
-  // Follow-up fix (full context in BrokerService.placeTestOrder's own updated comment, PR #33):
-  // optional, BUY-only -- left null on a SELL or when not wanted, unchanged existing behavior.
+  // Optional, BUY-only — left null on a SELL or when not wanted.
   testTakeProfitPrice: number | null = null;
   testStopLossTriggerPrice: number | null = null;
 
@@ -94,31 +88,22 @@ export class BrokerSettingsComponent implements OnInit {
   maxConcurrentTrades = 1;
   dailyLossLimitQuote = 25;
   riskPerTradePercent = 1.0;
-  // P0-6 fix ("LIVE risk-limit enforcement" -- full context in the backend's own
-  // authorizeLiveAutoTrade javadoc): these are now REQUIRED (non-zero) before this credential
-  // can be authorized for autonomous LIVE trading -- exposed here so a user can actually set
-  // them, rather than being silently stuck at the backend model's own disabled defaults with no
-  // way to change them through this form.
+  // Required (non-zero) before a credential can be authorized for autonomous LIVE trading
+  // (see the backend's authorizeLiveAutoTrade), so they're editable here with sane defaults
+  // rather than left at the backend model's disabled defaults with no way to change them.
   maxTotalExposureQuote = 100;
   maxDrawdownPercent = 10;
   maxOrdersPerHour = 20;
   maxConsecutiveAutoTradeLosses = 3;
-  // P1-20 fix ("Frontend risk-profile save silently wipes fields" -- full context in
-  // BrokerService.saveRiskProfile's own updated javadoc): these three previously had no form
-  // control AND were never even read back from the backend by loadRiskProfile below, so every
-  // save from this component silently reset them to the backend's own bare defaults
-  // (maxSymbolExposureQuote=disabled, maxPriceDeviationPercent=1.5, circuitBreakerThreshold=3)
-  // regardless of whether the user had ever deliberately configured something else. Now genuinely
-  // round-tripped: loaded from the profile below, editable here, and sent back on every save.
+  // Round-tripped with the backend: loaded from the profile in loadRiskProfile below,
+  // editable here, and sent back on every save, so a save never resets them to the
+  // backend's bare defaults.
   maxSymbolExposureQuote = 0; // 0 = disabled, matching the backend model's own default
   maxPriceDeviationPercent = 1.5;
   circuitBreakerThreshold = 3;
-  // P1-20 fix: correlationGroups/correlationGroupCaps still have no dedicated editor UI in this
-  // pass (a real group-membership editor is a separate, larger UI feature, not a bug fix) -- but
-  // they ARE now round-tripped through this component (loaded here, sent back unmodified on
-  // save), which is the actual fix this item needs: a save from this form must never again wipe
-  // out correlation groups/caps a user configured through some OTHER path (a future dedicated
-  // editor, or directly via the API), just because this form has no UI for them yet.
+  // No dedicated editor UI for group membership yet, but these are loaded here and sent
+  // back unmodified on save, so a save from this form never wipes out correlation
+  // groups/caps configured through some other path (a future editor, or the API directly).
   correlationGroups: Record<string, string[]> = {};
   correlationGroupCaps: Record<string, number> = {};
 
@@ -194,18 +179,16 @@ export class BrokerSettingsComponent implements OnInit {
         this.maxConcurrentTrades = p.maxConcurrentTrades;
         this.dailyLossLimitQuote = p.dailyLossLimitQuote;
         this.riskPerTradePercent = p.riskPerTradePercent;
-        // P0-6 fix: only overwrite the form's own default when the backend actually has a real
-        // value on file -- an existing profile saved before this fix legitimately has these at
-        // 0/undefined, and falling back to this form's own sane defaults there is friendlier
-        // than showing "0" (which would otherwise look like a deliberate, saved 0, not "never set").
+        // Only overwrite the form's default when the backend has a real value on file —
+        // a profile with these at 0/undefined falls back to this form's own sane defaults,
+        // which reads better than showing "0" as if it were a deliberately saved value.
         if (p.maxTotalExposureQuote) this.maxTotalExposureQuote = p.maxTotalExposureQuote;
         if (p.maxDrawdownPercent) this.maxDrawdownPercent = p.maxDrawdownPercent;
         if (p.maxOrdersPerHour) this.maxOrdersPerHour = p.maxOrdersPerHour;
         if (p.maxConsecutiveAutoTradeLosses) this.maxConsecutiveAutoTradeLosses = p.maxConsecutiveAutoTradeLosses;
-        // P1-20 fix (full context in this component's own updated field comments above): these
-        // must be loaded here too, or saveRiskProfile() below would echo back this form's own
-        // stale/default in-memory values instead of the backend's actual current ones on every
-        // save that doesn't itself change them.
+        // Must be loaded here too, or saveRiskProfile() below would echo back this form's
+        // stale/default in-memory values instead of the backend's actual current ones on
+        // every save that doesn't itself change them.
         if (p.maxSymbolExposureQuote) this.maxSymbolExposureQuote = p.maxSymbolExposureQuote;
         if (p.maxPriceDeviationPercent) this.maxPriceDeviationPercent = p.maxPriceDeviationPercent;
         if (p.circuitBreakerThreshold) this.circuitBreakerThreshold = p.circuitBreakerThreshold;
@@ -223,10 +206,9 @@ export class BrokerSettingsComponent implements OnInit {
   placeTestOrder() {
     const c = this.selected();
     if (!c || !this.testQuantity) { this.show('error', 'Pick a credential and enter a quantity.'); return; }
-    // Follow-up fix (full context in BrokerService.placeTestOrder's own updated comment, PR #33):
-    // same both-or-neither / BUY-only / SL-below-TP rules the backend enforces -- checked here
-    // too so a bad combination is caught before the request even goes out, not just reported
-    // back as a 400 after the fact. The backend remains the real source of truth for this.
+    // Mirrors the same both-or-neither / BUY-only / SL-below-TP rules the backend enforces,
+    // so a bad combination is caught before the request even goes out rather than only
+    // reported back as a 400. The backend remains the real source of truth for this.
     if ((this.testTakeProfitPrice == null) !== (this.testStopLossTriggerPrice == null)) {
       this.show('error', 'Take-profit and stop-loss must both be set, or both left blank.'); return;
     }
@@ -265,12 +247,10 @@ export class BrokerSettingsComponent implements OnInit {
       maxDrawdownPercent: this.maxDrawdownPercent,
       maxOrdersPerHour: this.maxOrdersPerHour,
       maxConsecutiveAutoTradeLosses: this.maxConsecutiveAutoTradeLosses,
-      // P1-20 fix (full context in this component's own updated field comments and
-      // BrokerService.saveRiskProfile's own updated javadoc): always echoed back now, so this
-      // save can never silently wipe them -- maxSymbolExposureQuote/maxPriceDeviationPercent/
-      // circuitBreakerThreshold from this form's own (now genuinely round-tripped) fields, and
-      // correlationGroups/correlationGroupCaps unmodified from whatever was most recently loaded,
-      // since this pass still has no dedicated editor UI for them.
+      // Always echoed back so a save never wipes these: maxSymbolExposureQuote/
+      // maxPriceDeviationPercent/circuitBreakerThreshold from this form's round-tripped
+      // fields, and correlationGroups/correlationGroupCaps unmodified from whatever was
+      // most recently loaded, since there's no dedicated editor UI for them yet.
       maxSymbolExposureQuote: this.maxSymbolExposureQuote,
       maxPriceDeviationPercent: this.maxPriceDeviationPercent,
       circuitBreakerThreshold: this.circuitBreakerThreshold,
@@ -308,11 +288,9 @@ export class BrokerSettingsComponent implements OnInit {
     });
   }
 
-  // Review finding ("P0 #1" — "LIVE Binance credential architecture is wrong"): this used to
-  // operate on this.selected() — an existing TESTNET-validated credential — and just flip its
-  // mode flag. That could never actually work against real Binance (a testnet key is rejected
-  // outright at the LIVE endpoint). Now a genuinely separate connection, with its own key/secret
-  // fields, validated against Binance's real LIVE endpoint from the start.
+  // Establishes a genuinely separate LIVE connection with its own key/secret fields,
+  // validated against Binance's real LIVE endpoint — a testnet key would be rejected
+  // outright there, so this can't simply reuse an existing TESTNET-validated credential.
   requestLive() {
     if (!this.liveConnectApiKey || !this.liveConnectApiSecret) {
       this.show('error', 'Enter your Binance LIVE (mainnet) API key and secret — not your testnet ones.');

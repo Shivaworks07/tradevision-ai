@@ -4,9 +4,9 @@ import com.tradevision.model.AuditChainCheckpoint;
 import org.springframework.data.mongodb.repository.MongoRepository;
 
 /**
- * P2-7 fix, full context in AuditChainCheckpoint's own class javadoc: findById(SINGLETON_ID)/save
- * (already inherited from MongoRepository/CrudRepository) are the only operations
- * AuditChainService actually needs against this single, well-known document.
+ * Backs AuditChainService, which reads and writes a single, well-known checkpoint
+ * document (identified by SINGLETON_ID). The inherited findById/save operations are all
+ * that's needed, so no custom query methods are declared here.
  */
 public interface AuditChainCheckpointRepository extends MongoRepository<AuditChainCheckpoint, String> {
 }

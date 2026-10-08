@@ -5,18 +5,15 @@ import { BrokerService, BrokerCredentialResponse, RiskProfile } from '../../serv
 import { StrategyPlanService, StrategyPlan, StrategyPlanRequest, TradeDirection, SessionMode, EndOfSessionAction, DayOfWeek } from '../../services/strategy-plan.service';
 
 /**
- * User's own explicit multi-strategy-plan design, full context in the backend's own
- * StrategyPlan class javadoc: "the next major feature: Strategy Plan Engine." Everything on the
- * backend (the model, per-plan scanning, two-tier risk, the exit-policy checks, the session
- * feature) has existed with no way for an actual user to reach it -- this is that UI. Follows
- * BrokerSettingsComponent's own established shape exactly (plain FormsModule + ngModel, not
- * ReactiveForms; a `message` signal for inline success/error banners; a credential selector
- * reusing BrokerService, since a strategy plan always belongs to one specific broker credential).
+ * UI for creating and managing multi-strategy trading plans: per-plan scanning,
+ * two-tier risk, exit-policy checks, and session scheduling. Follows
+ * BrokerSettingsComponent's shape (plain FormsModule + ngModel, not ReactiveForms;
+ * a `message` signal for inline success/error banners; a credential selector reusing
+ * BrokerService, since a strategy plan always belongs to one specific broker credential).
  *
- * HONEST SCOPE: "Duplicate" (named in the review's own frontend checklist) is not built --
- * the backend has no duplicate endpoint to call, and inventing client-side duplication (fetch a
- * plan, strip its id, re-POST it) would be real, untested new logic for a feature nobody has
- * explicitly asked this session to build on the backend first.
+ * Duplicate-plan is intentionally not offered here: there is no backend endpoint for it,
+ * and client-side duplication (fetch a plan, strip its id, re-POST it) would be new,
+ * untested logic rather than a thin wrapper over an existing API.
  */
 @Component({
     selector: 'app-strategy-plans',
@@ -31,11 +28,9 @@ export class StrategyPlansComponent implements OnInit {
   credentials = signal<BrokerCredentialResponse[]>([]);
   selectedCredentialId = signal<string | null>(null);
   plans = signal<StrategyPlan[]>([]);
-  // Review finding ("Strategy Plan UI should explain effective risk" -- external review, tenth
-  // pass, P2, confirmed real: the UI let a user configure "Plan risk = 2%" while the account
-  // ceiling might be 0.5%, with the trade actually using min(2%, 0.5%) = 0.5%, and nothing in
-  // the UI ever said so): fetched once per credential selection so both the plan list and the
-  // create/edit form can show the real, effective value next to whatever the plan itself claims.
+  // The account's actual risk ceiling, fetched once per credential selection, so the plan
+  // list and create/edit form can show the effective risk (min(plan risk, account ceiling))
+  // alongside whatever risk value the plan itself specifies.
   accountRiskProfile = signal<RiskProfile | null>(null);
 
   loading = signal(false);
@@ -156,13 +151,12 @@ export class StrategyPlansComponent implements OnInit {
   }
 
   /**
-   * Review finding ("Frontend still doesn't offer Duplicate" -- external review, tenth pass, P2,
-   * confirmed real: the review's own named example -- "1m Scalper -> Duplicate -> 5m Scalper" --
-   * is genuinely useful for the product this session built). No backend duplicate endpoint
-   * exists or is needed: this pre-fills the CREATE form with the source plan's own values (minus
-   * its id/enabled/defaultPlan/timestamps, which a genuine new plan must not inherit) and opens
-   * it as a normal new-plan creation -- the user reviews and saves it themselves, rather than a
-   * server-side copy silently appearing.
+   * Lets a user quickly start a new plan based on an existing one, e.g. cloning a
+   * "1m Scalper" into a "5m Scalper". No backend duplicate endpoint is needed: this
+   * pre-fills the CREATE form with the source plan's values (minus its id/enabled/
+   * defaultPlan/timestamps, which a new plan must not inherit) and opens it as a normal
+   * new-plan creation, so the user reviews and saves it themselves rather than a copy
+   * silently appearing.
    */
   duplicatePlan(plan: StrategyPlan) {
     this.editingId = null; // duplicating always creates a NEW plan, never edits the source

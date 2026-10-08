@@ -21,12 +21,9 @@
   <div class="bs-body">
 
     <!-- Connect -->
-    <!-- P3-10 fix ("PAPER mode requires 'live authorization' and isn't selectable in UI" --
-    external review, confirmed real by direct inspection): PAPER was a fully working backend
-    mode (see BrokerMode's own javadoc on the backend) with no way to actually pick it here --
-    this section always connected TESTNET only. Same form, same key/secret fields (PAPER still
-    validates against Binance testnet for the one-time permission check), just a mode choice
-    added since that's the only thing that was actually missing. -->
+    <!-- TESTNET and PAPER share this same form and key/secret fields: PAPER still validates
+    against Binance testnet for the one-time permission check (see BrokerMode's javadoc on
+    the backend), then simulates everything in-process from there. -->
     <div class="bs-section">
       <div class="ss-title">Connect Binance (testnet / paper)</div>
       @if (connectMode === 'TESTNET') {
@@ -48,11 +45,9 @@
       </div>
     </div>
 
-    <!-- Review finding ("P0 #1" — "LIVE Binance credential architecture is wrong"): connecting a
-    LIVE credential is now its own standalone flow with its own key/secret fields — never a
-    mode switched on the testnet connection above. Binance testnet and mainnet API keys are
-    genuinely different credentials; using the testnet ones here would simply be rejected by
-    Binance's own LIVE endpoint. -->
+    <!-- A standalone flow with its own key/secret fields, never a mode switched on the
+    testnet connection above — Binance testnet and mainnet API keys are genuinely different
+    credentials, and using testnet ones here would be rejected by Binance's LIVE endpoint. -->
     <div class="bs-section danger">
       <div class="ss-title">Connect Binance (LIVE — real funds)</div>
       <div class="ss-desc">Use your actual Binance mainnet API key — not the testnet one above. Validated against Binance's real LIVE endpoint. Withdrawal permission is rejected automatically, same as testnet.</div>
@@ -125,20 +120,15 @@
           </select>
           <input type="number" placeholder="Quantity" [(ngModel)]="testQuantity" step="0.0001" />
           @if (testSide === 'BUY') {
-            <!-- Follow-up fix (full context in BrokerService.placeTestOrder's own updated
-            comment, PR #33): optional -- without these, a manual fill has no way to be
-            protected once the backend's own reconciliation pass discovers it, and gets
-            emergency-flattened unprotected instead. Only meaningful for a BUY, so hidden
-            entirely on a SELL rather than shown disabled. -->
+            <!-- Optional: without these, a manual fill has no protective exit once the
+            backend's reconciliation pass discovers it, and gets emergency-flattened
+            unprotected instead. Only meaningful for a BUY, so hidden entirely on a SELL. -->
             <input type="number" placeholder="Take-profit price (optional)" [(ngModel)]="testTakeProfitPrice" step="0.01" />
             <input type="number" placeholder="Stop-loss price (optional)" [(ngModel)]="testStopLossTriggerPrice" step="0.01" />
           }
-          <!-- Review finding (P1 — "Manual test-order UI mismatch"): OrderExecutionService
-          hard-rejects manual test orders on LIVE credentials (verified against the actual
-          backend code, not assumed) — this button could never succeed on LIVE, so the old
-          "uses real funds" warning described a scenario that can't happen and implied the
-          order would go through when it never could. Disabled instead, with an accurate
-          reason shown in its place. -->
+          <!-- OrderExecutionService hard-rejects manual test orders on LIVE credentials,
+          so this button is disabled on LIVE rather than shown as if it could succeed,
+          with an accurate reason shown in its place below. -->
           <button class="btn-primary" [disabled]="loading() || sel.mode === 'LIVE'" (click)="placeTestOrder()">Place Test Order</button>
         </div>
         @if (sel.mode === 'LIVE') {
@@ -192,11 +182,8 @@
           <label>Max consecutive auto-trade losses (0 = disabled)
             <input type="number" [(ngModel)]="maxConsecutiveAutoTradeLosses" min="0" />
           </label>
-          <!-- P1-20 fix ("Frontend risk-profile save silently wipes fields" -- full context in
-          BrokerService.saveRiskProfile's own updated javadoc): these three now have real
-          form controls -- before this fix, this form neither showed nor sent them, so a
-          save always reset them to the backend's own bare defaults even for a user who'd
-          deliberately configured something else. -->
+          <!-- Round-tripped with the backend so a save never resets these to the backend's
+          bare defaults when a user has deliberately configured something else. -->
           <label>Max exposure per symbol (quote, 0 = disabled)
             <input type="number" [(ngModel)]="maxSymbolExposureQuote" min="0" />
           </label>

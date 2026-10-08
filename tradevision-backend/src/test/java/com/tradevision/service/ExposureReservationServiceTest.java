@@ -24,9 +24,9 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
- * Review finding ("P0 #3" — "Exposure limits are still not atomic"): same discipline as
- * PositionSlotReservationServiceTest — tests the actual atomic findAndModify calls sent to
- * MongoDB, and the two-step reserve-then-rollback behavior specifically, not just "does it run".
+ * Same discipline as PositionSlotReservationServiceTest — tests the actual atomic findAndModify
+ * calls sent to MongoDB, and the two-step reserve-then-rollback behavior specifically, not just
+ * "does it run".
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -42,12 +42,10 @@ class ExposureReservationServiceTest {
     @BeforeEach
     void setup() {
         when(mongoTemplate.exists(any(Query.class), eq(ExposureReservation.class))).thenReturn(true);
-        // Review finding ("Exposure reservation creation is still not atomic with the exposure
-        // counter" -- external review, twenty-eighth pass, P0, full context in reserve()'s own
-        // updated javadoc): reserve() now inserts a real record as its very first step -- every
-        // existing test in this file would NPE without this stub, since @InjectMocks leaves an
-        // unmocked repository field null. Mirrors a real MongoDB insert: assigns a real id and
-        // returns the same object, exactly as reservationRecordRepo.insert(record) really does.
+        // reserve() inserts a real record as its very first step -- every existing test in this
+        // file would NPE without this stub, since @InjectMocks leaves an unmocked repository
+        // field null. Mirrors a real MongoDB insert: assigns a real id and returns the same
+        // object, exactly as reservationRecordRepo.insert(record) really does.
         when(reservationRecordRepo.insert(any(com.tradevision.model.ExposureReservationRecord.class))).thenAnswer(inv -> {
             com.tradevision.model.ExposureReservationRecord r = inv.getArgument(0);
             if (r.getId() == null) r.setId("test-reservation-id");
@@ -141,7 +139,7 @@ class ExposureReservationServiceTest {
     }
 
     @Test
-    @DisplayName("reconcile: skips the overwrite when a reservation happened within the grace window — same regression guard as slot reservation")
+    @DisplayName("reconcile: skips the overwrite when a reservation happened within the grace window — same guard as slot reservation")
     void reconcile_skipsOverwriteDuringGraceWindow() {
         ExposureReservation recent = new ExposureReservation();
         recent.setCredentialId("cred1");
@@ -167,12 +165,8 @@ class ExposureReservationServiceTest {
     }
 
     /**
-     * Review finding ("reservation reconciliation is still fundamentally cache-based" --
-     * external review, twenty-ninth pass, P1, the review's own explicit "biggest remaining
-     * reservation concern," full context in reconcile()'s own updated javadoc): the actual test
-     * proving the fix -- an ACTIVE reservation genuinely not yet linked to a position is
-     * included in the reconciled total, closing the review's own named failure scenario where
-     * a position-derived-only reconcile would have silently dropped it.
+     * Proves an ACTIVE reservation genuinely not yet linked to a position is included in the
+     * reconciled total -- a position-derived-only reconcile would silently drop it.
      */
     @Test
     @DisplayName("reconcile: an ACTIVE reservation not yet linked to any position is ADDED to the position-derived total, not silently excluded")
@@ -196,7 +190,7 @@ class ExposureReservationServiceTest {
     }
 
     @Test
-    @DisplayName("reconcile: no unlinked ACTIVE reservations -- the corrected total equals the position-derived total exactly, unchanged from before this fix")
+    @DisplayName("reconcile: no unlinked ACTIVE reservations -- the corrected total equals the position-derived total exactly")
     void reconcile_noUnlinkedActiveReservations_totalUnchanged() {
         ExposureReservation stale = new ExposureReservation();
         stale.setCredentialId("cred1");
@@ -274,14 +268,13 @@ class ExposureReservationServiceTest {
     }
 
     /**
-     * P3-5 fix ("ExposureReservationService group/symbol field paths -- user-supplied group
-     * names used as Mongo field paths ('.'/'$') -- validate names" -- external review, full
-     * context in isSafeGroupName's own javadoc): RiskProfileService.upsert now rejects a bad
-     * group name before it can ever be saved, so this is the defense-in-depth path for a profile
-     * document that already has one (written before that fix existed, or by a direct database
-     * write). The actual proof: a bad name is silently skipped -- the reservation still succeeds
-     * using only its safe total/symbol steps -- rather than building the dangerous
-     * "reservedGroupExposure.<bad name>" field path at all.
+     * User-supplied group names must never be used directly as Mongo field paths ('.'/'$'
+     * characters would let a bad name reach into unrelated fields). RiskProfileService.upsert
+     * rejects a bad group name before it can ever be saved, so this is the defense-in-depth
+     * path for a profile document that already has one (written before that validation existed,
+     * or by a direct database write). The actual proof: a bad name is silently skipped -- the
+     * reservation still succeeds using only its safe total/symbol steps -- rather than building
+     * the dangerous "reservedGroupExposure.<bad name>" field path at all.
      */
     @Test
     @DisplayName("reserve: a correlation group name containing '.' is skipped entirely -- never used to build a Mongo field path, and the reservation still succeeds on total/symbol alone")
@@ -377,12 +370,11 @@ class ExposureReservationServiceTest {
         assertThat(setDoc.containsKey("reservedGroupExposure")).isTrue();
     }
 
-    // ── P0-1: record created before any counter is touched ────────────────────
+    // ── Record created before any counter is touched ────────────────────
 
     /**
-     * Review finding ("Exposure reservation creation is still not atomic with the exposure
-     * counter" -- external review, twenty-eighth pass, P0, the review's own explicit "biggest
-     * thing found in v174"): the actual tests for the reordered reserve().
+     * Covers reserve() inserting the record before touching any counter, so the record and the
+     * counter state can never drift out of sync.
      */
     @Test
     @DisplayName("reserve: the record is inserted as PENDING BEFORE any counter findAndModify is ever attempted")
@@ -428,10 +420,8 @@ class ExposureReservationServiceTest {
     }
 
     /**
-     * Review finding ("Reservation lifecycle is still not transactionally safe" -- external
-     * review, thirty-eighth pass, P0, the review's own explicit final fix, full context in
-     * reserveTransactionally's own updated javadoc): the actual tests proving the fix, modeled
-     * on RiskProfileServiceTest's own identical pattern for the same established fallback
+     * Covers the transactional reserve path and its fallback, modeled on
+     * RiskProfileServiceTest's own identical pattern for the same established fallback
      * mechanism.
      */
     @Test
@@ -450,12 +440,9 @@ class ExposureReservationServiceTest {
     }
 
     /**
-     * Review finding ("Make LIVE reservation transaction fallback impossible" -- external
-     * review, thirty-ninth pass, the review's own explicit required flow: "transaction
-     * unavailable -> DO NOT fallback -> reject reservation -> halt autonomous execution ->
-     * critical incident"): the actual test proving the fix -- when live=true and no
-     * ClientSession is available, the reservation is rejected, NOT silently handed to the
-     * sequential fallback, and the account is halted.
+     * When live=true and no ClientSession is available, the reservation must be rejected, NOT
+     * silently handed to the sequential fallback, and the account must be halted: transaction
+     * unavailable -> reject reservation -> halt autonomous execution -> critical incident.
      */
     @Test
     @DisplayName("reserve: live=true and no ClientSession available -- rejects and halts, NEVER falls back to the sequential path")
@@ -491,13 +478,10 @@ class ExposureReservationServiceTest {
     }
 
     /**
-     * Review finding ("v183 still has a dangerous 'PENDING reservation cleanup' window" --
-     * external review, thirty-fifth pass, P0, full context in reserve()'s own updated comment
-     * on this final transition): the actual test proving the fix -- when the final PENDING-to-
-     * ACTIVE transition matches zero documents (the review's own named race: the record was
+     * When the final PENDING-to-ACTIVE transition matches zero documents (the record was
      * deleted out from under this call by a concurrent stale-PENDING cleanup pass), a critical
-     * incident is raised naming the exact record and credential, rather than the failure being
-     * silently discarded as it was before this fix.
+     * incident must be raised naming the exact record and credential, rather than the failure
+     * being silently discarded.
      */
     @Test
     @DisplayName("reserve: the final PENDING-to-ACTIVE transition matches zero documents (record deleted concurrently) -- raises a critical incident naming the exact record and credential, rather than silently discarding the failure")
@@ -529,12 +513,11 @@ class ExposureReservationServiceTest {
         verify(reservationRecordRepo).deleteById("test-reservation-id");
     }
 
-    // ── P1-2: release(reservationId) never drives a counter negative ──────────
+    // ── release(reservationId) never drives a counter negative ──────────
 
     /**
-     * Review finding ("Exposure reservation records can remain ACTIVE after reconciliation
-     * overwrites counters" -- external review, twenty-eighth pass, P1): the actual tests for
-     * the floor-at-zero fix.
+     * Covers the floor-at-zero behavior for a release whose record stayed stale ACTIVE after
+     * reconciliation already overwrote the counters.
      */
     @Test
     @DisplayName("release(reservationId): the counter has enough to release -- a normal conditional decrement, never the clamp-to-zero fallback")
@@ -569,7 +552,7 @@ class ExposureReservationServiceTest {
 
         service.release("res1");
 
-        // The actual fix: falls through to an explicit $set to zero, never a further negative $inc.
+        // Must fall through to an explicit $set to zero, never a further negative $inc.
         // reservedTotalExposureQuote is DECIMAL128-typed (see ExposureReservation model, and this
         // class's own toDecimal128 helper) -- the ad-hoc $set here must carry a real
         // org.bson.types.Decimal128, not a raw BigDecimal, or it would be stored as a String and
@@ -596,9 +579,8 @@ class ExposureReservationServiceTest {
     }
 
     /**
-     * Review finding ("The lastReservedAt grace-window design is still time-based safety" --
-     * external review, twenty-eighth pass, P1, full context in reconcile()'s own updated
-     * javadoc): the actual test for the new, durable signal.
+     * Covers the durable stale-PENDING cleanup signal, which is independent of the time-based
+     * lastReservedAt grace window.
      */
     @Test
     @DisplayName("reconcile: deletes stale PENDING records older than the dedicated cleanup window")
@@ -614,10 +596,8 @@ class ExposureReservationServiceTest {
     }
 
     /**
-     * Review finding ("v183 still has a dangerous 'PENDING reservation cleanup' window" --
-     * external review, thirty-fifth/thirty-seventh passes, P0, the review's own explicit
-     * required fix, full context in ExposureReservationRecord.executionId's own field
-     * javadoc): the actual tests proving the fix.
+     * Covers escalation (instead of deletion) of a stale PENDING record whose linked execution
+     * shows it may have already reached the exchange.
      */
     @Test
     @DisplayName("reconcile: a stale PENDING record whose linked execution shows real progress (may have reached the exchange) is NOT deleted -- escalated instead, raising a critical incident naming the exact record and execution")

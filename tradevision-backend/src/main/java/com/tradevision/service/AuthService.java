@@ -32,17 +32,9 @@ public class AuthService {
     private final OtpRateLimitService otpRateLimitService;
     private final MongoTemplate     mongoTemplate;
     /**
-     * P2-14 fix ("WebhookAlertService/User.alertWebhookUrl: no endpoint sets the webhook, feature
-     * is dead" -- external review, confirmed real by direct inspection before this fix:
-     * WebhookAlertService itself is fully built, tested, and already wired into
-     * IncidentService's own alert-delivery path -- reading User.alertWebhookUrl and sending to it
-     * on halts/unprotected-position/consecutive-failure incidents -- but literally nothing in
-     * this codebase, frontend or backend, ever WRITES that field. Every account's
-     * alertWebhookUrl is permanently null, so the entire feature -- built, safe (SSRF-validated),
-     * and reachable from IncidentService -- can never actually fire for a real user): needed for
-     * the actual save-time validation this new setAlertWebhookUrl() method below does before
-     * ever persisting a URL, reusing WebhookAlertService's own already-proven isDestinationSafe
-     * check rather than duplicating SSRF validation logic a second time.
+     * Used by setAlertWebhookUrl below to validate a webhook URL at save time, reusing
+     * WebhookAlertService's own isDestinationSafe check rather than duplicating SSRF
+     * validation logic here.
      */
     private final WebhookAlertService webhookAlertService;
 
@@ -78,8 +70,8 @@ public class AuthService {
             }
         });
 
-        // Review finding (this doc, "BLOCKER #7"): send-frequency rate limit, independent of
-        // whether this identifier has a User yet — the gap the old check missed.
+        // Send-frequency rate limit, independent of whether this identifier already has a
+        // User record — applies even to brand-new signups, not just existing accounts.
         var rateLimit = otpRateLimitService.checkAndRecord(id, purpose);
         if (!rateLimit.allowed()) {
             return ApiResponse.error(rateLimit.reason());
@@ -90,12 +82,9 @@ public class AuthService {
         String code = otpUtil.generateCode();
         otpRepo.save(new OtpRecord(id, otpUtil.hashOtp(code, id, purpose), purpose));
 
-        // Send via email or SMS
-        // Review finding (P1 — "OTP delivery has a functional production bug"): this used to
-        // call these as void methods and unconditionally return success regardless of whether
-        // anything was actually sent. A misconfigured deployment (mail disabled, no provider
-        // configured, console fallback correctly refused) would tell the user "OTP sent" for an
-        // OTP that went nowhere — completely silent login/registration breakage. Now honest.
+        // Send via email or SMS. Delivery status is checked and surfaced to the caller rather
+        // than assumed, since a misconfigured deployment (mail disabled, no SMS provider
+        // configured) should report failure instead of claiming the OTP was sent.
         boolean delivered = isEmail(id) ? emailService.sendOtp(id, code) : otpUtil.sendSms(id, code);
         if (!delivered) {
             return ApiResponse.error("OTP delivery is currently unavailable. Please try again later or contact support.");
@@ -104,18 +93,12 @@ public class AuthService {
     }
 
     /**
-     * Audit item P1-5 ("Live-trade-enabling actions do not require step-up authentication" --
-     * external review, confirmed real by direct inspection: RiskProfileService.authorizeLiveAutoTrade
-     * -- the action that flips a risk profile into autonomous LIVE auto-trading -- was gated
-     * only by @AuthenticationPrincipal (an ordinary, possibly long-lived JWT session) and a
-     * static confirmation-phrase string readable in the frontend source. Anyone who hijacked an
-     * already-authenticated session (XSS, a leaked token, a left-open browser) could enable
-     * real-money autonomous trading with no fresh proof of identity at the moment of that
-     * specific, high-consequence action. Every OTP in this codebase was previously consumed
-     * once, at login -- there was no step-up mechanism at all). This issues a fresh OTP to the
-     * CALLER'S OWN on-file email/mobile (never an attacker-suppliable destination) for a
-     * mid-session, high-stakes confirmation, reusing this class's existing OTP infrastructure
-     * (rate limiting, hashing, expiry) rather than a new pipeline.
+     * Issues a fresh OTP for step-up (re-)authentication ahead of a high-stakes, mid-session
+     * action such as RiskProfileService.authorizeLiveAutoTrade, which enables real-money
+     * autonomous trading. The code is always sent to the caller's own on-file email/mobile,
+     * never to an attacker-suppliable destination, so this can't be used to push a
+     * verification code anywhere else. Reuses this class's existing OTP infrastructure (rate
+     * limiting, hashing, expiry) rather than a separate pipeline.
      */
     public ApiResponse<?> sendStepUpOtp(String userId, String purpose) {
         var userOpt = userRepo.findById(userId);
@@ -152,10 +135,11 @@ public class AuthService {
 
     /**
      * The shared core of OTP code verification -- attempt-limit claim, hash compare, atomic
-     * single-use consumption -- factored out of verifyOtp (audit item P1-5) so the step-up flow
-     * above (verifyStepUpOtp) reuses the exact same hardening without going through verifyOtp's
-     * login/session-issuance side effects, which don't belong in a mid-session "prove it's
-     * still you" check. Returns null on success, or a user-facing error message on failure.
+     * single-use consumption -- factored out so both login/registration (verifyOtp) and the
+     * step-up flow (verifyStepUpOtp) go through the exact same hardening, without the step-up
+     * path picking up verifyOtp's login/session-issuance side effects, which don't belong in a
+     * mid-session "prove it's still you" check. Returns null on success, or a user-facing
+     * error message on failure.
      */
     private String verifyOtpCodeOnly(String identifier, String purpose, String code) {
         var otpList = otpRepo.findByMobileAndPurposeOrderByCreatedAtDesc(identifier, purpose);
@@ -165,17 +149,14 @@ public class AuthService {
         if (otp.getCreatedAt().plusMinutes(otpExpiryMin).isBefore(LocalDateTime.now()))
             return "OTP expired. Request a new one.";
 
-        // Review finding ("OTP verification has no effective attempt/rate limit" -- P0):
-        // confirmed real -- verifyOtp() previously never checked an attempt limit before
-        // comparing the submitted code, only incremented User.failedOtpAttempts AFTER a wrong
-        // guess, and that counter doesn't even exist yet for a brand-new signup. This is the
-        // actual fix: a single atomic MongoDB conditional update on the OTP record itself
-        // (WHERE id=X AND used=false AND attemptCount < MAX) that increments attemptCount and
-        // fails as ONE indivisible operation, not a separate read-then-check-then-write with
-        // its own race window. Two concurrent wrong-guess requests against the same OTP cannot
-        // both slip through and both increment past the limit -- Mongo evaluates the filter and
-        // applies the $inc atomically per document, so only requests that see attemptCount still
-        // under the limit at the exact moment of their own update succeed.
+        // Claims an attempt slot via a single atomic MongoDB conditional update on the OTP
+        // record itself (WHERE id=X AND used=false AND attemptCount < MAX) that increments
+        // attemptCount and fails as ONE indivisible operation, rather than a separate
+        // read-then-check-then-write with its own race window. This means two concurrent
+        // wrong-guess requests against the same OTP cannot both slip through and both
+        // increment past the limit -- Mongo evaluates the filter and applies the $inc
+        // atomically per document, so only requests that see attemptCount still under the
+        // limit at the exact moment of their own update succeed.
         var attemptClaim = mongoTemplate.updateFirst(
             new Query(where("id").is(otp.getId()).and("used").is(false).and("attemptCount").lt(MAX_OTP_ATTEMPTS)),
             new Update().inc("attemptCount", 1),
@@ -187,9 +168,8 @@ public class AuthService {
             return "Too many incorrect attempts for this OTP. Request a new one.";
         }
 
-        // Review finding (this doc, "BLOCKER #5"): compare hashes, never a raw stored OTP —
-        // there isn't one anymore. MessageDigest.isEqual is constant-time, avoiding a timing
-        // side-channel on the comparison itself.
+        // Compare hashes only -- the raw OTP is never stored. MessageDigest.isEqual is
+        // constant-time, avoiding a timing side-channel on the comparison itself.
         String submittedHash = otpUtil.hashOtp(code, identifier, purpose);
         if (!java.security.MessageDigest.isEqual(
                 otp.getOtpHash().getBytes(java.nio.charset.StandardCharsets.UTF_8),
@@ -198,16 +178,13 @@ public class AuthService {
             return "Invalid OTP. Please check and try again.";
         }
 
-        // Review finding ("OTP verification has no effective attempt/rate limit" -- P0,
-        // continued -- "concurrent correct OTP submissions produce exactly one authenticated
-        // session"): a plain otpRepo.delete(otp) here is NOT atomic against a second concurrent
-        // request that also has the correct code -- both could pass the hash comparison above
-        // before either one deletes the record, and both would then proceed to create a session.
-        // Fixed the same way as the attempt-limit claim above: an atomic conditional delete that
-        // only ONE concurrent winner can actually perform. deleteCount==0 means a concurrent
-        // request already consumed this exact OTP record between this request's own read and
-        // this claim -- correctly rejected rather than silently issuing a second session for a
-        // code that's already been spent.
+        // Consumes the OTP via an atomic conditional delete rather than a plain delete, so
+        // that only one of two concurrent requests presenting the same correct code can ever
+        // win. A plain delete here would let both requests pass the hash comparison above
+        // before either removes the record, and both would then proceed to create a session.
+        // deleteCount==0 means a concurrent request already consumed this exact OTP record
+        // between this request's read and this claim -- correctly rejected rather than
+        // silently issuing a second session for a code that's already been spent.
         var consumeClaim = mongoTemplate.remove(new Query(where("id").is(otp.getId())), OtpRecord.class);
         if (consumeClaim.getDeletedCount() == 0) {
             return "This OTP has already been used. Request a new one.";
@@ -222,9 +199,9 @@ public class AuthService {
             return ApiResponse.error("Email is required.");
         identifier = identifier.trim().toLowerCase();
 
-        // Audit item P1-5, full context in verifyOtpCodeOnly's own javadoc: the attempt-limit
-        // claim / hash compare / single-use consumption now lives in one shared helper so the
-        // step-up flow below reuses the exact same hardening instead of a second copy.
+        // The attempt-limit claim / hash compare / single-use consumption lives in one shared
+        // helper (see its own javadoc) so the step-up flow reuses the exact same hardening
+        // instead of a second copy.
         String otpError = verifyOtpCodeOnly(identifier, req.getPurpose(), req.getCode());
         if (otpError != null) return ApiResponse.error(otpError);
 
@@ -266,16 +243,16 @@ public class AuthService {
             User user = userOpt.get();
             String presentedHash = jwt.hashToken(refreshToken);
             if (!presentedHash.equals(user.getRefreshTokenHash())) {
-                // Review finding ("Authentication still has a few architecture weaknesses" --
-                // P1, full context in User.previousRefreshTokenHash's own field comment): the
-                // actual reuse-detection fix. A mismatch here used to always mean the same
-                // generic "revoked" -- now specifically checked against the JUST-rotated-away
-                // hash. A legitimate client always uses its most recently issued refresh token;
-                // presenting the one just before it means whoever's presenting this token isn't
-                // the legitimate client that received the latest rotation -- a real signal of
-                // token theft, not just an ordinary stale/already-used request. Responds by
-                // revoking the CURRENT valid session too (not just rejecting this one request),
-                // since if a copy of an old token leaked, the current one may well have too.
+                // Refresh-token reuse detection (full context in
+                // User.previousRefreshTokenHash's own field comment): a mismatch here is
+                // checked specifically against the JUST-rotated-away hash rather than treated
+                // as a generic failure. A legitimate client always uses its most recently
+                // issued refresh token; presenting the one just before it means whoever's
+                // presenting this token isn't the legitimate client that received the latest
+                // rotation -- a real signal of token theft, not just an ordinary stale/
+                // already-used request. Responds by revoking the CURRENT valid session too
+                // (not just rejecting this one request), since if a copy of an old token
+                // leaked, the current one may well have too.
                 if (presentedHash.equals(user.getPreviousRefreshTokenHash())) {
                     log.error("Refresh token reuse detected for user {} -- a previously-rotated-away token was presented again. "
                         + "Revoking this user's entire current session as a precaution.", user.getId());
@@ -300,19 +277,18 @@ public class AuthService {
             String newHash = jwt.hashToken(newRefresh);
             LocalDateTime newExpiry = LocalDateTime.now().plusSeconds(jwt.getRefreshExpirationMs()/1000);
 
-            // Review finding (P1 — "Refresh-token rotation still has a concurrency race"):
-            // confirmed real — the read above and this write used to be two separate steps, with
-            // nothing preventing two concurrent requests presenting the same still-valid token
-            // from both passing the read check and both writing, with the last write silently
-            // winning. Atomic compare-and-swap: only succeeds if refreshTokenHash still equals
-            // exactly the hash this request read and validated above — the loser gets a clear
-            // "already used" error instead of a refresh token that looks successful but was
-            // immediately invalidated by the winner.
+            // Atomic compare-and-swap on the refresh token: only succeeds if refreshTokenHash
+            // still equals exactly the hash this request read and validated above. This
+            // closes the race between two concurrent requests presenting the same still-valid
+            // token -- without it, both could pass the read check and both write, with the
+            // last write silently winning. Here the loser gets a clear "already used" error
+            // instead of a refresh token that looks successful but was immediately invalidated
+            // by the winner.
             //
-            // Honest scope: this closes the race itself. Reuse detection (revoking the entire
-            // session the instant a rotated-away token is presented again) is implemented
-            // separately above, at the mismatch branch -- see User.previousRefreshTokenHash's
-            // own field comment for the full design.
+            // This closes the race itself; reuse detection (revoking the entire session the
+            // instant a rotated-away token is presented again) is implemented separately
+            // above, at the mismatch branch -- see User.previousRefreshTokenHash's own field
+            // comment for the full design.
             var updated = mongoTemplate.findAndModify(
                 new org.springframework.data.mongodb.core.query.Query(
                     org.springframework.data.mongodb.core.query.Criteria.where("id").is(user.getId())
@@ -357,17 +333,15 @@ public class AuthService {
     }
 
     /**
-     * P2-14 fix ("WebhookAlertService/User.alertWebhookUrl: no endpoint sets the webhook, feature
-     * is dead" -- external review, full context in this class's own webhookAlertService field
-     * javadoc): the actual missing write path. A blank/null url clears the field (lets an account
-     * holder turn the feature back off without needing a separate "disable" endpoint) -- a
-     * non-blank one is validated with the exact same SSRF safety check WebhookAlertService.send
-     * itself re-runs on every actual delivery, so a user gets immediate, save-time feedback that
-     * their URL is invalid rather than silently having every future alert delivery fail. This
-     * is deliberately a courtesy check, not a substitute for send-time validation: a hostname
-     * can legitimately resolve differently between save-time and send-time (DNS rebinding, or
-     * simply changing over time), which is exactly why WebhookAlertService's own javadoc already
-     * documents re-validating fresh on every send.
+     * Sets or clears the account's alert webhook URL. A blank/null url clears the field,
+     * letting an account holder turn the feature back off without a separate "disable"
+     * endpoint. A non-blank url is validated with the same SSRF safety check
+     * WebhookAlertService.send re-runs on every actual delivery, so a user gets immediate,
+     * save-time feedback that their URL is invalid rather than silently having every future
+     * alert delivery fail. This is deliberately a courtesy check, not a substitute for
+     * send-time validation: a hostname can legitimately resolve differently between save-time
+     * and send-time (DNS rebinding, or simply changing over time), which is why
+     * WebhookAlertService's own javadoc documents re-validating fresh on every send.
      */
     public ApiResponse<?> setAlertWebhookUrl(String userId, String url) {
         String trimmed = url != null ? url.trim() : null;
@@ -411,12 +385,10 @@ public class AuthService {
     }
 
     /**
-     * Review finding (P1 — "OTP verification is still not sufficiently atomic"): confirmed
-     * real. Read-modify-write on failedOtpAttempts meant two concurrent wrong-guess requests
-     * could both read the same starting count, and one increment would be silently lost —
-     * understating how many real failed attempts happened, potentially delaying a lockout that
-     * should have triggered. Same atomic-$inc pattern used everywhere else in this codebase for
-     * exactly this class of bug.
+     * Increments the failed-OTP-attempts counter atomically via $inc rather than a
+     * read-modify-write, so two concurrent wrong-guess requests can't both read the same
+     * starting count and have one increment silently lost -- which would understate how many
+     * real failed attempts happened and could delay a lockout that should have triggered.
      */
     private void incrementFailures(String identifier) {
         findUser(identifier).ifPresent(u -> {

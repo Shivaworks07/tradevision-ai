@@ -98,10 +98,9 @@
   .p1-title { font-size: 12px; font-weight: 700; color: #E8EDF5; flex: 1; }
   .p1-loading { font-size: 10px; color: #4A5568; animation: spin 0.8s linear infinite; }
 }
-/* Review finding ("Spot-only/long-only isn't made explicit against a codebase that still models
-   SHORT/futures/funding/OI concepts" -- P1): small, muted, unobtrusive -- matches this panel's
-   own existing design language for secondary text, not a loud warning banner for something that
-   isn't an error. */
+/* Clarifies that this panel covers spot/long-only analysis, styled as small muted
+   secondary text — matching the panel's existing design language — since it's a
+   scope note rather than a warning. */
 .p1-scope-note { font-size: 9px; color: #4A5568; margin: -2px 0 6px; line-height: 1.4; }
 .p1-badge {
   font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px;

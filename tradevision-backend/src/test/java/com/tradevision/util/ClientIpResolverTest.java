@@ -9,11 +9,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * P2-9 fix ("ProxyController.rateLimited / AuthController.clientIp: trust-forwarded-for=false by
- * default; behind a LB all users share one IP -> 60 req/min global, 20 OTP/h global" -- external
- * review, full context in ClientIpResolver's own class javadoc): direct unit tests for the
- * consolidated resolution logic both controllers now share, independent of either controller's
- * own request-handling/rate-limit wiring.
+ * Verifies the client-IP resolution logic shared by ProxyController.rateLimited and
+ * AuthController.clientIp, independent of either controller's own request-handling or
+ * rate-limit wiring.
  */
 class ClientIpResolverTest {
 
@@ -55,7 +53,7 @@ class ClientIpResolverTest {
     }
 
     @Test
-    @DisplayName("trustForwardedFor=true, remote address OUTSIDE every configured trusted CIDR: header ignored, real remote address used -- the actual anti-spoofing fix")
+    @DisplayName("trustForwardedFor=true, remote address OUTSIDE every configured trusted CIDR: header ignored, real remote address used")
     void trustEnabled_remoteAddrOutsideCidr_ignoresHeader() {
         HttpServletRequest req = requestFrom("203.0.113.99", "1.2.3.4");
 
@@ -65,7 +63,7 @@ class ClientIpResolverTest {
     }
 
     @Test
-    @DisplayName("Two different clients behind the same trusted proxy get two different resolved IPs -- the actual review-required proof (\"Two IPs behind proxy counted separately\")")
+    @DisplayName("Two different clients behind the same trusted proxy get two different resolved IPs")
     void twoClientsBehindSameTrustedProxy_resolveToDifferentIps() {
         HttpServletRequest req1 = requestFrom("10.0.0.5", "203.0.113.10");
         HttpServletRequest req2 = requestFrom("10.0.0.5", "203.0.113.20");

@@ -30,23 +30,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
- * Second re-audit fix ("Old unique indexes are never removed" -- external review, third pass,
- * item #1 of its own "before real money" list): "Add an integration test that seeds the old
- * indexes first" -- this file's own explicit fix instruction. Seeds a real MongoDB with the
- * EXACT legacy single-field unique(sparse) indexes this codebase's own earlier revision created
- * directly on Order.brokerOrderId / Position.entryOrderId (before the scoped compound-index fix
- * existed at all) -- via a raw MongoClient, in the @DynamicPropertySource hook, which runs after
- * the Testcontainers Mongo instance is up but BEFORE the Spring context (and therefore
- * IndexInitializer's own ApplicationReadyEvent listener) is created at all -- then proves the
- * real migration this fix adds (IndexInitializer.migrateLegacySingleFieldUniqueIndex) actually
- * removes that legacy constraint against a real database, not just a mocked IndexOperations, and
- * that the specific bug it caused (global brokerOrderId/entryOrderId collision across
- * credentials/symbols) is actually gone afterward.
+ * Seeds a real MongoDB with the legacy single-field unique(sparse) indexes this codebase's
+ * earlier revision created directly on Order.brokerOrderId / Position.entryOrderId (before
+ * the scoped compound indexes existed) -- via a raw MongoClient, in the
+ * @DynamicPropertySource hook, which runs after the Testcontainers Mongo instance is up but
+ * BEFORE the Spring context (and therefore IndexInitializer's own ApplicationReadyEvent
+ * listener) is created at all -- then proves IndexInitializer.migrateLegacySingleFieldUniqueIndex
+ * actually removes that legacy constraint against a real database, not just a mocked
+ * IndexOperations, and that the global brokerOrderId/entryOrderId collision it caused across
+ * credentials/symbols is actually gone afterward.
  *
- * HONEST LIMITATION, same as this package's other Testcontainers-backed tests: `docker ps` fails
- * outright in this sandbox ("docker: not found" / no daemon), so I have not executed this test
- * and cannot confirm it passes. Run `mvn test -Dtest=LegacyIndexMigrationIntegrationTest` on a
- * machine with Docker available to actually confirm this before trusting it.
+ * Requires Docker (via Testcontainers) and is skipped automatically when no Docker daemon is
+ * available. Run `mvn test -Dtest=LegacyIndexMigrationIntegrationTest` on a machine with
+ * Docker to execute it.
  */
 @Testcontainers(disabledWithoutDocker = true)
 @ActiveProfiles("local")
@@ -119,7 +115,7 @@ class LegacyIndexMigrationIntegrationTest {
     }
 
     @Test
-    @DisplayName("the actual bug the legacy index caused is fixed: two orders for DIFFERENT credentials, both still brokerOrderId=null, both save -- the legacy index enforced GLOBAL uniqueness of brokerOrderId on its own and would have rejected the second insert as a duplicate-null-key collision even with the new, correctly-scoped compound index also present")
+    @DisplayName("two orders for DIFFERENT credentials, both still brokerOrderId=null, both save successfully after the legacy index is removed -- a global unique index on brokerOrderId alone would have rejected the second insert as a duplicate-null-key collision even with the new, correctly-scoped compound index also present")
     void legacyIndexNoLongerCausesCrossCredentialNullCollision() {
         Order first = newOrder("cred-A", "BTCUSDT", "client-order-A1");
         Order second = newOrder("cred-B", "ETHUSDT", "client-order-B1"); // different credential AND symbol

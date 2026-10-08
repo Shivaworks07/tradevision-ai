@@ -7,11 +7,10 @@ import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
 /**
- * Review finding ("P0 #1" — "LIVE Binance credential architecture is wrong"): mode is now
- * explicit at connect time, not something flipped after the fact. Defaults to TESTNET so the
- * common case (connecting a testnet key to try things out) needs no extra decision — LIVE must
- * be chosen deliberately. See BrokerCredentialService for why this matters: Binance testnet and
- * mainnet keys are genuinely different credentials, not the same key used against two hosts.
+ * Request to connect a new broker credential. mode is explicit at connect time rather than
+ * something flipped later, and defaults to TESTNET so the common case (trying out a testnet key)
+ * needs no extra decision while LIVE must be chosen deliberately -- Binance testnet and mainnet
+ * keys are genuinely different credentials, not the same key used against two hosts.
  */
 @Data
 public class ConnectBrokerRequest {

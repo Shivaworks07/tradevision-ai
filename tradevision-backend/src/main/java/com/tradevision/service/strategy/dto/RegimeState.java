@@ -3,10 +3,9 @@ package com.tradevision.service.strategy.dto;
 import java.util.List;
 
 /**
- * Review finding ("Client-Side Signal Generation" / "Move this to Angular to Java"): a verified
- * port — see MarketRegimeService's own javadoc for the full verification methodology, including
- * a real bug found in the original TypeScript along the way (infinite recursion on the
- * insufficient-data fallback path).
+ * Classification of the current market regime (trending, ranging, volatile, etc.) along with
+ * the confidence, supporting indicator readings, and the strategy/weight adjustments that
+ * should apply while this regime holds. See MarketRegimeService for how each field is derived.
  */
 public record RegimeState(
     String regime, // one of the 10 RegimeType values — see MarketRegimeService's own REGIME_TYPES

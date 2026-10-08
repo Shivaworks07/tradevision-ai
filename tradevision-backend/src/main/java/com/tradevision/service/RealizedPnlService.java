@@ -6,25 +6,15 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 
 /**
- * Review finding ("Position P&L architecture is still scattered" -- "TP P&L and emergency
- * flatten P&L use subtly different accounting... one authoritative calculation, then every exit
- * uses it"): confirmed real by reading all three sites directly, not assumed. PositionSafetyService
- * had the formula duplicated TWICE within itself (a full-close path and a separate
- * recordPartialFlattenPnl path), and PositionMonitorService had its own third copy for the
- * OCO/TP/SL path. All three currently compute the SAME result today (verified below, not just
- * asserted) -- the real risk this consolidates away is what the review actually named: a future
- * fix to fee handling in one of the three copies silently not reaching the other two.
+ * Single authoritative realized-P&L calculation shared by every exit path (full close,
+ * partial close, and OCO/TP/SL flattening). Centralizing this here means a future change to
+ * fee handling only has to be made in one place instead of being kept in sync across every
+ * call site that closes a position.
  *
- * VERIFIED, not just refactored on faith: the exact formula each of the three original sites
- * used was extracted into a standalone harness alongside this class's own unified formula, run
- * against 6 scenarios (a full close, a partial close, PositionMonitorService's own version of
- * both, a null-fee case, and a losing trade) — every one matched the original site's own output
- * exactly, confirming this is a behavior-preserving consolidation, not a silent formula change.
- *
- * The unification itself: a full close is mathematically the special case of a "prorated share"
- * calculation where exitQty == currentQuantity (the ratio is exactly 1.0, so the "share" of the
- * entry fee IS the whole entry fee) — there was never a need for two different formulas, only a
- * historical accident of two different call sites each writing their own.
+ * A full close is mathematically just the special case of a "prorated share" calculation
+ * where exitQty equals currentQuantity (the ratio is exactly 1.0, so the "share" of the entry
+ * fee is the whole entry fee) — so one formula covers both full and partial exits without
+ * needing to branch on which kind of exit it is.
  */
 @Service
 public class RealizedPnlService {

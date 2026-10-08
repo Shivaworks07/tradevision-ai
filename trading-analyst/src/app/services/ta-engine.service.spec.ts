@@ -2,13 +2,10 @@ import { TestBed } from '@angular/core/testing';
 import { TaEngineService, TradeCall } from './ta-engine.service';
 
 /**
- * Review finding ("Frontend test coverage" -- P2): this file did not exist before this pass --
- * TaEngineService's own updateMLFromOutcome (the adaptive weight-learning loop) had zero test
- * coverage on the frontend side, despite MLWeightServiceTest.java on the backend faithfully
- * porting and testing the exact same algorithm this session. These tests deliberately mirror
- * that backend test suite's own cases -- same learning rate, same win/loss asymmetry, same
- * clamps, same warm-up threshold -- so both sides are independently verified against the same
- * expected values, not just internally self-consistent with each other.
+ * Covers TaEngineService's updateMLFromOutcome (the adaptive weight-learning loop). These
+ * tests deliberately mirror MLWeightServiceTest.java's cases on the backend — same learning
+ * rate, same win/loss asymmetry, same clamps, same warm-up threshold — so both sides are
+ * independently verified against the same expected values.
  */
 describe('TaEngineService - ML weight learning', () => {
   let service: TaEngineService;

@@ -13,37 +13,21 @@ import java.util.regex.*;
 import java.util.stream.Collectors;
 
 /**
- * Live IPO data from InvestorGain's internal JSON API.
+ * Fetches live IPO data from InvestorGain's internal JSON API
+ * (webnodejs.investorgain.com/cloud/v2/report/data-read/...), the same endpoint InvestorGain's
+ * own frontend calls to render its table client-side. Calling that JSON API directly avoids two
+ * problems a server-side HTML fetch would otherwise hit: NSE's public pages are blocked at
+ * Akamai's edge for cloud datacenter IPs regardless of headers or cookies, and a page whose table
+ * is rendered client-side via JavaScript (as InvestorGain's and Chittorgarh's own report pages
+ * are) returns an empty shell to a server-side fetch with no rows to parse.
  *
- * This replaces an earlier HTML-scraping attempt against both NSE and
- * Chittorgarh directly, both of which failed for two different confirmed
- * reasons:
- *   - NSE: blocked at Akamai's edge for Render/cloud datacenter IPs (403
- *     from errors.edgesuite.net, before any app code even runs) — not
- *     fixable with headers/cookies from a server IP.
- *   - Chittorgarh's public report page: renders its table client-side via
- *     JavaScript after page load; the initial HTML server-side fetch sees
- *     an empty shell, so no regex against that HTML could ever find rows.
- *
- * InvestorGain's page has the same client-side-rendering issue, BUT its
- * frontend calls a plain JSON API to get that data
- * (webnodejs.investorgain.com/cloud/v2/report/data-read/...), which is what
- * this service calls directly. Verified against a real, current response
- * (30 records, live 2026 IPOs) before writing this parser — every field
- * mapped below is a field actually observed in that response, not guessed.
- *
- * Status (OPEN/UPCOMING/CLOSED/LISTED) is still always recomputed from the
- * ~Srt_Open/~Srt_Close/~Str_Listing ISO dates rather than trusted from any
- * source text, same principle as before — dates can't silently go stale the
- * way a cached status label can.
+ * <p>Status (OPEN/UPCOMING/CLOSED/LISTED) is always recomputed from the
+ * ~Srt_Open/~Srt_Close/~Str_Listing ISO dates rather than trusted from any source text, since
+ * dates can't silently go stale the way a cached status label can.
  */
 @Service
 public class IpoService {
 
-    // P2-17 fix ("20x System.out.println, PII in logs, no correlation IDs" -- external review,
-    // full context in this codebase's own new CorrelationIdFilter javadoc): replaces this
-    // class's own System.out/System.err.println calls -- no PII here (record counts and public
-    // IPO data only).
     private static final Logger log = LoggerFactory.getLogger(IpoService.class);
 
     private final RestTemplate http = buildRestTemplate();

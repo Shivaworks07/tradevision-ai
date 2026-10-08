@@ -1,5 +1,4 @@
-// Review finding ("CSP still uses unsafe-inline" -- external review, twenty-fourth pass, P2,
-// full context in styles.scss's own updated comment): Google Fonts import removed here too.
+// Uses system font stacks rather than a Google Fonts import, so no extra CSP allowance is needed.
 
 .auth-page {
   min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center;

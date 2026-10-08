@@ -12,7 +12,7 @@ public record OrderResult(
     BigDecimal fillPrice,
     String rawResponse,
     String errorMessage,
-    List<Fill> fills          // review item #12: real per-fill commission data, when available (entry orders only — OCO exit legs need a separate myTrades lookup, see BrokerAdapter.getFillsForOrder)
+    List<Fill> fills          // real per-fill commission data, when available (entry orders only — OCO exit legs need a separate myTrades lookup, see BrokerAdapter.getFillsForOrder)
 ) {
     public static OrderResult failure(String errorMessage, String rawResponse) {
         return new OrderResult(false, null, null, "ERROR", null, null, rawResponse, errorMessage, List.of());

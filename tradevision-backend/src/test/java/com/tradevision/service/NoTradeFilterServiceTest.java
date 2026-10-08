@@ -30,15 +30,12 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Review finding ("Client-Side Signal Generation" -- continuing the TA-engine port into the one
- * place that actually gates real execution): no test file existed for this service at all
- * before this session, despite it being the primary "second opinion" safety gate for every
- * autonomous trade. This closes that gap, focused specifically on the new enrichment logic (see
- * NoTradeFilterService's own field/method comments for the full design and its deliberate
- * scope -- regime/SMC/volume-profile/MTF only, order-flow excluded from this critical path).
- * ServerSignalEngine is mocked here rather than exercised for real, since its own correctness is
- * separately verified elsewhere (see its own javadoc) -- these tests isolate and verify the
- * enrichment logic this pass actually added, not re-prove the base engine.
+ * Covers NoTradeFilterService, the "second opinion" safety gate for every autonomous trade,
+ * focused on the regime/SMC/volume-profile/MTF enrichment logic (see NoTradeFilterService's
+ * field/method comments for the full design and its scope -- order-flow is deliberately
+ * excluded from this critical path). ServerSignalEngine is mocked here rather than exercised for
+ * real, since its own correctness is separately verified elsewhere -- these tests isolate and
+ * verify the enrichment logic, not the base engine.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -47,13 +44,10 @@ class NoTradeFilterServiceTest {
     @Mock PositionRepository positionRepo;
     @Mock ExchangeHealthService exchangeHealth;
     @Mock ServerSignalEngine serverSignalEngine;
-    // Review finding ("Strategy engine is not the complete strategy actually represented by the
-    // frontend" -- P1, full context in NoTradeFilterService's own new field comment): needed now
-    // that this service calls mlWeightService.getWeights before every analyze() call. Without
-    // this mock, @InjectMocks would leave the field null -- functionally safe here (this
-    // service's own try/catch falls back to the no-weights overload on any exception), but
-    // relying on a silently-caught NPE as the intended test behavior isn't the standard this
-    // session has held anywhere else.
+    // Needed because this service calls mlWeightService.getWeights before every analyze() call.
+    // Without this mock, @InjectMocks would leave the field null -- functionally safe (the
+    // service's try/catch falls back to the no-weights overload on any exception), but relying
+    // on a silently-caught NPE isn't the standard to test to.
     @Mock MLWeightService mlWeightService;
     @Mock MarketRegimeService marketRegimeService;
     @Mock SmcEngineService smcEngineService;
@@ -78,9 +72,7 @@ class NoTradeFilterServiceTest {
         signal.setSymbol("BTCUSDT");
         signal.setDirection("LONG");
         signal.setTimeframe("1H");
-        // Review finding ("Financial values still mix double and BigDecimal" -- external
-        // review, twenty-fourth pass, P2, full context in TradeCallRecord's own updated field
-        // comment): these 4 fields are BigDecimal now.
+        // These 4 fields are BigDecimal, matching TradeCallRecord's field types.
         signal.setEntryPrice(java.math.BigDecimal.valueOf(50000));
         signal.setStopLoss(java.math.BigDecimal.valueOf(49700)); // distance 300 -- within [MIN_SL_ATR_RATIO, MAX_SL_ATR_RATIO] * ~100 ATR from fakeCandles()
         signal.setRrRatio(java.math.BigDecimal.valueOf(2.0));
@@ -98,13 +90,11 @@ class NoTradeFilterServiceTest {
         when(adapter.getSpread(any(), any())).thenReturn(new SpreadInfo(BigDecimal.valueOf(100), BigDecimal.valueOf(100.1), 0.1));
         when(positionRepo.findByUserIdAndCredentialIdAndStatus(any(), any(), any())).thenReturn(List.of());
         when(adapter.getRecentCandles(any(), any(), anyInt(), any())).thenReturn(fakeCandles(220));
-        // Review finding ("Strategy engine is not the complete strategy actually represented by
-        // the frontend" -- P1): this class's own normal, successful path now calls the 2-arg
-        // analyze(candles, weights) overload first (see this class's own new try/catch) -- the
-        // 1-arg stub below is kept too since the fallback branch on a weights-fetch failure
-        // still uses it, but without this one, the unstubbed 2-arg call would return Mockito's
-        // own null default, which this class's own code would NPE on calling .direction() --
-        // outside this class's own try/catch, since analyze() itself doesn't throw.
+        // The normal, successful path calls the 2-arg analyze(candles, weights) overload first;
+        // the 1-arg stub below is kept too since the fallback branch on a weights-fetch failure
+        // still uses it. Without the 2-arg stub, the unstubbed call would return Mockito's null
+        // default, which the code would NPE on calling .direction() outside its own try/catch,
+        // since analyze() itself doesn't throw.
         when(serverSignalEngine.analyze(any(), any())).thenReturn(baseSignal);
         when(serverSignalEngine.analyze(any())).thenReturn(baseSignal);
     }
@@ -123,7 +113,7 @@ class NoTradeFilterServiceTest {
     }
 
     @Test
-    @DisplayName("check: fetches ML weights via mlWeightService (keyed by this signal's own market/symbol) and passes them to the server's own independent re-computation -- the actual review fix (\"Strategy engine is not the complete strategy actually represented by the frontend\"), so this gate scores with the SAME weights the live autonomous scanner actually uses, not a stale fixed baseline that could cause a spurious disagreement")
+    @DisplayName("check: fetches ML weights via mlWeightService (keyed by this signal's market/symbol) and passes them to the server's independent re-computation, so this gate scores with the same weights the live autonomous scanner uses, not a stale fixed baseline that could cause a spurious disagreement")
     void check_fetchesAndPassesMLWeightsToIndependentRecomputation() {
         ServerSignalEngine.Signal baseSignal = longSignal(80);
         stubEverythingUpToEnrichment(baseSignal);
@@ -231,13 +221,11 @@ class NoTradeFilterServiceTest {
     }
 
     /**
-     * P2-1 fix ("Repainting -- execution-time server signal computed on candles including the
-     * unclosed bar" -- full context in checkIndicatorDivergence's own updated comment): the
-     * actual regression test. adapter.getRecentCandles' own last element is always the
-     * still-forming candle for the current interval (matching AutonomousScannerService's own
-     * documented assumption about that same method) -- this proves checkIndicatorDivergence now
-     * drops it before calling ServerSignalEngine.analyze, exactly like the scanner already does,
-     * instead of passing the full raw list straight through.
+     * adapter.getRecentCandles' last element is always the still-forming candle for the current
+     * interval (matching AutonomousScannerService's documented assumption about that same
+     * method). Verifies checkIndicatorDivergence drops it before calling
+     * ServerSignalEngine.analyze, the same as the scanner does, instead of passing the full raw
+     * list straight through.
      */
     @Test
     @DisplayName("check: the last (still-forming/unclosed) candle from adapter.getRecentCandles is dropped before ServerSignalEngine.analyze is called -- execution now analyzes the same CLOSED data the scanner itself would have")
@@ -258,11 +246,9 @@ class NoTradeFilterServiceTest {
     }
 
     /**
-     * P2-2 fix ("R:R >=1.5 checked on client-claimed rrRatio, not on server SL/T1" -- full
-     * context in check's own updated comment): the actual regression test. The client claims a
-     * healthy 2.0 R:R (passingSignal's own rrRatio), but the SERVER-computed signal (what
-     * actually drives execution) has a much tighter real R:R -- this must now be rejected,
-     * proving the check was moved off the client's own claimed number.
+     * The client claims a healthy 2.0 R:R (passingSignal's rrRatio), but the server-computed
+     * signal (what actually drives execution) has a much tighter real R:R -- verifies this is
+     * rejected, i.e. the R:R check is against the server-computed number, not the client's claim.
      */
     @Test
     @DisplayName("check: rejects a trade whose SERVER-computed R:R is below the minimum, even when the client's own claimed rrRatio looks healthy")

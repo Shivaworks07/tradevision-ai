@@ -8,13 +8,10 @@ import java.math.BigDecimal;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding ("Symbol list bounds" and "Cross-field risk validation on RiskProfile inputs"
- * -- P2, full context in RiskProfileRequest's own updated header javadoc): this file did not
- * exist before this fix. Tests isCrossFieldValid() directly as a plain method call rather than
- * through the full Jakarta Bean Validation framework (Validation.buildDefaultValidatorFactory())
- * -- this codebase's own tests have no existing precedent for that, and pulling in a validator
- * factory to confirm what's ultimately a single boolean method's own logic is more machinery
- * than the thing being tested actually needs.
+ * Verifies the cross-field risk validation on RiskProfileRequest. Tests isCrossFieldValid()
+ * directly as a plain method call rather than through the full Jakarta Bean Validation
+ * framework (Validation.buildDefaultValidatorFactory()), since pulling in a validator
+ * factory to confirm a single boolean method's logic is more machinery than needed.
  */
 class RiskProfileRequestTest {
 
@@ -36,7 +33,7 @@ class RiskProfileRequestTest {
     }
 
     @Test
-    @DisplayName("isCrossFieldValid: maxPositionQuoteAmount exceeds maxTotalExposureQuote -- invalid, the actual review fix (\"Cross-field risk validation on RiskProfile inputs\")")
+    @DisplayName("isCrossFieldValid: maxPositionQuoteAmount exceeds maxTotalExposureQuote -- invalid")
     void crossFieldValid_positionExceedsTotal_invalid() {
         RiskProfileRequest req = baseRequest();
         req.setMaxPositionQuoteAmount(BigDecimal.valueOf(500));

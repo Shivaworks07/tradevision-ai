@@ -11,21 +11,18 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 /**
- * Review finding ("Frontend authentication migration is incomplete and currently breaks
- * authenticated APIs" -- P0): confirmed real and fixed -- see UserController's own javadoc for
- * the full root-cause explanation. This controller's own manual `token == null || !jwt.isValid`
- * checks (save/cancel/bySymbol/recent) are no longer needed at all: a null @AuthenticationPrincipal
- * IS the "not authenticated" signal now, and every endpoint here sits behind
- * `.anyRequest().authenticated()` in SecurityConfig regardless, so Spring Security's own
- * authorization filter already rejects a genuinely unauthenticated request before reaching here
- * -- this class doesn't need to re-verify a token Spring Security already verified.
+ * Manages trade call signals: saving new calls, cancelling pending ones, querying by symbol or
+ * recency, recording outcomes, and exposing performance analytics and ML dataset exports.
+ *
+ * Identity comes from Spring Security's SecurityContext via @AuthenticationPrincipal; every
+ * endpoint here sits behind `.anyRequest().authenticated()` in SecurityConfig, which rejects an
+ * unauthenticated request before it reaches this controller.
  */
 @RestController
 @RequestMapping("/api/calls")
 @RequiredArgsConstructor
-// Review finding ("@CrossOrigin still has hardcoded localhost origins" -- external review,
-// thirty-fifth pass, P2, full context in NewsController's own identical fix): removed --
-// CorsConfig's own global CorsFilter already covers this endpoint.
+// CORS is handled centrally by CorsConfig's global CorsFilter; no per-controller
+// @CrossOrigin is needed here.
 public class TradeCallController {
 
     private final TradeCallService callService;
@@ -36,10 +33,8 @@ public class TradeCallController {
     }
 
     /**
-     * Review finding ("Signal lifecycle is still partial" — "CANCELLED still unused"): the
-     * actual endpoint — kept thin, same pattern as every other controller in this codebase; all
-     * real logic (ownership check, cancellability, the atomic conditional write) lives in
-     * TradeCallService.cancelSignal.
+     * Cancels a pending trade call signal. Ownership and cancellability checks, plus the atomic
+     * conditional write, live in TradeCallService.cancelSignal.
      */
     @PostMapping("/{callId}/cancel")
     public ResponseEntity<?> cancel(@AuthenticationPrincipal String userId, @PathVariable String callId) {
@@ -95,16 +90,11 @@ public class TradeCallController {
 
     // ── ML Dataset Export: CSV ────────────────────────────────
     /**
-     * Review finding ("Some analytics are deliberately bounded rather than truly paginated" --
-     * external review, thirty-sixth pass, P2, full context in TradeCallService.exportCSVPage's
-     * own updated javadoc): this endpoint used to always return exactly the first 1000 resolved
-     * calls, with no way to reach anything beyond that at all. Added a real page parameter --
-     * defaults to 0 (page size fixed at 1000, matching this endpoint's own established size)
-     * so an existing caller passing no page parameter gets EXACTLY the same first-1000-records
-     * response as before this fix, byte-for-byte, and a caller that wants more can now genuinely
-     * ask for it via ?page=1, ?page=2, etc. Pagination metadata (total record count, whether a
-     * further page exists) is exposed via response headers rather than changing the response
-     * body's own format, which stays a plain CSV file either way.
+     * Exports resolved trade calls as a CSV page for ML/analysis use. Page size is fixed at
+     * 1000 records; the default page (0) returns the most recent 1000, and further pages are
+     * reachable via ?page=1, ?page=2, etc. Pagination metadata (total record count, whether a
+     * further page exists) travels in response headers rather than the CSV body, which stays a
+     * plain CSV file either way.
      */
     @GetMapping("/ml/export/csv")
     public ResponseEntity<byte[]> exportCSV(@AuthenticationPrincipal String userId, @RequestParam(defaultValue = "0") int page) {
@@ -115,9 +105,8 @@ public class TradeCallController {
                            " | exported=" + java.time.LocalDateTime.now() +
                            " | schema=v2\n" + csvPage.page();
         byte[] data = withMeta.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        // Review finding (P1 #24 — "CSV dataset hash is still not cryptographic"): this is called
-        // a dataset INTEGRITY hash — Integer.hashCode() (32-bit, not cryptographic, real
-        // collision risk) undermines that claim. SHA-256, same fix as the idempotency key above.
+        // SHA-256 integrity hash of the exported bytes, so a consumer can verify the dataset
+        // wasn't altered or truncated in transit.
         String hash;
         try {
             byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(data);

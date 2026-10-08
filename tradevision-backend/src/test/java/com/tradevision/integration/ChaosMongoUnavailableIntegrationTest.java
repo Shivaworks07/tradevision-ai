@@ -18,30 +18,28 @@ import java.math.BigDecimal;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Review finding ("formal chaos-test suite" -- external review, P3, full context in
- * docs/CHAOS_TEST_PLAN.md's own "Scenario 1"): the actual, written chaos test for MongoDB
- * becoming unavailable -- the real failure mode AutoTradeService's own OMS-setup catch block
- * (this session's own P0-2 fix) depends on being genuinely detectable as a thrown exception,
- * not just a theoretical possibility.
+ * Chaos test for MongoDB becoming unavailable (docs/CHAOS_TEST_PLAN.md, "Scenario 1"):
+ * verifies that AutoTradeService's own OMS-setup catch block can rely on a Mongo write
+ * genuinely throwing when the database is unreachable, rather than that being only a
+ * theoretical possibility.
  *
- * HONEST LIMITATION, same as every other integration test in this codebase: `docker ps` fails
- * outright in this sandbox ("docker: not found") -- no Docker daemon is available here, so this
- * has NOT been executed and its correctness is not confirmed. Run
- * `mvn test -Dtest=ChaosMongoUnavailableIntegrationTest` on a machine with Docker available.
+ * Requires Docker (via Testcontainers) and is skipped automatically when no Docker daemon is
+ * available. Run `mvn test -Dtest=ChaosMongoUnavailableIntegrationTest` on a machine with
+ * Docker to execute it.
  *
- * SCOPE, stated plainly: this proves the foundation P0-2's own halt logic depends on (a Mongo
- * write genuinely throwing when the database is unreachable) -- it does NOT wire up the full
- * AutoTradeService call chain (which needs many more collaborators mocked/wired correctly than
- * this focused test attempts), and does not attempt to time the failure injection to land
- * inside the exact authorization-to-execution race window described in the plan's own
+ * SCOPE: this proves the foundation the halt logic depends on (a Mongo write genuinely
+ * throwing when the database is unreachable) -- it does NOT wire up the full
+ * AutoTradeService call chain (which needs many more collaborators mocked/wired correctly
+ * than this focused test attempts), and does not attempt to time the failure injection to
+ * land inside the exact authorization-to-execution race window described in the plan's own
  * "Scenario 2" -- that scenario needs real process-level control this test harness cannot
  * express, as the plan document itself states.
  */
 @Testcontainers(disabledWithoutDocker = true)
-// P1-16 fix: spring.profiles.active now defaults to "prod" (fail-closed), which has no default
-// secrets at all -- without this, this Testcontainers-backed context would fail to start
-// outside a real deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, the
-// same secrets this test always implicitly relied on before that default changed.
+// spring.profiles.active defaults to "prod" (fail-closed), which has no default secrets at
+// all -- without this, this Testcontainers-backed context would fail to start outside a real
+// deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, which has the
+// secrets this test relies on.
 @ActiveProfiles("local")
 @SpringBootTest
 class ChaosMongoUnavailableIntegrationTest {
@@ -66,7 +64,7 @@ class ChaosMongoUnavailableIntegrationTest {
         orderService.create("user1", "cred1", null, "sig1", "BTCUSDT", "BUY", "MARKET",
             BigDecimal.valueOf(0.001), BigDecimal.valueOf(50000), "chaos-test-baseline");
 
-        // The actual chaos injection.
+        // The chaos injection.
         mongo.stop();
 
         assertThatThrownBy(() -> orderService.create("user1", "cred1", null, "sig1", "BTCUSDT", "BUY", "MARKET",

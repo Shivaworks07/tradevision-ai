@@ -7,11 +7,9 @@ import java.math.BigDecimal;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding ("OCO recovery still returns null for some verification failures" -- external
- * review, twenty-fourth pass, P1, full context in this record's own class javadoc): the actual
- * tests proving verificationUncertain is structurally distinct from a confirmed failure, and
- * that every existing constructor/factory correctly defaults it to false (a confirmed result),
- * unaffected by this fix.
+ * Verifies that verificationUncertain is structurally distinct from a confirmed
+ * failure, and that every constructor/factory other than the uncertain() factory
+ * correctly defaults it to false (a confirmed result).
  */
 class OcoOrderResultTest {
 

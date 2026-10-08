@@ -13,11 +13,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 
 /**
- * Records latency and error rate for every /api/ request.
- * Review finding (P1 — "API metrics are not actually zero-impact"): this comment used to claim
- * "zero impact on response time" while calling metricRepo.save() synchronously right here — now
- * genuinely true, via MetricsService.recordAsync (an actual @Async method on its own bounded
- * executor, not just a comment saying so).
+ * Records latency, status code, and error rate for every /api/ request. Persistence is handed
+ * off to MetricsService.recordAsync, an @Async method on its own bounded executor, so this
+ * filter never blocks the response waiting on the metrics write.
  */
 @Component
 @RequiredArgsConstructor

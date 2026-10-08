@@ -10,16 +10,14 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
- * Review finding (P1 #19/#20 — "Emergency alerts are still missing" / "Need a durable incident
- * model"): before this, a CRITICAL failure (protection failed, emergency flatten failed, order
- * state unknown) only ever produced an audit log line and a halted profile — durable, but nobody
- * was actually told, and there was no queryable "what's currently wrong" view. This does both:
- * a durable TradingIncident record (so the position dashboard can show "🔴 1 CRITICAL" instead of
- * someone reading an audit log), and a best-effort email alert to the account holder.
+ * Records a durable {@code TradingIncident} for a CRITICAL or WARNING event (a failed protection
+ * check, a failed emergency flatten, an unknown order state), so the position dashboard can show
+ * a live "currently wrong" view instead of someone reading an audit log, and best-effort notifies
+ * the account holder through each configured channel (webhook, email).
  *
- * Honest scope: email only. SMS/Telegram/Slack/PagerDuty (all mentioned in the review) would each
- * need their own integration and credentials this codebase doesn't have configured — email reuses
- * the Brevo wiring already built for OTP delivery, which is why it's the one implemented here.
+ * <p>Scope: email and webhook only. SMS/Telegram/Slack/PagerDuty would each need their own
+ * integration and credentials this codebase doesn't have configured; email reuses the Brevo
+ * wiring already built for OTP delivery.
  */
 @Service
 @RequiredArgsConstructor
@@ -27,10 +25,9 @@ public class IncidentService {
 
     private static final Logger log = LoggerFactory.getLogger(IncidentService.class);
     /**
-     * Review finding, same context as TradingIncident.notificationStatus's own field javadoc:
-     * the initial attempt (in raise()) plus this many scheduled retries (via
-     * IncidentRetryService) before a CRITICAL incident's own delivery is marked
-     * DELIVERY_EXHAUSTED.
+     * The initial attempt (in {@link #raise}) plus this many scheduled retries (via
+     * {@code IncidentRetryService}) before a CRITICAL incident's delivery is marked
+     * {@code DELIVERY_EXHAUSTED}.
      */
     static final int MAX_NOTIFICATION_ATTEMPTS = 5;
 
@@ -61,11 +58,9 @@ public class IncidentService {
         incident.setSeverity(severity);
         incident.setMessage(message);
         if (!"CRITICAL".equals(severity)) {
-            // Review finding, same context as TradingIncident.notificationStatus's own field
-            // javadoc: WARNING severity never pages at all (matches this method's own
-            // pre-existing 🔴/🟠 distinction) -- PENDING would be misleading here, since nothing
-            // will ever attempt delivery for it, and IncidentRetryService's own scheduled pass
-            // only ever looks at PENDING/RETRYING records, never NOT_APPLICABLE ones.
+            // WARNING severity never pages at all. NOT_APPLICABLE (not PENDING) is set here since
+            // nothing will ever attempt delivery for it, and IncidentRetryService's scheduled
+            // pass only looks at PENDING/RETRYING records, never NOT_APPLICABLE ones.
             incident.setNotificationStatus("NOT_APPLICABLE");
             incidentRepo.save(incident);
             return;
@@ -75,12 +70,11 @@ public class IncidentService {
     }
 
     /**
-     * Review finding ("Critical alerting is still best-effort" -- external review, thirty-sixth
-     * pass, P1, full context in TradingIncident.notificationStatus's own field javadoc): the
-     * actual delivery attempt, extracted so both the initial raise() call and
-     * IncidentRetryService's own scheduled retry pass share the exact same logic -- a retry is
-     * not a different code path that could itself have different bugs, it's the same attempt
-     * run again. Package-private (not private) specifically so IncidentRetryService can call it.
+     * Attempts delivery of a CRITICAL incident through every configured channel. Extracted into
+     * its own method so both the initial {@link #raise} call and {@code IncidentRetryService}'s
+     * scheduled retry pass share the exact same logic -- a retry is the same attempt run again,
+     * not a separate code path. Package-private (not private) specifically so
+     * {@code IncidentRetryService} can call it.
      */
     void attemptDelivery(TradingIncident incident) {
         incident.setNotificationAttempts(incident.getNotificationAttempts() + 1);
@@ -91,9 +85,9 @@ public class IncidentService {
             if (user == null) {
                 log.warn("Cannot alert user {} for incident type {} — user not found.", incident.getUserId(), incident.getType());
             } else {
-                // Review finding ("Alerting hooks"): webhook attempted independently of email — a
-                // missing/blank email address must not also suppress webhook delivery, and a failed
-                // webhook must not suppress email. Each channel is genuinely independent.
+                // Webhook and email are attempted independently: a missing/blank email address
+                // must not suppress webhook delivery, and a failed webhook must not suppress
+                // email. Each channel is independent.
                 if (user.getAlertWebhookUrl() != null && !user.getAlertWebhookUrl().isBlank()) {
                     boolean webhookSent = webhookAlertService.send(user.getAlertWebhookUrl(), incident.getType(), incident.getSeverity(),
                         incident.getSymbol(), incident.getMessage());
@@ -124,11 +118,9 @@ public class IncidentService {
         if (anyChannelSucceeded) {
             incident.setNotificationStatus("DELIVERED");
         } else if (incident.getNotificationAttempts() >= MAX_NOTIFICATION_ATTEMPTS) {
-            // Review finding, same context as TradingIncident.notificationStatus's own field
-            // javadoc: the review's own explicit "eventually escalate" -- logged at the loudest
-            // level this application has, with a distinct, greppable marker, since a genuine
-            // second delivery-guaranteed channel to escalate INTO doesn't exist here without
-            // itself being exactly as failure-prone as the ones that already failed.
+            // Logged at the loudest level this application has, with a distinct, greppable
+            // marker, since there's no second delivery-guaranteed channel to escalate into
+            // without it being exactly as failure-prone as the ones that already failed.
             incident.setNotificationStatus("DELIVERY_EXHAUSTED");
             log.error("NOTIFICATION_DELIVERY_EXHAUSTED: incident {} (type {}, severity {}, user {}) could not be delivered through any "
                 + "notification channel after {} attempts. This CRITICAL incident remains durably recorded and visible on the dashboard, "

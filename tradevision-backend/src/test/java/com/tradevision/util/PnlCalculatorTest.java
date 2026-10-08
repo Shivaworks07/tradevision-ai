@@ -6,11 +6,8 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding ("Financial model still mixes double and BigDecimal" -- external review,
- * sixteenth pass, P2, full context in PnlCalculator's own class javadoc): this exact formula
- * was duplicated verbatim in CallResultUpdater and TradeCallService before this extraction --
- * these tests use the same hand-calculable values either of those two original call sites would
- * have produced, confirming the extraction changed nothing about the actual arithmetic.
+ * Verifies PnlCalculator's pnlPct/pnlR formula, shared by CallResultUpdater and
+ * TradeCallService, using hand-calculable values to confirm the arithmetic is correct.
  */
 class PnlCalculatorTest {
 

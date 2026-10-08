@@ -31,10 +31,8 @@ class DynamicUniverseServiceTest {
     @BeforeEach
     void setUp() {
         service = new DynamicUniverseService(exchangeHealth);
-        // Review finding ("Scanner has no complete Binance request-budget model" -- external
-        // review, twenty-second pass, P1, full context in DynamicUniverseService's own updated
-        // exchangeHealth field javadoc): a healthy default so every existing test in this file,
-        // none of which are about budget pressure, is unaffected by this new dependency.
+        // A healthy default so every existing test in this file, none of which are about budget
+        // pressure, is unaffected by this dependency.
         when(exchangeHealth.checkRequestBudget()).thenReturn(new ExchangeHealthService.RequestBudgetStatus(0, 1200, 0.0, true));
         credential = new BrokerCredential();
         credential.setId("cred1");
@@ -42,7 +40,7 @@ class DynamicUniverseServiceTest {
     }
 
     @Test
-    @DisplayName("selectTopCandidates: ranks by 24hr USDT quote volume descending, and never returns more than maxSymbols -- the actual review fix (\"Strategy universe is still hard-coded\")")
+    @DisplayName("selectTopCandidates: ranks by 24hr USDT quote volume descending, and never returns more than maxSymbols")
     void selectTopCandidates_ranksByVolumeDescending_respectsLimit() {
         when(adapter.getAllTradableUsdtSymbols(BrokerMode.TESTNET)).thenReturn(List.of("AAAUSDT", "BBBUSDT", "CCCUSDT"));
         when(adapter.getAll24hrTickers(BrokerMode.TESTNET)).thenReturn(List.of(
@@ -113,7 +111,7 @@ class DynamicUniverseServiceTest {
     }
 
     @Test
-    @DisplayName("selectTopCandidates: a second call within the cache TTL does NOT re-fetch exchange-wide data -- the actual review fix (\"The dynamic universe is recalculated during every autonomous scan\"), reducing exchange load without materially changing candidate selection")
+    @DisplayName("selectTopCandidates: a second call within the cache TTL does NOT re-fetch exchange-wide data, reducing exchange load without materially changing candidate selection")
     void selectTopCandidates_secondCallWithinTtl_doesNotRefetch() {
         when(adapter.getAllTradableUsdtSymbols(BrokerMode.TESTNET)).thenReturn(List.of("AAAUSDT", "BBBUSDT"));
         when(adapter.getAll24hrTickers(BrokerMode.TESTNET)).thenReturn(List.of(
@@ -149,9 +147,7 @@ class DynamicUniverseServiceTest {
     }
 
     /**
-     * Review finding ("Scanner has no complete Binance request-budget model" -- external review,
-     * twenty-second pass, P1, full context in exchangeHealth's own field javadoc): the actual
-     * tests proving the new gate.
+     * Tests proving the request-budget gate.
      */
     @Test
     @DisplayName("selectTopCandidates: an unhealthy request-weight budget with NO existing cache yet skips the exchange call entirely and returns empty, rather than forcing a genuinely scarce call through")

@@ -20,9 +20,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
- * Review finding ("No pure paper-trading mode with full isolation" -- external review,
- * eighteenth pass, P0, full context in PaperBrokerAdapter's own class javadoc): the actual
- * tests proving the two things that matter most about this class -- market orders simulate a
+ * Verifies the two things that matter most about this class: market orders simulate a
  * real, immediate fill at a genuinely fetched current price, and OCO resolution correctly
  * detects a real price crossing either trigger, entirely without ever sending an authenticated
  * request to Binance.
@@ -40,11 +38,9 @@ class PaperBrokerAdapterTest {
     @org.junit.jupiter.api.BeforeEach
     void setUp() {
         service = new PaperBrokerAdapter(realAdapter, paperOcoRepo);
-        // Review finding ("Add slippage/partial-fill simulation" -- external review, P3, full
-        // context in PaperBrokerAdapter's own updated random field javadoc): defaults to NEVER
-        // triggering a partial fill (nextInt(10) == 0 is the only trigger condition) -- every
-        // existing test in this file stays fully deterministic unless a test explicitly
-        // overrides this stub to test partial-fill behavior on its own.
+        // Defaults to NEVER triggering a partial fill (nextInt(10) == 0 is the only trigger
+        // condition) -- every existing test in this file stays fully deterministic unless a
+        // test explicitly overrides this stub to test partial-fill behavior on its own.
         service.setRandomForTesting(random);
         when(random.nextInt(10)).thenReturn(1);
     }
@@ -89,9 +85,7 @@ class PaperBrokerAdapterTest {
         assertThat(result.success()).isTrue();
         assertThat(result.status()).isEqualTo("FILLED");
         assertThat(result.executedQty()).isEqualByComparingTo(BigDecimal.valueOf(0.1));
-        // Review finding ("Paper fills are unrealistically perfect" -- external review,
-        // twenty-third pass, P2, full context in SIMULATED_SLIPPAGE_RATE's own field javadoc):
-        // 65000 * 1.0005 = 65032.5 -- a BUY now fills slightly ABOVE the observed price, not
+        // 65000 * 1.0005 = 65032.5 -- a BUY fills slightly ABOVE the observed price, not
         // exactly at it, matching the actual direction real market-order slippage moves.
         assertThat(result.fillPrice()).isEqualByComparingTo(BigDecimal.valueOf(65032.5));
         assertThat(result.brokerOrderId()).startsWith("PAPER-");
@@ -113,9 +107,8 @@ class PaperBrokerAdapterTest {
     }
 
     /**
-     * Review finding ("Paper trading balance is fixed" -- external review, twenty-third pass,
-     * P2, full context in simulatedUsdtBalance's own field javadoc): the actual test proving
-     * the balance now genuinely tracks fills, rather than always returning a flat 100_000.
+     * The simulated balance genuinely tracks fills, rather than always returning a flat
+     * 100_000.
      */
     @Test
     @DisplayName("getBalance / placeOrder: a BUY fill genuinely reduces the tracked USDT balance by the real notional plus the simulated fee -- no longer a permanently flat 100_000")
@@ -172,11 +165,11 @@ class PaperBrokerAdapterTest {
         oco.setTakeProfitPrice(BigDecimal.valueOf(70000));
         oco.setStopLossPrice(BigDecimal.valueOf(60000));
         when(paperOcoRepo.findById("oco-1")).thenReturn(java.util.Optional.of(oco));
-        // Audit finding (P1-4 -- full context in getOcoStatus_stopLossGap_largeGap_
-        // triggersButDoesNotFill below): close enough to the 60,000 trigger to stay within the
-        // simulated stop-limit's own resting buffer (0.5%, i.e. within 300 of the trigger) --
-        // this test is about a clean, ordinary stop-loss trigger filling normally, not the
-        // real-world "triggered but gapped past the resting limit" scenario that test covers.
+        // Close enough to the 60,000 trigger to stay within the simulated stop-limit's own
+        // resting buffer (0.5%, i.e. within 300 of the trigger) -- this test is about a
+        // clean, ordinary stop-loss trigger filling normally, not the real-world "triggered
+        // but gapped past the resting limit" scenario covered by
+        // getOcoStatus_stopLossGap_largeGap_triggersButDoesNotFill below.
         when(realAdapter.getCurrentPrice("BTCUSDT", BrokerMode.LIVE)).thenReturn(BigDecimal.valueOf(59900));
 
         var result = service.getOcoStatus("k", "s", BrokerMode.PAPER, "oco-1");
@@ -216,10 +209,8 @@ class PaperBrokerAdapterTest {
     }
 
     /**
-     * Review finding ("Add slippage/partial-fill simulation" -- external review, P3, full
-     * context in PaperBrokerAdapter's own updated PARTIAL_FILL_NOTIONAL_THRESHOLD javadoc): the
-     * actual test proving partial-fill simulation works, explicitly forcing the roll via the
-     * injected mock Random rather than relying on statistical luck.
+     * Verifies partial-fill simulation works, explicitly forcing the roll via the injected
+     * mock Random rather than relying on statistical luck.
      */
     @Test
     @DisplayName("placeOrder: a large order (above the notional threshold), with the partial-fill roll explicitly forced, genuinely fills less than requested and reports PARTIALLY_FILLED")
@@ -250,10 +241,7 @@ class PaperBrokerAdapterTest {
     }
 
     /**
-     * Review finding ("PaperBrokerAdapter still reports simulated market orders as effectively
-     * filled during later status lookup" -- external review, thirtieth pass, P2, full context
-     * in simulatedOrderStatusByBrokerOrderId's own field javadoc): the actual test proving the
-     * fix -- a genuinely PARTIALLY_FILLED order from placeOrder must still read back as
+     * A genuinely PARTIALLY_FILLED order from placeOrder must still read back as
      * PARTIALLY_FILLED on a later status check, not silently upgraded to FILLED.
      */
     @Test
@@ -276,7 +264,7 @@ class PaperBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("getOrderStatus: a genuinely, fully FILLED order from placeOrder still correctly reads back as FILLED -- confirms this fix didn't accidentally break the normal, non-partial case")
+    @DisplayName("getOrderStatus: a genuinely, fully FILLED order from placeOrder still correctly reads back as FILLED")
     void getOrderStatus_afterFullFill_correctlyReportsFilled() {
         when(realAdapter.getCurrentPrice("BTCUSDT", BrokerMode.LIVE)).thenReturn(BigDecimal.valueOf(100));
         OrderRequest req = new OrderRequest("BTCUSDT", "BUY", "MARKET", BigDecimal.valueOf(1), "client-2");
@@ -289,7 +277,7 @@ class PaperBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P2-4 fix (\"unknown order IDs default to FILLED with null qty\"): a brokerOrderId this instance never actually recorded (e.g. an OCO leg, or an order from a different adapter instance) now reports UNKNOWN, never a fabricated FILLED with a null executedQty")
+    @DisplayName("getOrderStatus: a brokerOrderId this instance never actually recorded (e.g. an OCO leg, or an order from a different adapter instance) reports UNKNOWN, never a fabricated FILLED with a null executedQty")
     void getOrderStatus_unrecordedBrokerOrderId_reportsUnknownNotFabricatedFilled() {
         var status = service.getOrderStatus("fake-key", "fake-secret", BrokerMode.PAPER, "BTCUSDT", "never-seen-this-id");
 
@@ -298,7 +286,7 @@ class PaperBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P2-4 fix, same context as getOrderStatus's own updated test above: getOrderStatusByClientOrderId reports UNKNOWN too for a clientOrderId this instance never actually recorded")
+    @DisplayName("getOrderStatusByClientOrderId reports UNKNOWN too for a clientOrderId this instance never actually recorded")
     void getOrderStatusByClientOrderId_unrecordedClientOrderId_reportsUnknownNotFabricatedFilled() {
         var status = service.getOrderStatusByClientOrderId("fake-key", "fake-secret", BrokerMode.PAPER, "BTCUSDT", "never-seen-this-client-id");
 
@@ -306,11 +294,11 @@ class PaperBrokerAdapterTest {
         assertThat(status.executedQty()).isNull();
     }
 
-    // ── P2-4: balance floor (no negative balance), step-size rounding, durable balance
+    // ── Balance floor (no negative balance), step-size rounding, durable balance
     // persistence, and SL/TP gap-aware fill price ──────────────────────────────────────────
 
     @Test
-    @DisplayName("P2-4 fix (\"can go negative\"): placeOrder rejects a BUY whose simulated cost exceeds the tracked balance, instead of letting the balance go negative")
+    @DisplayName("placeOrder rejects a BUY whose simulated cost exceeds the tracked balance, instead of letting the balance go negative")
     void placeOrder_rejectsBuy_whenInsufficientSimulatedBalance() {
         when(realAdapter.getCurrentPrice("BTCUSDT", BrokerMode.LIVE)).thenReturn(BigDecimal.valueOf(100000));
         // Default starting balance is 100,000 USDT (see simulatedUsdtBalance's own field javadoc)
@@ -325,7 +313,7 @@ class PaperBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P2-4 fix, same context as the insufficient-balance rejection test above: a genuinely affordable BUY is never rejected, and the balance never actually goes negative across a sequence of real, affordable fills")
+    @DisplayName("a genuinely affordable BUY is never rejected, and the balance never actually goes negative across a sequence of real, affordable fills")
     void placeOrder_neverLetsBalanceGoNegative_acrossAffordableFills() {
         when(realAdapter.getCurrentPrice("BTCUSDT", BrokerMode.LIVE)).thenReturn(BigDecimal.valueOf(100));
         for (int i = 0; i < 50; i++) {
@@ -338,7 +326,7 @@ class PaperBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P2-4 fix (\"SL fills at exact SL (no gap)\"): a stop-loss that the real market price has already gapped past reports the ACTUAL observed price, not the stored trigger price")
+    @DisplayName("a stop-loss that the real market price has already gapped past reports the ACTUAL observed price, not the stored trigger price")
     void getOcoStatus_stopLossGap_reportsActualObservedPriceNotTriggerPrice() {
         PaperOco oco = new PaperOco();
         oco.setId("oco-gap-1");
@@ -348,8 +336,7 @@ class PaperBrokerAdapterTest {
         oco.setStopLossPrice(BigDecimal.valueOf(60000));
         when(paperOcoRepo.findById("oco-gap-1")).thenReturn(java.util.Optional.of(oco));
         // The real market has gapped slightly past the 60,000 stop trigger -- still within the
-        // simulated stop-limit's own 0.5% resting buffer (P1-4, full context in
-        // STOP_LIMIT_NON_FILL_GAP_RATE's own field javadoc), so this still fills, just not
+        // simulated stop-limit's own 0.5% resting buffer, so this still fills, just not
         // exactly at the stored trigger price -- a real Binance stop-loss in a fast-moving
         // market can and does fill at a materially worse price than its own trigger. A LARGER
         // gap that blows through that buffer entirely is covered by the dedicated
@@ -363,10 +350,10 @@ class PaperBrokerAdapterTest {
         assertThat(slLeg.price()).isEqualByComparingTo("59800"); // the real observed price, NOT the 60000 trigger price
     }
 
-    // ── P1-4: "Improve PaperBrokerAdapter realism... stop-limit-non-fill simulation" ──
+    // ── Stop-limit-non-fill simulation ──
 
     @Test
-    @DisplayName("P1-4: a stop-loss trigger the market has gapped WELL past (beyond the simulated stop-limit's own 0.5% resting buffer) is left triggered-but-UNFILLED, not auto-resolved -- exactly the real scenario PositionMonitorService's P0-3 watchdog exists to catch")
+    @DisplayName("a stop-loss trigger the market has gapped WELL past (beyond the simulated stop-limit's own 0.5% resting buffer) is left triggered-but-UNFILLED, not auto-resolved -- exactly the real scenario PositionMonitorService's stuck-position watchdog exists to catch")
     void getOcoStatus_stopLossGap_largeGap_triggersButDoesNotFill() {
         PaperOco oco = new PaperOco();
         oco.setId("oco-biggap-1");
@@ -389,7 +376,7 @@ class PaperBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P1-4: a triggered-but-unfilled stop-limit OCO can still be cancelled -- the real emergencyFlatten flow cancels the stuck exit OCO before placing a fresh market sell")
+    @DisplayName("a triggered-but-unfilled stop-limit OCO can still be cancelled -- the real emergencyFlatten flow cancels the stuck exit OCO before placing a fresh market sell")
     void cancelOco_slTriggeredUnfilled_cancelsSuccessfully() {
         PaperOco oco = new PaperOco();
         oco.setId("oco-biggap-1");
@@ -403,7 +390,7 @@ class PaperBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P1-4: per-asset oversell rejection -- a SELL for an asset this PAPER credential has real tracked holdings for, but not enough of, is rejected rather than simulated")
+    @DisplayName("per-asset oversell rejection -- a SELL for an asset this PAPER credential has real tracked holdings for, but not enough of, is rejected rather than simulated")
     void placeOrder_sellExceedsTrackedAssetHoldings_rejected() {
         var rules = new com.tradevision.service.broker.dto.SymbolRules("BTCUSDT", "BTC", "USDT", BigDecimal.valueOf(0.01), BigDecimal.valueOf(0.0001),
             BigDecimal.valueOf(0.0001), BigDecimal.ZERO, 2, 4, BigDecimal.ZERO, false, false, BigDecimal.ZERO, BigDecimal.ZERO);
@@ -422,7 +409,7 @@ class PaperBrokerAdapterTest {
     }
 
     @Test
-    @DisplayName("P1-4: per-asset holdings allow selling up to exactly what was bought, and reduce holdings by what actually sold")
+    @DisplayName("per-asset holdings allow selling up to exactly what was bought, and reduce holdings by what actually sold")
     void placeOrder_sellWithinTrackedAssetHoldings_succeeds() {
         var rules = new com.tradevision.service.broker.dto.SymbolRules("BTCUSDT", "BTC", "USDT", BigDecimal.valueOf(0.01), BigDecimal.valueOf(0.0001),
             BigDecimal.valueOf(0.0001), BigDecimal.ZERO, 2, 4, BigDecimal.ZERO, false, false, BigDecimal.ZERO, BigDecimal.ZERO);

@@ -24,36 +24,25 @@ import static org.springframework.data.mongodb.core.query.Criteria.where;
  * test-order path (OrderExecutionService, TESTNET-only — see its own javadoc) deliberately does
  * NOT go through this, since it never places a LIVE order at all.
  *
- * Concurrency is now counted from real open Position rows (review item #5) — not inferred from
- * order history, which could never tell an entry apart from its own exit.
+ * Concurrency is counted from real open Position rows, not inferred from order history, which
+ * could never tell an entry apart from its own exit.
  *
- * P2-21 fix ("Time handling: LocalDateTime.now() everywhere instead of Instant + explicit
- * trading-day zone" -- external review, confirmed real specifically for THIS class's own two
- * "what day is it" checks): resetDailyCounterIfNewDay and recordRealizedLoss both used to call
- * bare LocalDate.now(), which resolves against the JVM process's own default time zone -- never
- * stated anywhere in this codebase, and never guaranteed to be the same zone this application's
- * operator, or its users, actually think of as "today" for a daily-loss-limit reset. Crypto spot
- * markets have no single exchange trading-day boundary the way an equities exchange does, so
- * there's no one "correct" zone to hardcode -- but an UNDECLARED, ambient one is strictly worse
- * than a deliberately chosen, documented one: a container redeployed with a different TZ
- * environment variable (nothing in this codebase pins it) would silently shift exactly when a
- * live trading credential's daily loss counter resets, with no code change and no record of why.
- * app.trading.day-zone (default UTC, a neutral, DST-free choice matching how this application
- * already timestamps most other things) makes that zone an explicit, single, overridable
- * configuration value instead.
+ * "What day is it" for the daily-loss-limit reset is resolved against an explicit, configured
+ * zone (app.trading.day-zone, default UTC) rather than the JVM process's own ambient default.
+ * Crypto spot markets have no single exchange trading-day boundary the way an equities exchange
+ * does, so there's no one "correct" zone to hardcode — but an undeclared, ambient one is strictly
+ * worse than a deliberately chosen, documented one: a container redeployed with a different TZ
+ * environment variable would otherwise silently shift exactly when a live trading credential's
+ * daily loss counter resets, with no code change and no record of why. UTC is a neutral,
+ * DST-free default matching how this application already timestamps most other things.
  *
- * HONEST SCOPE: this fixes the one place in this codebase where "which day" genuinely drives
- * financial-safety behavior (the daily-loss-limit reset) -- it does NOT convert this class's, or
- * this codebase's other ~140 call sites', plain event-timestamp LocalDateTime.now() usage
- * (calledAt, createdAt, updatedAt, resolvedAt, and similar) to Instant. Those aren't day-boundary
- * decisions -- they're just "when did this happen," and every one of them is both written AND
- * read back by this same single JVM (this application runs at replicas: 1, per this repository's
- * own k8s/deployment.yaml and its own reconciliation-lock disclosure elsewhere), so they stay
- * internally self-consistent regardless of which zone the JVM happens to default to. A full
- * LocalDateTime -> Instant migration across every model/DTO/repository query in this codebase
- * would be a large, invasive, high-regression-risk change for comparatively little real
- * correctness benefit over today() below -- the one call site the review's own "trading-day zone"
- * language was actually about.
+ * This explicit-zone handling is scoped deliberately to the one place in this codebase where
+ * "which day" genuinely drives financial-safety behavior (the daily-loss-limit reset) — this
+ * class's other, and this codebase's many other, plain event-timestamp LocalDateTime.now() usages
+ * (calledAt, createdAt, updatedAt, resolvedAt, and similar) stay as LocalDateTime. Those aren't
+ * day-boundary decisions, they're just "when did this happen," and every one of them is both
+ * written and read back by this same single JVM (this application runs at replicas: 1), so they
+ * stay internally self-consistent regardless of which zone the JVM happens to default to.
  */
 @Service
 @RequiredArgsConstructor
@@ -64,17 +53,17 @@ public class RiskEngineService {
     private final MongoTemplate mongoTemplate;
     private final com.tradevision.repository.OrderRepository orderRepo;
 
-    // P2-21 fix, full context in this class's own header comment above: explicit, overridable,
-    // defaults to UTC. Not final -- @Value is field-injected after construction, same pattern
-    // already established elsewhere in this codebase (OtpUtil, EmailService, ProxyController).
+    // Explicit, overridable trading-day zone (see this class's own header comment), defaults to
+    // UTC. Not final -- @Value is field-injected after construction, same pattern already
+    // established elsewhere in this codebase (OtpUtil, EmailService, ProxyController).
     @org.springframework.beans.factory.annotation.Value("${app.trading.day-zone:UTC}")
     private String tradingDayZone;
 
     /**
-     * P2-21 fix, full context in this class's own header comment above: the one place "what day
-     * is it" is actually decided, now against an explicit, configured zone instead of the JVM's
-     * ambient default. Package-private (not private) so it's directly unit-testable without
-     * needing to fake the system clock -- see RiskEngineServiceTest.
+     * The one place "what day is it" is actually decided, against an explicit, configured zone
+     * instead of the JVM's ambient default (see this class's own header comment). Package-private
+     * (not private) so it's directly unit-testable without needing to fake the system clock —
+     * see RiskEngineServiceTest.
      */
     LocalDate today() {
         return LocalDate.now(java.time.ZoneId.of(tradingDayZone));
@@ -106,15 +95,13 @@ public class RiskEngineService {
                 + profile.getMaxPositionQuoteAmount());
         }
 
-        // Review finding ("Other important remaining production work" — "order-frequency
-        // limits"): caps new entry orders within a rolling 1-hour window — a cheap, read-based
-        // check, same limitation this class's own existing concurrent-trades pre-filter already
-        // discloses (not the atomicity-guaranteeing gate for a genuine multi-instance race, just
-        // an early, honest rejection for an obviously-over-limit signal). Counts OrderRepository
-        // rows, not TradeCallRecord signals — deliberately: a signal that never actually
-        // resulted in an order placement (rejected earlier in this same check, or by a symbol/
-        // confidence/direction filter before reaching here) never should have counted against
-        // this limit in the first place.
+        // Caps new entry orders within a rolling 1-hour window — a cheap, read-based check, same
+        // limitation as the concurrent-trades pre-filter below (not the atomicity-guaranteeing
+        // gate for a genuine multi-instance race, just an early, honest rejection for an
+        // obviously-over-limit signal). Counts OrderRepository rows, not TradeCallRecord signals
+        // — deliberately: a signal that never actually resulted in an order placement (rejected
+        // earlier in this same check, or by a symbol/confidence/direction filter before reaching
+        // here) never should have counted against this limit in the first place.
         if (profile.getMaxOrdersPerHour() > 0) {
             long recentOrders = orderRepo.countByCredentialIdAndCreatedAtAfter(profile.getCredentialId(), LocalDateTime.now().minusHours(1));
             if (recentOrders >= profile.getMaxOrdersPerHour()) {
@@ -123,12 +110,12 @@ public class RiskEngineService {
             }
         }
 
-        // Review items #13/#14: this is a cheap, read-based pre-filter — fast, but NOT what
-        // prevents the multi-instance race (two concurrent reads here could both pass before
-        // either writes). The authoritative, atomicity-guaranteeing gate is
-        // PositionSlotReservationService.reserve(), called by AutoTradeService right before
-        // order placement. This check exists purely to reject obviously-over-limit signals
-        // early without spending a Mongo round-trip on the atomic path every time.
+        // This is a cheap, read-based pre-filter — fast, but NOT what prevents the multi-instance
+        // race (two concurrent reads here could both pass before either writes). The
+        // authoritative, atomicity-guaranteeing gate is PositionSlotReservationService.reserve(),
+        // called by AutoTradeService right before order placement. This check exists purely to
+        // reject obviously-over-limit signals early without spending a Mongo round-trip on the
+        // atomic path every time.
         long openPositions = positionRepo.findByUserIdAndCredentialIdAndStatus(
             profile.getUserId(), profile.getCredentialId(), "OPEN").size();
 
@@ -136,18 +123,17 @@ public class RiskEngineService {
             return RiskCheckResult.reject("Max concurrent open positions (" + profile.getMaxConcurrentTrades() + ") already reached.");
         }
 
-        // Review item #10: portfolio-level exposure across every open position on this credential,
-        // not just the size of the one order being checked right now.
+        // Portfolio-level exposure across every open position on this credential, not just the
+        // size of the one order being checked right now.
         //
-        // Review finding ("P0 #3" — "ENTRY_FILLED_UNVERIFIED is not treated as an active
-        // position"): part of that fix is here — a position can now legitimately be status=OPEN
-        // with avgEntryPrice still null (entry filled, price unverifiable, emergency flatten
-        // failed). quantity × avgEntryPrice would NPE on that position. It still correctly
-        // counts toward the concurrent-trade check below (that only needs quantity to exist,
-        // not price), but is excluded from the dollar-exposure sums specifically — there's no
-        // honest way to value a position at an unknown price, and guessing would be worse than
-        // undercounting it here (the position is already halting new trades via tradingHalted
-        // regardless, so this isn't the only safety net for it).
+        // A position can legitimately be status=OPEN with avgEntryPrice still null (entry
+        // filled, price unverifiable, emergency flatten failed). quantity × avgEntryPrice would
+        // NPE on that position. It still correctly counts toward the concurrent-trade check
+        // above (that only needs quantity to exist, not price), but is excluded from the
+        // dollar-exposure sums specifically — there's no honest way to value a position at an
+        // unknown price, and guessing would be worse than undercounting it here (the position is
+        // already halting new trades via tradingHalted regardless, so this isn't the only safety
+        // net for it).
         List<Position> openPositionRows = positionRepo.findByUserIdAndCredentialIdAndStatus(
             profile.getUserId(), profile.getCredentialId(), "OPEN");
         List<Position> pricedPositionRows = openPositionRows.stream()
@@ -165,8 +151,8 @@ public class RiskEngineService {
             }
         }
 
-        // Review item #10 (per-symbol): a symbol-specific cap on top of the total — stops one
-        // symbol eating the whole exposure budget across several separate signals.
+        // Per-symbol cap on top of the total — stops one symbol eating the whole exposure
+        // budget across several separate signals.
         if (profile.getMaxSymbolExposureQuote() != null && profile.getMaxSymbolExposureQuote().signum() > 0) {
             BigDecimal symbolExposure = pricedPositionRows.stream()
                 .filter(p -> p.getSymbol().equalsIgnoreCase(symbol))
@@ -179,19 +165,14 @@ public class RiskEngineService {
             }
         }
 
-        // Review item #25: user-defined correlation-group caps (see RiskProfile javadoc for the
-        // honest scope note — this is a manual proxy, not computed correlation). Inert unless
-        // the user has actually configured a group.
+        // User-defined correlation-group caps (see RiskProfile's own javadoc for the scope note
+        // — this is a manual proxy, not computed correlation). Inert unless the user has
+        // actually configured a group.
         //
-        // Review finding (P1 #5 — "Correlation risk controls are still dead/incomplete", full
-        // context in RiskProfile's own javadoc): the API-reachability gap is now closed —
-        // RiskProfileRequest carries these fields and upsert() persists them, so a configured
-        // group is genuinely enforced here. What's still honestly disclosed, not fixed: this
-        // remains a plain read-then-compare, not the atomic reservation ExposureReservationService
-        // gives total/symbol exposure — the same two-concurrent-orders race that fix closed
-        // elsewhere. Building that for an arbitrary number of user-configured, possibly-
-        // overlapping groups without a live MongoDB to verify against remains real risk not
-        // taken on blind in this pass.
+        // This remains a plain read-then-compare, not the atomic reservation
+        // ExposureReservationService gives total/symbol exposure above — doing that for an
+        // arbitrary number of user-configured, possibly-overlapping groups is a larger piece of
+        // work than this check's own simple cap enforcement.
         if (profile.getCorrelationGroups() != null) {
             for (var entry : profile.getCorrelationGroups().entrySet()) {
                 String groupName = entry.getKey();
@@ -219,27 +200,20 @@ public class RiskEngineService {
      * Called by PositionMonitorService when a signal-triggered position actually closes, using
      * real realized P&L.
      *
-     * Review finding ("P0 #6" — "daily-loss accounting is not atomic"): confirmed real. The old
-     * version was a textbook read-modify-write race: two concurrent losing exits could both read
-     * the same starting value and one increment would silently overwrite the other, understating
-     * the daily-loss counter that's supposed to be the hard stop for this credential. Rewritten
-     * as an atomic Mongo increment — the database itself serializes concurrent $inc operations on
-     * the same document, the same guarantee PositionSlotReservationService already relies on.
-     * UPDATE ("Atomic updates for remaining counters" review — checked precisely rather than
-     * trusting this comment's own original claim, which had gone stale): confirmed
-     * consecutiveOrderFailures (AutoTradeService, atomic $inc/$set) and peakEquityQuote
-     * (PositionMonitorService.checkDrawdown, atomic $max — labeled "P1 #8" in that method's own
-     * comment) were BOTH already fixed in later passes after this comment was originally
-     * written, and this paragraph was simply never updated to say so. Both are genuinely atomic
-     * now — this comment previously claimed otherwise and that claim was wrong by the time
-     * anyone read it, not a real, currently-open gap.
+     * The daily-loss counter is updated via an atomic Mongo increment rather than a
+     * read-modify-write, since the database itself serializes concurrent $inc operations on the
+     * same document — the same guarantee PositionSlotReservationService relies on elsewhere.
+     * Two concurrent losing exits incrementing a plain in-memory/read-then-write counter could
+     * otherwise silently overwrite one another, understating the daily-loss counter that's
+     * supposed to be the hard stop for this credential. consecutiveOrderFailures
+     * (AutoTradeService) and peakEquityQuote (PositionMonitorService.checkDrawdown) use the same
+     * atomic-increment/atomic-max pattern for the same reason.
      */
 
-    // Same root cause and fix as ExposureReservationService.toDecimal128: Spring Data's ad-hoc
-    // Update mapping stores a raw BigDecimal as a String unless converted to Decimal128 here,
-    // even with @Field(targetType = FieldType.DECIMAL128) on the model field. Confirmed by a
-    // real production incident (MongoDB audit log: "Cannot increment with non-numeric argument:
-    // {dailyRealizedLossQuote: \"0.0000100000000000\"}") that auto-halted a live credential.
+    // Spring Data's ad-hoc Update mapping stores a raw BigDecimal as a String unless converted to
+    // Decimal128 here, even with @Field(targetType = FieldType.DECIMAL128) on the model field —
+    // same root cause and fix as ExposureReservationService.toDecimal128. Skipping this
+    // conversion produces a non-numeric value MongoDB's $inc rejects outright.
     private org.bson.types.Decimal128 toDecimal128(BigDecimal value) {
         return value == null ? null : new org.bson.types.Decimal128(value);
     }
@@ -277,12 +251,12 @@ public class RiskEngineService {
     }
 
     /**
-     * Review finding ("Risk" — "strategy-level loss breaker" / "strategy consecutive-loss
-     * breaker"): full context (including exactly what triggerSource="SIGNAL" does and doesn't
-     * mean) in RiskProfile's own field comments. Call once a position's real outcome is known,
-     * for every closed position regardless of trigger source — this method itself decides
-     * whether triggerSource makes it relevant, so callers don't need their own SIGNAL/MANUAL
-     * branching before calling it.
+     * Strategy-level consecutive-loss breaker: halts autonomous (SIGNAL-driven) trading once too
+     * many signal-triggered trades in a row have lost money. See RiskProfile's own field
+     * comments for exactly what triggerSource="SIGNAL" does and doesn't mean. Call once a
+     * position's real outcome is known, for every closed position regardless of trigger source —
+     * this method itself decides whether triggerSource makes it relevant, so callers don't need
+     * their own SIGNAL/MANUAL branching before calling it.
      */
     public void recordAutoTradeOutcome(RiskProfile profile, String triggerSource, boolean isLoss) {
         if (!"SIGNAL".equalsIgnoreCase(triggerSource)) return; // the separate manual-order path never affects or resets this counter
@@ -328,13 +302,12 @@ public class RiskEngineService {
         if (!today().equals(profile.getDailyTrackedDate())) {
             profile.setDailyTrackedDate(today());
             profile.setDailyRealizedLossQuote(BigDecimal.ZERO);
-            // Review finding (P1/🟠 #14 — "Daily-loss reset is still partly in-memory"):
-            // confirmed real — this used to only mutate the in-memory object, never persisting
-            // the reset itself. recordRealizedLoss()'s own atomic $inc (elsewhere in this file)
-            // would eventually overwrite the stale DB value on the next loss, and
-            // haltForDailyLoss()'s targeted update would too if the limit was hit — but until
-            // either of those happened, the database could keep showing yesterday's loss total
-            // for an arbitrary stretch of a brand new day. Targeted $set, same pattern as
+            // Persists the reset immediately via a targeted $set rather than only mutating the
+            // in-memory object — recordRealizedLoss()'s own atomic $inc would eventually
+            // overwrite the stale DB value on the next loss, and haltForDailyLoss()'s targeted
+            // update would too if the limit was hit, but without this write the database would
+            // keep showing yesterday's loss total for an arbitrary stretch of a brand new day
+            // until one of those other writes happened to land. Same targeted-$set pattern as
             // haltForDailyLoss — never a full-document save that could stomp a concurrent change
             // to some other field on this same profile.
             mongoTemplate.updateFirst(

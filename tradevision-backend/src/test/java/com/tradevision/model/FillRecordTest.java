@@ -10,10 +10,9 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding ("Fill Ledger also lacks proper idempotency" review — "FillRecord uses Lombok
- * @Data, which generates setters... the model itself doesn't enforce immutability"): verifies
- * the actual fix via reflection — no setter method exists for any field except id, which is the
- * one field Spring Data MongoDB's own id-generation mechanism genuinely needs a setter for.
+ * Verifies, via reflection, that FillRecord is effectively immutable: no setter method
+ * exists for any field except setId, which Spring Data MongoDB's own id-generation
+ * mechanism genuinely needs.
  */
 class FillRecordTest {
 
@@ -51,7 +50,7 @@ class FillRecordTest {
     }
 
     @Test
-    @DisplayName("FillRecord: setId is the one genuine exception — Spring Data MongoDB's own id-generation mechanism needs it, and it works correctly")
+    @DisplayName("FillRecord: setId is the one exception — Spring Data MongoDB's own id-generation mechanism needs it, and it works correctly")
     void setId_worksCorrectly() {
         var record = new FillRecord();
         record.setId("generated-id-123");

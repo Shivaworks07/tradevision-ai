@@ -11,11 +11,10 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding ("Client-Side Signal Generation" — "Port the entire TA engine... to Java"):
- * tests the actual verified port — see VolumeProfileService's own javadoc for the full
- * verification methodology (a real seeded reference run of the actual TypeScript file, compared
- * field-by-field against this class). The exact expected values below are that same reference
- * output, so this test is itself a regression check against that verification, not a fresh
+ * Tests the Java port of the TA engine's volume profile calculation against its TypeScript
+ * source -- see VolumeProfileService's own javadoc for the full verification methodology (a
+ * real seeded reference run of the actual TypeScript file, compared field-by-field against this
+ * class). The exact expected values below are that same reference output, not a fresh
  * hand-derivation of what the "right" answer should be.
  */
 class VolumeProfileServiceTest {

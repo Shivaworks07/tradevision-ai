@@ -27,25 +27,19 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Review finding ("Only one integration test uses real Mongo/Testcontainers" -- external review,
- * fourth pass, P2, naming "concurrent claims" among the required real-Mongo scenarios): same
- * honest gap and same pattern as the other integration tests in this package -- this session's
- * own claimExecutionAuthorization/markExecutionStarted atomic-claim design (see
- * RiskProfile.executionInFlightCount's own field javadoc for the full P0 fix this pass) has only
- * ever been verified against Mockito, never against a real MongoDB actually serializing
- * concurrent claim writes.
+ * Verifies the claimExecutionAuthorization/markExecutionStarted atomic-claim design (see
+ * RiskProfile.executionInFlightCount's field javadoc) against a real MongoDB actually
+ * serializing concurrent claim writes, following the same pattern as the other integration
+ * tests in this package.
  *
- * HONEST LIMITATION, same as every other integration test in this package: `docker ps` fails
- * outright in this sandbox -- no Docker daemon is available here, so I have not executed this
- * test and cannot confirm it passes. Run
- * `mvn test -Dtest=RiskProfileServiceClaimIntegrationTest` on a machine with Docker available to
- * actually confirm this before trusting it.
+ * Requires Docker (Testcontainers); run
+ * `mvn test -Dtest=RiskProfileServiceClaimIntegrationTest` on a machine with Docker available.
  */
 @Testcontainers(disabledWithoutDocker = true)
-// P1-16 fix: spring.profiles.active now defaults to "prod" (fail-closed), which has no default
-// secrets at all -- without this, this Testcontainers-backed context would fail to start
-// outside a real deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, the
-// same secrets this test always implicitly relied on before that default changed.
+// spring.profiles.active defaults to "prod" (fail-closed), which has no default secrets at all
+// -- without this, this Testcontainers-backed context would fail to start outside a real
+// deployment with JWT_SECRET/etc set. Explicitly opts into "local" instead, which has the
+// secrets this test relies on.
 @ActiveProfiles("local")
 @SpringBootTest
 class RiskProfileServiceClaimIntegrationTest {
@@ -107,10 +101,10 @@ class RiskProfileServiceClaimIntegrationTest {
         assertThat(claimIds).hasSize(concurrentAttempts);
         assertThat(new java.util.HashSet<>(claimIds)).hasSize(concurrentAttempts); // every claim id genuinely unique -- no UUID collisions
 
-        // The actual claim under test: exactly ONE of these 20 real, concurrently-issued claims
-        // is the one MongoDB's own last-write-wins semantics left as current -- proven by
-        // actually calling markExecutionStarted for every single one against the real database,
-        // not by inspecting the document directly.
+        // Exactly one of these 20 real, concurrently-issued claims is the one MongoDB's
+        // last-write-wins semantics left as current -- checked by calling markExecutionStarted
+        // for every single one against the real database, not by inspecting the document
+        // directly.
         AtomicInteger validCount = new AtomicInteger(0);
         for (String claimId : claimIds) {
             if (riskProfileService.markExecutionStarted(credentialId, claimId, false)) {
@@ -121,7 +115,7 @@ class RiskProfileServiceClaimIntegrationTest {
     }
 
     @Test
-    @DisplayName("THE critical race test (external review, fifth pass, highest priority): Thread A claims, Thread B halts, THEN Thread A attempts markExecutionStarted -- against a REAL MongoDB, this must return false, meaning zero Binance calls can ever follow. This defines the system's actual safety semantics for the first of the two orderings the review names.")
+    @DisplayName("markExecutionStarted: Thread A claims, Thread B halts, then Thread A attempts markExecutionStarted -- against a real MongoDB, this must return false, meaning zero Binance calls can ever follow.")
     void raceOrdering1_claimThenHaltThenMarkStarted_realMongo_markStartedFails() {
         String credentialId = "integration-test-race1-" + System.currentTimeMillis();
         RiskProfile profile = new RiskProfile();
@@ -156,7 +150,7 @@ class RiskProfileServiceClaimIntegrationTest {
     }
 
     @Test
-    @DisplayName("THE critical race test (external review, fifth pass, highest priority), the opposite ordering: Thread A successfully marks execution started FIRST, THEN Thread B halts -- against a REAL MongoDB, the kill switch still succeeds, the in-flight execution is honestly audited (not hidden), and a SECOND execution attempt using a fresh claim is correctly blocked -- proving \"an in-flight request may finish\" is the ONLY thing this halt cannot undo, and that it never allows a second one")
+    @DisplayName("markExecutionStarted + halt: Thread A successfully marks execution started first, then Thread B halts -- against a real MongoDB, the kill switch still succeeds, the in-flight execution is recorded, and a second execution attempt using a fresh claim is blocked")
     void raceOrdering2_markStartedThenHalt_realMongo_killSwitchSucceedsAndAuditsInFlight() {
         String credentialId = "integration-test-race2-" + System.currentTimeMillis();
         RiskProfile profile = new RiskProfile();

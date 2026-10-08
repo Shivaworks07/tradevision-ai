@@ -15,10 +15,10 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * Review finding ("immutable external audit export" -- external review, P3, full context in
- * BrokerAuditLog's own class javadoc): the actual hash-chain implementation. See that class's
- * own javadoc for the full reasoning, the honest scope (detection, not prevention -- not a
- * substitute for real external WORM storage), and the stated concurrent-write limitation.
+ * Builds and verifies a hash chain over broker audit log records, so tampering with a stored
+ * record becomes detectable. See BrokerAuditLog's own class javadoc for the full reasoning, the
+ * honest scope (detection, not prevention -- not a substitute for real external WORM storage),
+ * and the stated concurrent-write limitation.
  */
 @Service
 @RequiredArgsConstructor
@@ -26,11 +26,10 @@ public class AuditChainService {
 
     private static final Logger log = LoggerFactory.getLogger(AuditChainService.class);
     /**
-     * P2-7 fix, full context in AuditChainCheckpoint's own class javadoc: how long before a
-     * record's real 730-day TTL expiry (see IndexInitializer's own BrokerAuditLog TTL index) this
-     * service tries to have durably checkpointed it. Deliberately generous relative to how often
-     * appendToChain actually runs in this application (every real audit-log write) -- this is a
-     * safety margin against an unusually quiet stretch, not a tight deadline.
+     * How long before a record's 730-day TTL expiry (see IndexInitializer's BrokerAuditLog TTL
+     * index) this service tries to have durably checkpointed it. Deliberately generous relative
+     * to how often appendToChain actually runs (every audit-log write) -- this is a safety
+     * margin against an unusually quiet stretch, not a tight deadline.
      */
     private static final long CHECKPOINT_SAFETY_BUFFER_DAYS = 30;
     private static final long BROKER_AUDIT_LOG_TTL_DAYS = 730;
@@ -74,22 +73,19 @@ public class AuditChainService {
         record.setPreviousHash(previousHash);
         record.setRecordHash(computeHash(record, previousHash));
         BrokerAuditLog saved = auditRepo.save(record);
-        // P2-7 fix, full context in AuditChainCheckpoint's own class javadoc: piggybacks on every
-        // real append (cheap -- one bounded query, only when the checkpoint actually needs
-        // advancing) rather than needing its own separate scheduled job for this pass.
+        // Piggybacks on every append (cheap -- one bounded query, only when the checkpoint
+        // actually needs advancing) rather than needing its own separate scheduled job.
         checkpointRecordsNearingExpiry();
         return saved;
     }
 
     /**
-     * P2-7 fix ("IndexInitializer: BrokerAuditLog TTL 730 days conflicts with AuditChainService's
-     * hash chain" -- full context in AuditChainCheckpoint's own class javadoc): durably anchors
-     * the newest record that is getting close to its own TTL expiry, so verifyChain can still
-     * detect tampering in a range whose true earliest records have since been deleted by TTL, not
-     * just silently treat "the chain starts wherever TTL happened to leave it" as always valid.
-     * Advances the single checkpoint document forward over time as older data ages out -- never
-     * moves it backward (a checkpoint older than one already recorded is never overwritten with
-     * something less current).
+     * Durably anchors the newest record that is getting close to its own TTL expiry, so
+     * verifyChain can still detect tampering in a range whose true earliest records have since
+     * been deleted by TTL, instead of silently treating "the chain starts wherever TTL happened
+     * to leave it" as always valid. Advances the single checkpoint document forward over time as
+     * older data ages out -- never moves it backward (a checkpoint older than one already
+     * recorded is never overwritten with something less current).
      */
     void checkpointRecordsNearingExpiry() {
         LocalDateTime cutoff = LocalDateTime.now().minusDays(BROKER_AUDIT_LOG_TTL_DAYS - CHECKPOINT_SAFETY_BUFFER_DAYS);
@@ -123,26 +119,24 @@ public class AuditChainService {
      * recordHash. Either mismatch means something in that record -- or an earlier one -- has
      * been altered since it was written.
      *
-     * P2-7 fix, full context in AuditChainCheckpoint's own class javadoc: no checkpoint to verify
-     * the very first record's own previousHash against, so (matching this method's own original,
-     * pre-fix behavior) that first record is trusted as a legitimate chain start. Callers that
-     * have a checkpoint available (AdminController.verifyAuditChain does) should use the
-     * checkpoint-aware overload below instead -- this overload remains for callers/tests that
-     * genuinely have no checkpoint context.
+     * With no checkpoint to verify the very first record's own previousHash against, that first
+     * record is trusted as a legitimate chain start. Callers that have a checkpoint available
+     * (AdminController.verifyAuditChain does) should use the checkpoint-aware overload below
+     * instead -- this overload remains for callers/tests that genuinely have no checkpoint
+     * context.
      */
     public ChainVerificationResult verifyChain(List<BrokerAuditLog> orderedOldestFirst) {
         return verifyChain(orderedOldestFirst, null);
     }
 
     /**
-     * P2-7 fix, full context in AuditChainCheckpoint's own class javadoc: the actual fix -- when a
-     * checkpoint is given AND its own recorded timestamp is before the first record in this list,
-     * that first record's previousHash is no longer given a free pass: it MUST equal the
-     * checkpoint's own recordHash, exactly like every other record's previousHash is already
-     * checked against the record before it. This is what makes a range whose true earliest
-     * records were legitimately trimmed by TTL distinguishable from one where a record was
-     * deleted from the middle by something else -- the former still matches the checkpoint, the
-     * latter does not.
+     * Checkpoint-aware verification: when a checkpoint is given and its recorded timestamp is
+     * before the first record in this list, that first record's previousHash is no longer given
+     * a free pass -- it must equal the checkpoint's recordHash, exactly like every other
+     * record's previousHash is checked against the record before it. This is what makes a range
+     * whose true earliest records were legitimately trimmed by TTL distinguishable from one
+     * where a record was deleted from the middle by something else -- the former still matches
+     * the checkpoint, the latter does not.
      */
     public ChainVerificationResult verifyChain(List<BrokerAuditLog> orderedOldestFirst, AuditChainCheckpoint checkpoint) {
         String expectedPreviousHash = null;

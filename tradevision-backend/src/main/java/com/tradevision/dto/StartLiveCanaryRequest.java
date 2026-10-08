@@ -4,9 +4,10 @@ import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 
 /**
- * Audit item P0-1, full context in LiveCanaryRecord's own class javadoc. Deliberately has no
- * quantity field -- see LiveCanaryService.startCanary's own javadoc for why that's computed by
- * this application itself, never typed in by the caller.
+ * Request to place a minimal real-money LIVE probe order on a symbol, to validate a credential
+ * end-to-end. Deliberately has no quantity field -- the order size is computed by
+ * LiveCanaryService itself, never typed in by the caller, so this can't be used to place an
+ * order of arbitrary size.
  */
 @Data
 public class StartLiveCanaryRequest {

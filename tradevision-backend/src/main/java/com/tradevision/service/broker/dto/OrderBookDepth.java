@@ -4,9 +4,9 @@ import java.math.BigDecimal;
 import java.util.List;
 
 /**
- * Review finding ("Market data" — "order-book depth, bid/ask depth imbalance"). Verified against
- * current Binance docs (multiple independent sources agree): bids sorted highest-to-lowest
- * price, asks sorted lowest-to-highest — the natural "best price first" order for each side.
+ * Order-book depth snapshot used for bid/ask depth-imbalance signals. Bids are sorted
+ * highest-to-lowest price, asks lowest-to-highest — the natural "best price first" order for
+ * each side, matching Binance's own documented response shape.
  */
 public record OrderBookDepth(List<PriceLevel> bids, List<PriceLevel> asks) {
     public record PriceLevel(BigDecimal price, BigDecimal quantity) {}

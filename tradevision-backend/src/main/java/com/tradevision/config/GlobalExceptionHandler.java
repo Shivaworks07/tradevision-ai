@@ -18,15 +18,12 @@ public class GlobalExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
     /**
-     * Review finding (P1 — "Global exception handling leaks internal messages"): confirmed real.
-     * This is the catch-all for genuinely UNEXPECTED exceptions — MongoDB connection errors,
-     * NullPointerExceptions, IO failures, Binance/broker API error bodies — none of which are
-     * hand-authored, safe, user-facing text the way IllegalArgumentException's messages are
-     * throughout this codebase (deliberately left alone below; those ARE meant to be shown).
-     * ex.getMessage() here could contain internal hostnames, config details, or raw upstream
-     * error bodies. Logged in full server-side with a reference id instead of exposed to the
-     * client — support can correlate a user's report against the log using that id without this
-     * response ever having to carry anything internal.
+     * Catch-all for unexpected exceptions — MongoDB connection errors, NullPointerExceptions, IO
+     * failures, Binance/broker API error bodies — none of which are safe, user-facing text the
+     * way IllegalArgumentException's hand-authored messages are (handled separately below).
+     * ex.getMessage() could contain internal hostnames, config details, or raw upstream error
+     * bodies, so it is logged in full server-side with a reference id rather than exposed to the
+     * client; support can correlate a user's report against the log using that id.
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<?>> handleAll(Exception ex, WebRequest req) {
@@ -44,22 +41,14 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<ApiResponse<?>> handleBadState(IllegalStateException ex) {
-        // Same reasoning as IllegalArgumentException: used throughout this codebase (resume
-        // validation, position safety) as a deliberate, hand-authored, safe user-facing message
-        // — not a leak of anything internal.
-        //
-        // P2-16 fix ("GlobalExceptionHandler.handleBadState returns IllegalStateException
-        // messages to clients" -- external review): the assumption above was NOT actually true
-        // everywhere until this fix -- several IllegalStateException throw sites across this
-        // codebase (BinanceBrokerAdapter's market-data/listen-key failures, CredentialEncryption
-        // Service's key-resolution failures) were embedding e.getMessage(), a raw upstream
-        // response body, or an internal config/keyId detail directly into the message this
-        // handler returns verbatim. Every one of those has now been audited and fixed at its own
-        // throw site (full context in BinanceBrokerAdapter.getSymbolRules' own updated comment
-        // and CredentialEncryptionService.decrypt's own updated comment) rather than here --
-        // fixing it here alone (e.g. by no longer returning ex.getMessage() at all) would have
-        // broken the many genuinely-safe, hand-authored business messages (resume validation,
-        // credential deletion/rotation guards) that this handler exists to surface intact.
+        // IllegalStateException messages are returned to the client verbatim, so every throw
+        // site using this exception type (resume validation, position safety, credential
+        // deletion/rotation guards, broker adapter failures) must only ever carry a
+        // hand-authored, safe, user-facing message — never a raw upstream response body, internal
+        // config detail, or e.getMessage() from a lower-level exception. That invariant is
+        // enforced at each throw site rather than here, since stripping ex.getMessage() here
+        // would also break the many genuinely safe business messages this handler exists to
+        // surface intact.
         return ResponseEntity.status(HttpStatus.CONFLICT)
             .body(ApiResponse.error(ex.getMessage()));
     }

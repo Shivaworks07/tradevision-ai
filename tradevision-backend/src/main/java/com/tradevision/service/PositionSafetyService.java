@@ -816,9 +816,14 @@ public class PositionSafetyService {
                 return;
             }
             // Retry also came back partial/incomplete — stop looping, this needs a human now.
+            // Audit fix (P0-2 follow-up, full context in tryReprotectAfterFailedFlatten's own
+            // javadoc): one best-effort attempt to re-place protection for the still-open
+            // remainder before falling through to the naked halt below.
+            boolean reprotected = tryReprotectAfterFailedFlatten(credential, adapter, apiKey, apiSecret, position, lockGeneration);
             credentialService.audit(position.getUserId(), credential.getId(), credential.getBroker(), "EMERGENCY_FLATTEN_FAILED",
                 "CRITICAL: " + remaining + " of " + position.getSymbol() + " could NOT be flattened after a retry "
-                    + "(original issue: " + failureReason + ") — MANUAL INTERVENTION REQUIRED, position remains OPEN and unprotected.");
+                    + "(original issue: " + failureReason + ") — MANUAL INTERVENTION REQUIRED, position remains OPEN"
+                    + (reprotected ? " and was successfully RE-PROTECTED with a new OCO at its prior TP/SL levels." : " and unprotected."));
             haltProfile(profile, position);
             return;
         }
@@ -865,11 +870,18 @@ public class PositionSafetyService {
         // top of a still-live first one is a real double-sell risk, not a hypothetical one) --
         // in both cases, don't assume anything closed. Same "don't fabricate a confirmed state"
         // rule as everywhere else in this file.
+        //
+        // Audit fix (P0-2 follow-up, full context in tryReprotectAfterFailedFlatten's own
+        // javadoc): one best-effort attempt to re-place protection before falling through to
+        // the naked halt below -- nothing was ever sold in this branch, so the full
+        // internalQuantity is what needs re-protecting, not a partial remainder.
+        boolean reprotected = tryReprotectAfterFailedFlatten(credential, adapter, apiKey, apiSecret, position, lockGeneration);
         credentialService.audit(position.getUserId(), credential.getId(), credential.getBroker(), "EMERGENCY_FLATTEN_FAILED",
-            "CRITICAL: naked position on " + position.getSymbol() + " could NOT be emergency-closed: "
+            "CRITICAL: " + (reprotected ? "position" : "naked position") + " on " + position.getSymbol() + " could NOT be emergency-closed: "
                 + (flatten.errorMessage() != null ? flatten.errorMessage() : "no confirmed executed quantity")
                 + " (original issue: " + failureReason + ")" + (attempt > 0 ? " -- retry also failed." : "")
-                + " MANUAL INTERVENTION REQUIRED.");
+                + (reprotected ? " -- position was successfully RE-PROTECTED with a new OCO at its prior TP/SL levels."
+                    : "") + " MANUAL INTERVENTION REQUIRED.");
         // Review finding ("Position close has atomic protection; not every position mutation
         // does" -- P1, full context in PositionMonitorService's own identical comment on the
         // partial-exit conversion): continuing this session's own established, deliberate
@@ -883,12 +895,145 @@ public class PositionSafetyService {
         // attempt happened and failed, which OPEN would misleadingly suggest never occurred.
         // This is exactly the state PositionMonitorService.recoverStuckFlattening's own
         // reconciliation pass is built to find and resolve.
-        mongoTemplate.updateFirst(
+        //
+        // Skipped when reprotected -- tryReprotectAfterFailedFlatten's own atomic update already
+        // transitioned this position to OPEN with its new ocoOrderListId (conditioned on the
+        // same starting "FLATTENING" status this update itself requires), so this one would
+        // simply no-op against zero matching documents; quantity itself is unchanged in this
+        // branch either way (nothing was ever sold), so there is nothing left to persist here.
+        if (!reprotected) mongoTemplate.updateFirst(
             new org.springframework.data.mongodb.core.query.Query(
                 org.springframework.data.mongodb.core.query.Criteria.where("id").is(position.getId()).and("status").is("FLATTENING")),
             new org.springframework.data.mongodb.core.query.Update().set("quantity", position.getQuantity()),
             Position.class);
         haltProfile(profile, position);
+    }
+
+    /**
+     * Audit fix (P0-2 follow-up — external re-review of the first P0-2 fix, confirmed real: "A
+     * failed sell now gets one retry with a fresh order id. If the retry also fails, it halts
+     * and asks for manual intervention. The OCO is still cancelled before the sell, so the
+     * position can still end up unprotected." The original audit text itself offered two
+     * alternative fixes — "Retry the sell with exponential backoff... OR re-place protection
+     * immediately on failure" — and the first pass only did the first half). The OCO cancel
+     * before the sell is not itself a bug: Binance locks the asset behind an open OCO leg, so
+     * there is no way to submit the market sell at all without cancelling it first. What WAS
+     * missing is this half: when every sell attempt is exhausted and this method is about to
+     * fall through to a naked halt, make one best-effort attempt to re-place a protective OCO
+     * at the position's own last known TP/SL levels (read back from its own most recent
+     * OCO_EXIT order record — the exact numbers this exact position was already trading under
+     * before the flatten began) before giving up.
+     *
+     * Deliberately conservative in every direction a failure can take it: no prior OCO_EXIT
+     * record, no TP/SL stored on it, a stale price the market has since moved through (the same
+     * TP>price>SL check placeExitOcoOrEmergencyFlatten already performs before any real OCO
+     * placement), a lost lock renewal, or the exchange call itself failing all fall through to
+     * returning false — the existing naked-halt path is the fallback of last resort either way,
+     * never skipped, only possibly preceded by a real re-protection. A position this method
+     * successfully re-protects is no longer naked, but the account still halts regardless — a
+     * flatten that had to fail this way is still a real anomaly needing human review; this
+     * narrows how exposed the position sits DURING that review, it does not narrow the review
+     * itself.
+     */
+    private boolean tryReprotectAfterFailedFlatten(BrokerCredential credential, BrokerAdapter adapter,
+                                                     String apiKey, String apiSecret, Position position, long lockGeneration) {
+        if (position.getQuantity() == null || position.getQuantity().signum() <= 0) return false;
+        if (position.getOcoOrderListId() != null) return false; // already protected somehow — nothing to do
+        List<com.tradevision.model.Order> priorOco =
+            orderRepository.findByPositionIdAndOrderRoleOrderByCreatedAtDesc(position.getId(), "OCO_EXIT");
+        if (priorOco.isEmpty()) {
+            log.warn("Could not re-protect position {} ({}) after a failed flatten -- no prior OCO_EXIT order record found to recover "
+                + "TP/SL levels from.", position.getId(), position.getSymbol());
+            return false;
+        }
+        com.tradevision.model.Order lastOco = priorOco.get(0);
+        BigDecimal takeProfit = lastOco.getTakeProfitPrice();
+        BigDecimal stopTrigger = lastOco.getStopLossTriggerPrice();
+        BigDecimal stopLimit = lastOco.getStopLossLimitPrice();
+        if (takeProfit == null || stopTrigger == null || stopLimit == null) {
+            log.warn("Could not re-protect position {} ({}) after a failed flatten -- its last OCO_EXIT order record ({}) is missing "
+                + "one or more of TP/SL-trigger/SL-limit.", position.getId(), position.getSymbol(), lastOco.getId());
+            return false;
+        }
+
+        BigDecimal freshPrice;
+        try {
+            freshPrice = adapter.getCurrentPrice(position.getSymbol(), credential.getMode());
+        } catch (Exception e) {
+            log.warn("Could not re-protect position {} ({}) after a failed flatten -- could not fetch a fresh price to validate the "
+                + "old TP/SL levels against: {}", position.getId(), position.getSymbol(), e.getMessage());
+            return false;
+        }
+        // Same TP > current price > SL validation placeExitOcoOrEmergencyFlatten already
+        // performs before any real OCO placement — the levels this position last traded under
+        // may no longer bracket the current price at all (why the flatten was attempted in the
+        // first place, in some cases), and submitting an OCO that would be rejected (or that
+        // would silently mean something different from the levels it was originally set at)
+        // is worse than honestly reporting that re-protection isn't possible right now.
+        if (freshPrice == null || freshPrice.signum() <= 0
+                || takeProfit.compareTo(freshPrice) <= 0 || stopTrigger.compareTo(freshPrice) >= 0) {
+            log.warn("Could not re-protect position {} ({}) after a failed flatten -- its old TP {} / SL {} levels no longer bracket "
+                + "the current price {}.", position.getId(), position.getSymbol(), takeProfit, stopTrigger, freshPrice);
+            return false;
+        }
+        if (!distributedLockService.renew("flatten:" + position.getId(), instanceId, lockGeneration, java.time.Duration.ofSeconds(60))) {
+            log.warn("Could not renew the flatten lock for position {} immediately before a re-protect attempt -- another instance "
+                + "may now own this lock. Not attempting re-protection.", position.getId());
+            return false;
+        }
+        // Same three-phase, non-fatal OMS setup every other OCO placement site in this codebase
+        // uses (placeExitOcoOrEmergencyFlatten, resize, late-fill, remainder) -- a record-keeping
+        // failure here must never block the real, exchange-facing re-protection call below.
+        String listClientOrderId = OrderService.generateClientOrderId("tv-ro",
+            position.getId() + ":REPROTECT:" + System.currentTimeMillis());
+        com.tradevision.model.Order reprotectOmsOrder;
+        try {
+            reprotectOmsOrder = orderService.create(position.getUserId(), position.getCredentialId(), position.getId(),
+                position.getSignalId(), position.getSymbol(), "SELL", "OCO", position.getQuantity(), takeProfit, listClientOrderId);
+            reprotectOmsOrder.setOrderRole("OCO_EXIT");
+            reprotectOmsOrder.setTakeProfitPrice(takeProfit);
+            reprotectOmsOrder.setStopLossTriggerPrice(stopTrigger);
+            reprotectOmsOrder.setStopLossLimitPrice(stopLimit);
+            orderService.markRiskAccepted(reprotectOmsOrder);
+            orderService.markSubmitting(reprotectOmsOrder);
+        } catch (Exception e) {
+            log.warn("OMS setup for re-protect OCO placement failed (non-fatal, additive record only): {}", e.getMessage());
+            reprotectOmsOrder = null;
+        }
+        OcoOrderResult oco;
+        try {
+            oco = adapter.placeExitOco(apiKey, apiSecret, credential.getMode(), position.getSymbol(),
+                position.getQuantity(), takeProfit, stopTrigger, stopLimit, listClientOrderId);
+        } catch (Exception e) {
+            log.error("Re-protect attempt after a failed flatten threw for position {} ({}): {}",
+                position.getId(), position.getSymbol(), e.getMessage());
+            return false;
+        }
+        if (reprotectOmsOrder != null) {
+            try {
+                orderService.recordOcoPlacementResult(reprotectOmsOrder, oco);
+            } catch (Exception e) {
+                log.warn("OMS recordOcoPlacementResult failed for re-protect OCO (non-fatal, additive record only): {}", e.getMessage());
+            }
+        }
+        if (!oco.success() || oco.ocoOrderListId() == null) {
+            log.error("Re-protect attempt after a failed flatten was rejected for position {} ({}): {}",
+                position.getId(), position.getSymbol(), oco.errorMessage());
+            return false;
+        }
+        position.setOcoOrderListId(oco.ocoOrderListId());
+        position.setStatus("OPEN");
+        mongoTemplate.updateFirst(
+            new org.springframework.data.mongodb.core.query.Query(
+                org.springframework.data.mongodb.core.query.Criteria.where("id").is(position.getId()).and("status").is("FLATTENING")),
+            new org.springframework.data.mongodb.core.query.Update().set("status", "OPEN").set("ocoOrderListId", oco.ocoOrderListId()),
+            Position.class);
+        credentialService.audit(position.getUserId(), credential.getId(), credential.getBroker(), "EMERGENCY_FLATTEN_FAILED_REPROTECTED",
+            "Emergency flatten on " + position.getSymbol() + " (position " + position.getId() + ") failed, but a protective OCO was "
+                + "successfully re-placed at the position's last known TP " + takeProfit + " / SL " + stopTrigger + " levels (new OCO "
+                + oco.ocoOrderListId() + "). The position is no longer naked -- trading remains halted pending manual review of why the "
+                + "flatten itself failed.");
+        return true;
     }
 
     private void finalizeFlatten(BrokerCredential credential, BrokerAdapter adapter, Position position,

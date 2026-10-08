@@ -619,6 +619,62 @@ class RiskProfileServiceTest {
         assertThat(result.getEnabledSymbols()).containsExactlyInAnyOrder("BTCUSDT", "ETHUSDT");
     }
 
+    // ── P1-5 follow-up ("Require a step-up OTP for risk-limit edits") ─────────────────
+
+    /**
+     * Audit fix (P1-5 follow-up -- external review, second pass: "Require a step-up OTP for
+     * risk-limit edits" -- full context in RiskProfileService.RISK_PROFILE_STEPUP_PURPOSE's own
+     * javadoc). "cred1" is a LIVE credential in this file's own shared setup(), and this test
+     * overrides the healthy default authService.verifyStepUpOtp stub to actually exercise the
+     * refusal path -- every other upsert test in this file implicitly proves the happy path
+     * already (they'd all fail here too if the gate were simply always throwing).
+     */
+    @Test
+    @DisplayName("upsert: a LIVE credential's risk profile requires a valid step-up OTP -- refuses and never saves on a bad/missing one")
+    void upsert_liveCredential_refusesOnBadStepUpOtp() {
+        var req = new com.tradevision.dto.RiskProfileRequest();
+        req.setCredentialId("cred1"); // LIVE, per this file's shared setup()
+        req.setEnabledSymbols(java.util.Set.of("BTCUSDT"));
+        req.setMaxPositionQuoteAmount(java.math.BigDecimal.TEN);
+        req.setDailyLossLimitQuote(java.math.BigDecimal.TEN);
+        req.setStepUpOtp("wrong-code");
+        doThrow(new IllegalArgumentException("OTP expired. Request a new one."))
+            .when(authService).verifyStepUpOtp("user1", RiskProfileService.RISK_PROFILE_STEPUP_PURPOSE, "wrong-code");
+
+        assertThatThrownBy(() -> service.upsert("user1", req))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("OTP");
+
+        verify(riskProfileRepo, never()).save(any());
+    }
+
+    /**
+     * The scoping half of the same fix: a TESTNET/PAPER credential's risk profile must never
+     * require this step-up at all -- there's no real money at stake to step up for, and this
+     * profile is edited far more often during ordinary strategy development on those modes.
+     */
+    @Test
+    @DisplayName("upsert: a TESTNET credential's risk profile never requires a step-up OTP, even with none supplied")
+    void upsert_testnetCredential_neverRequiresStepUpOtp() {
+        var testnetCredential = new BrokerCredential();
+        testnetCredential.setId("cred-testnet");
+        testnetCredential.setBroker(BrokerType.BINANCE);
+        testnetCredential.setMode(BrokerMode.TESTNET);
+        when(credentialService.ownedCredential("user1", "cred-testnet")).thenReturn(testnetCredential);
+
+        var req = new com.tradevision.dto.RiskProfileRequest();
+        req.setCredentialId("cred-testnet");
+        req.setEnabledSymbols(java.util.Set.of("BTCUSDT"));
+        req.setMaxPositionQuoteAmount(java.math.BigDecimal.TEN);
+        req.setDailyLossLimitQuote(java.math.BigDecimal.TEN);
+        // Deliberately no stepUpOtp set at all.
+        when(riskProfileRepo.save(any())).thenAnswer(i -> i.getArguments()[0]);
+
+        service.upsert("user1", req);
+
+        verify(authService, never()).verifyStepUpOtp(any(), any(), any());
+    }
+
     // ── P3-5 ("ExposureReservationService group/symbol field paths -- user-supplied group names
     // used as Mongo field paths ('.'/'$') -- validate names" -- full context in upsert's own new
     // validation comment) ────────────────────────────────────────────────────────

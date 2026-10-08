@@ -8,6 +8,7 @@ import com.tradevision.service.broker.dto.*;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -68,6 +69,24 @@ public class AutoTradeService {
     // slippage budget), so it only fires for genuinely illiquid conditions.
     private static final BigDecimal MAX_PRICE_IMPACT_PERCENT = new BigDecimal("0.005");
     private static final int ORDER_BOOK_DEPTH_LEVELS_FOR_IMPACT_CHECK = 50;
+    // Audit fix (P0-3 follow-up -- external review, second pass: "Make the stop-limit gap
+    // configurable or use a market stop. Add a gap-through test."). The exit OCO's stop leg is
+    // a STOP_LOSS_LIMIT order (belowPrice = stopTrigger * (1 - this gap), see
+    // placeExitOcoOrEmergencyFlatten below) rather than a market stop -- a deliberate, already-
+    // reviewed choice (SchedulingConfig.watchdogScheduler's own javadoc: switching the OCO leg
+    // type Binance is sent was explicitly weighed against adding a fast watchdog for the P0-3
+    // "stuck triggered stop" gap and rejected, because this sandbox has no live network path to
+    // verify a changed order type against a real exchange). A STOP_LOSS_LIMIT's own resting
+    // limit can still be jumped clean over by a fast enough gap-down, leaving the leg triggered
+    // but unfilled; the existing watchdog (PositionMonitorService.watchExitProtection, every 10s)
+    // already detects and emergency-flattens that case, so this fix is the other half of the
+    // reviewer's "or": the gap itself is now a configurable deployment setting
+    // (app.trading.stop-loss-limit-gap-percent) instead of a hardcoded 0.995 buried in four
+    // different call sites (this class and three in PositionMonitorService), so an operator
+    // whose traded symbols need a wider cushion against gap-through risk can widen it without a
+    // code change. Shared by every one of those call sites via STOP_LOSS_LIMIT_GAP (below).
+    @Value("${app.trading.stop-loss-limit-gap-percent:0.005}")
+    private BigDecimal stopLossLimitGapPercent;
     // P0-9 fix ("Stale signal max-age gate" -- external review, confirmed real by direct
     // inspection: the only staleness protection at evaluation time was
     // NoTradeFilterService's own price-deviation check (the signal's claimed entry price vs. the
@@ -2085,7 +2104,7 @@ public class AutoTradeService {
                                                  ServerSignalEngine.Signal serverSignal, com.tradevision.model.Order omsOrder) {
         BigDecimal takeProfit = BigDecimal.valueOf(serverSignal.target1());
         BigDecimal stopTrigger = BigDecimal.valueOf(serverSignal.stopLoss());
-        BigDecimal stopLimit = stopTrigger.multiply(new BigDecimal("0.995"));
+        BigDecimal stopLimit = stopTrigger.multiply(BigDecimal.ONE.subtract(stopLossLimitGapPercent));
 
         // Review finding ("OMS/ExecutedOrder full unification" -- P1, full context in this
         // method's own caller, the entry-order write path's updated comment): omsOrder can

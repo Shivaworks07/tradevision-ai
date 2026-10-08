@@ -326,6 +326,71 @@ class PositionSafetyServiceTest {
         verify(credentialService).audit(any(), any(), any(), eq("EMERGENCY_FLATTEN_FAILED"), contains("retry also failed"));
     }
 
+    /**
+     * Audit fix (P0-2 follow-up — external re-review: "The OCO is still cancelled before the
+     * sell, so the position can still end up unprotected" — full context in
+     * tryReprotectAfterFailedFlatten's own class javadoc). Both tests below exercise its two
+     * call sites: an outright failure exhausting its retry, and a partial fill whose own retry
+     * also comes back partial.
+     */
+    @Test
+    @DisplayName("attemptFlatten: outright failure exhausts its retry, but a prior OCO_EXIT record lets this re-place protection at the old TP/SL — halted for review, but no longer naked")
+    void orderFailsOutrightTwice_reprotectSucceeds_haltsButNoLongerNaked() {
+        Position position = openPosition(1.0, 100, 10.0);
+        when(adapter.placeOrder(any(), any(), any(), any()))
+            .thenReturn(new OrderResult(false, null, "c1", "REJECTED", null, null, "{}", "insufficient balance", List.of()));
+        com.tradevision.model.Order priorOco = new com.tradevision.model.Order();
+        priorOco.setId("oco-order-1");
+        priorOco.setTakeProfitPrice(BigDecimal.valueOf(120));
+        priorOco.setStopLossTriggerPrice(BigDecimal.valueOf(90));
+        priorOco.setStopLossLimitPrice(BigDecimal.valueOf(89.5));
+        when(orderRepository.findByPositionIdAndOrderRoleOrderByCreatedAtDesc(position.getId(), "OCO_EXIT"))
+            .thenReturn(List.of(priorOco));
+        when(adapter.getCurrentPrice(position.getSymbol(), credential.getMode())).thenReturn(BigDecimal.valueOf(100));
+        when(adapter.placeExitOco(any(), any(), any(), any(), any(), any(), any(), any(), any()))
+            .thenReturn(new OcoOrderResult(true, "new-oco-99", "{}", null));
+
+        service.emergencyFlatten(credential, adapter, "key", "secret", position, "test reason");
+
+        verify(adapter).placeExitOco(eq("key"), eq("secret"), any(), eq("BTCUSDT"),
+            eq(BigDecimal.valueOf(1.0)), eq(BigDecimal.valueOf(120)), eq(BigDecimal.valueOf(90)), eq(BigDecimal.valueOf(89.5)), any());
+        assertThat(position.getOcoOrderListId()).isEqualTo("new-oco-99");
+        assertThat(position.getStatus()).isEqualTo("OPEN"); // re-protected, not left FLATTENING/naked
+        assertThat(profile.isTradingHalted()).isTrue(); // still halts for manual review of why the flatten itself failed
+        verify(credentialService).audit(any(), any(), any(), eq("EMERGENCY_FLATTEN_FAILED_REPROTECTED"), any());
+        verify(credentialService).audit(any(), any(), any(), eq("EMERGENCY_FLATTEN_FAILED"), contains("RE-PROTECTED"));
+    }
+
+    @Test
+    @DisplayName("attemptFlatten: a partial fill whose own retry is also partial — re-protects the remaining, still-open quantity at the old TP/SL rather than leaving it naked")
+    void partialThenPartialAgain_reprotectSucceeds_haltsButRemainderNoLongerNaked() {
+        Position position = openPosition(1.0, 100, 10.0);
+        when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(
+            fullSuccess(0.4, 105, List.of()),
+            fullSuccess(0.3, 103, List.of())); // retry only fills 0.3 of the remaining 0.6 — still incomplete, 0.3 remains
+        com.tradevision.model.Order priorOco = new com.tradevision.model.Order();
+        priorOco.setId("oco-order-1");
+        priorOco.setTakeProfitPrice(BigDecimal.valueOf(120));
+        priorOco.setStopLossTriggerPrice(BigDecimal.valueOf(90));
+        priorOco.setStopLossLimitPrice(BigDecimal.valueOf(89.5));
+        when(orderRepository.findByPositionIdAndOrderRoleOrderByCreatedAtDesc(position.getId(), "OCO_EXIT"))
+            .thenReturn(List.of(priorOco));
+        when(adapter.getCurrentPrice(position.getSymbol(), credential.getMode())).thenReturn(BigDecimal.valueOf(100));
+        when(adapter.placeExitOco(any(), any(), any(), any(), any(), any(), any(), any(), any()))
+            .thenReturn(new OcoOrderResult(true, "new-oco-77", "{}", null));
+
+        service.emergencyFlatten(credential, adapter, "key", "secret", position, "test reason");
+
+        // re-protects the REMAINING 0.3 still open, not the original 1.0
+        verify(adapter).placeExitOco(eq("key"), eq("secret"), any(), eq("BTCUSDT"),
+            eq(BigDecimal.valueOf(0.3)), eq(BigDecimal.valueOf(120)), eq(BigDecimal.valueOf(90)), eq(BigDecimal.valueOf(89.5)), any());
+        assertThat(position.getOcoOrderListId()).isEqualTo("new-oco-77");
+        assertThat(position.getStatus()).isEqualTo("OPEN");
+        assertThat(profile.isTradingHalted()).isTrue();
+        verify(credentialService).audit(any(), any(), any(), eq("EMERGENCY_FLATTEN_FAILED_REPROTECTED"), any());
+        verify(credentialService).audit(any(), any(), any(), eq("EMERGENCY_FLATTEN_FAILED"), contains("RE-PROTECTED"));
+    }
+
     @Test
     @DisplayName("attemptFlatten: an outright failure on the first attempt, but the retry's own lock renewal is lost — stops before retrying rather than risking a concurrent double-submit, and does NOT fall through to the generic halt path")
     void orderFailsOutright_retryLockRenewalLost_stopsWithoutDoubleSubmitting() {

@@ -143,6 +143,22 @@ public class BrokerCredentialService {
      */
     private final com.tradevision.repository.PendingLiveConnectRepository pendingLiveConnectRepo;
 
+    // Audit fix (P1-1 follow-up -- external review, second pass: "check it when a LIVE
+    // credential is connected" -- full context in AlertChannelStartupGuard's own
+    // requireAlertChannelCoverage javadoc): the runtime half of that fix. confirmLiveConnect is
+    // the actual moment a LIVE credential is persisted, so it is the right place to refuse the
+    // connection outright for a user with no alert channel, rather than waiting for this to be
+    // caught (or not) at the next process restart.
+    private final com.tradevision.config.AlertChannelStartupGuard alertChannelStartupGuard;
+    // Audit fix (P1-5 follow-up -- external review, second pass: "Require a step-up OTP for
+    // ... credential changes" -- full context in CREDENTIAL_CHANGE_STEPUP_PURPOSE's own
+    // javadoc): reuses AuthService's existing step-up OTP infrastructure, same as
+    // RiskProfileService.authorizeLiveAutoTrade/upsert. Confirmed no circular dependency:
+    // AuthService depends only on UserRepository, OtpRepository, JwtUtil, OtpUtil,
+    // EmailService, OtpRateLimitService, MongoTemplate and WebhookAlertService -- none of which
+    // depend on BrokerCredentialService.
+    private final AuthService authService;
+
     /** Review finding (P1 #9, full context in rotateApiKey's own javadoc): the same in-memory,
      *  deliberately-not-durable pattern as pendingLiveConnects above, for a LIVE credential's
      *  own two-step key rotation. */
@@ -240,6 +256,30 @@ public class BrokerCredentialService {
     }
 
     /**
+     * Audit fix (P1-5 follow-up -- external review, second pass: "Require a step-up OTP for ...
+     * credential changes" -- confirmed real by direct inspection: requestLiveConnect/
+     * confirmLiveConnect and requestApiKeyRotation/confirmApiKeyRotation already require a
+     * short-lived token for their two-step ceremony, but that token is simply returned
+     * synchronously in the request call's own HTTP response -- it proves nothing about who's
+     * actually at the keyboard right now, only that the request and confirm calls came from
+     * someone holding a valid session. Anyone who hijacked an already-authenticated session
+     * could request then immediately confirm, exactly the P1-5 gap originally closed for
+     * authorizeLiveAutoTrade. Shared by both flows (connecting a brand-new LIVE credential, and
+     * rotating an existing one's key) -- both are equally consequential "credential changes," and
+     * kept distinct from RiskProfileService.RISK_PROFILE_STEPUP_PURPOSE/
+     * RiskProfileService.STEPUP_OTP_PURPOSE so a code for one can never be replayed for another.
+     */
+    public static final String CREDENTIAL_CHANGE_STEPUP_PURPOSE = "CREDENTIAL_CHANGE_STEPUP";
+
+    /** Request a fresh step-up verification code before calling confirmLiveConnect or confirmApiKeyRotation. */
+    public void requestCredentialChangeStepUpOtp(String userId) {
+        var resp = authService.sendStepUpOtp(userId, CREDENTIAL_CHANGE_STEPUP_PURPOSE);
+        if (!resp.isSuccess()) {
+            throw new IllegalArgumentException(String.valueOf(resp.getMessage()));
+        }
+    }
+
+    /**
      * Step 1 of connecting a LIVE credential: validates the key against Binance's actual LIVE
      * endpoint (a testnet key simply fails here — itself a real safety property, not just
      * ceremony) and issues a short-lived token. Nothing is saved yet.
@@ -284,8 +324,18 @@ public class BrokerCredentialService {
         return token;
     }
 
-    /** Step 2: the exact token from requestLiveConnect, within the confirmation window, actually persists the credential. */
-    public BrokerCredentialResponse confirmLiveConnect(String userId, String token) {
+    /**
+     * Step 2: the exact token from requestLiveConnect, within the confirmation window, actually
+     * persists the credential.
+     *
+     * Audit fix (P1-5 follow-up, full context in CREDENTIAL_CHANGE_STEPUP_PURPOSE's own
+     * javadoc): now also requires a fresh step-up OTP (requested via
+     * requestCredentialChangeStepUpOtp / POST .../connect/live/request-otp), verified before the
+     * token itself is even looked at -- same ordering reasoning as authorizeLiveAutoTrade's own
+     * step-up check, so a stale/replayed confirm call never reaches any state-changing logic.
+     */
+    public BrokerCredentialResponse confirmLiveConnect(String userId, String token, String stepUpOtpCode) {
+        authService.verifyStepUpOtp(userId, CREDENTIAL_CHANGE_STEPUP_PURPOSE, stepUpOtpCode);
         // P2-5 fix, full context in pendingLiveConnectRepo's own field javadoc: reads from the
         // durable, cross-replica store instead of an instance-local map -- this is what actually
         // closes the "breaks with >1 replica" gap (this token may have been issued by a
@@ -295,6 +345,14 @@ public class BrokerCredentialService {
             throw new IllegalArgumentException("Confirmation token is invalid or expired — request LIVE connect again.");
         }
         pendingLiveConnectRepo.deleteById(token); // one-time use, same as the old map's own remove() semantics
+
+        // Audit fix (P1-1 follow-up, full context in AlertChannelStartupGuard's own
+        // requireAlertChannelCoverage javadoc): refuse to actually create this LIVE credential
+        // if this account has no alert channel reachable for them -- same
+        // fail-before-the-row-exists posture as the withdrawal/trading-permission checks in
+        // doConnect above, applied to the "would a CRITICAL incident on this account page
+        // anybody" question instead.
+        alertChannelStartupGuard.requireAlertChannelCoverage(userId);
 
         BrokerCredential credential = new BrokerCredential();
         // Audit item P2 ("weak AAD binding"), full context in PendingLiveConnect's own updated
@@ -544,8 +602,17 @@ public class BrokerCredentialService {
         return token;
     }
 
-    /** Step 2: the exact token from requestApiKeyRotation, within the confirmation window, actually applies the rotation. */
-    public BrokerCredentialResponse confirmApiKeyRotation(String userId, String token) {
+    /**
+     * Step 2: the exact token from requestApiKeyRotation, within the confirmation window,
+     * actually applies the rotation.
+     *
+     * Audit fix (P1-5 follow-up, full context in CREDENTIAL_CHANGE_STEPUP_PURPOSE's own
+     * javadoc): now also requires a fresh step-up OTP (requested via
+     * requestCredentialChangeStepUpOtp / POST .../rotate-key/request-otp), verified before the
+     * token itself is even looked at, same ordering as confirmLiveConnect's own identical fix.
+     */
+    public BrokerCredentialResponse confirmApiKeyRotation(String userId, String token, String stepUpOtpCode) {
+        authService.verifyStepUpOtp(userId, CREDENTIAL_CHANGE_STEPUP_PURPOSE, stepUpOtpCode);
         PendingRotation pending = pendingRotations.remove(token);
         if (pending == null || !pending.userId().equals(userId) || Instant.now().isAfter(pending.expiresAt())) {
             throw new IllegalArgumentException("Confirmation token is invalid or expired — request the rotation again.");

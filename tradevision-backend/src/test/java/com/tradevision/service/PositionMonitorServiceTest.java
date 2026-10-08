@@ -234,6 +234,11 @@ class PositionMonitorServiceTest {
         // it, which never happens on a mock). Unstubbed it returns null and NPEs on exposureResult.allowed().
         when(exposureReservationService.reserve(any(), any(), any(), any(), any(), any(), any(), any(), anyBoolean()))
             .thenReturn(new com.tradevision.service.ExposureReservationService.ExposureReserveResult(true, null, "test-reservation-id"));
+        // Audit fix (P0-3 follow-up, full context in AutoTradeService's own
+        // stopLossLimitGapPercent field javadoc): @Value fields aren't populated by @InjectMocks,
+        // so this must be set explicitly or every resize/late-fill/remainder OCO-placement test
+        // NPEs on BigDecimal.ONE.subtract(null). Matches this project's own established default (0.5%).
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "stopLossLimitGapPercent", new java.math.BigDecimal("0.005"));
     }
 
     private Position openPosition(String symbol, double qty) {
@@ -912,6 +917,43 @@ class PositionMonitorServiceTest {
         verify(fillLedgerService).recordFills(eq("tp1"), any(), eq("user1"), eq("cred1"), eq("BTCUSDT"), eq("SELL"),
             eq("USDT"), eq(exitFills), argThat(q -> q.compareTo(BigDecimal.ONE) == 0), argThat(p -> p.compareTo(BigDecimal.valueOf(110)) == 0));
         assertThat(position.getStatus()).isEqualTo("CLOSED");
+    }
+
+    /**
+     * Audit fix (P0-3 follow-up -- external review, second pass: "Make the stop-limit gap
+     * configurable or use a market stop. Add a gap-through test."). This is that test: price
+     * doesn't just dip to the stop trigger, it gaps straight through both the trigger AND the
+     * resting STOP_LOSS_LIMIT price itself (current price well below stopTrigger) -- exactly the
+     * scenario a wider configurable gap can reduce the odds of, but can never fully rule out.
+     * handleStopTriggeredButUnfilled's own detection (current price <= recorded stopTrigger)
+     * doesn't care how far through the gap went, so this must fire identically to a near-miss
+     * trigger: cancel the stuck OCO and flatten at market rather than leave the position sitting
+     * on a resting limit order the market has already blown past.
+     */
+    @Test
+    @DisplayName("reconcileOcoProtectedPosition: price gaps straight through both the stop trigger AND the resting stop-limit price -- still detected and flattened, not left stuck")
+    void stopLegTriggeredByPriceGap_stillUnfilled_emergencyFlattensRegardlessOfGapSize() {
+        Position position = ocoPosition(1.0, "oco1", "entry-1");
+        position.setUserId("user1");
+
+        Order entryOrder = new Order();
+        entryOrder.setStopLossTriggerPrice(BigDecimal.valueOf(90)); // resting stop-limit would have been ~89.55 (0.5% gap)
+        when(omsOrderRepo.findByCredentialIdAndSymbolAndBrokerOrderId("cred1", "BTCUSDT", "entry-1")).thenReturn(Optional.of(entryOrder));
+
+        // Stop leg reports NEW/EXECUTING (never filled) -- a genuine gap-down blew straight past
+        // the resting limit price, not just the trigger, so Binance never had anything to fill.
+        var stopLeg = new com.tradevision.service.broker.dto.OcoStatusInfo.Leg(
+            "sl1", "SELL", "STOP_LOSS_LIMIT", "NEW", BigDecimal.valueOf(89.55), BigDecimal.valueOf(1.0), BigDecimal.ZERO);
+        when(adapter.getOcoStatus(any(), any(), any(), eq("oco1"))).thenReturn(
+            new com.tradevision.service.broker.dto.OcoStatusInfo("test-oco-id", "EXECUTING", List.of(stopLeg), "{}"));
+        // The gap-through itself: current price (70) is nowhere near the trigger (90), let alone
+        // the resting limit (89.55) -- a much larger move than a near-miss trigger would be.
+        when(adapter.getCurrentPrice("BTCUSDT", BrokerMode.TESTNET)).thenReturn(BigDecimal.valueOf(70));
+
+        service.reconcileOcoProtectedPosition(credential, adapter, "key", "secret", position, java.util.Optional.empty(), 1L);
+
+        verify(positionSafetyService).emergencyFlatten(eq(credential), eq(adapter), eq("key"), eq("secret"), eq(position), contains("triggered"));
+        verify(credentialService).audit(eq("user1"), any(), any(), eq("OCO_STOP_TRIGGERED_UNFILLED"), any());
     }
 
     // ── P1-15: unverified closes still contribute to risk accounting ──────────

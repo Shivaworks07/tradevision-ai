@@ -328,6 +328,83 @@ class BinanceBrokerAdapterTest {
             org.mockito.Mockito.any(), org.mockito.Mockito.eq(String.class));
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Audit item P2 ("secrets leaking in BinanceBrokerAdapter exception messages"): external
+    // review, confirmed real by direct inspection but narrower than the audit's wording -- the
+    // raw API key/secret never reach a log, exception, or persisted record anywhere in this
+    // class. What DOES leak on a network-level failure (RestClientException / Jackson parse
+    // failure, as opposed to an HTTP error response from Binance itself) is Spring's own
+    // ResourceAccessException#getMessage() format: "I/O error on POST request for \"<url>\":
+    // <cause>" -- and <url> is the FULL signed request URL, including the HMAC "signature"
+    // query parameter. Before the fix, executeHttpRequest's catch block put e.getMessage()
+    // (the whole URL-embedding string) straight into BinanceApiException's message, which
+    // flows into OrderResult.errorMessage() / OcoOrderResult.errorMessage() and from there into
+    // Order.failureReason and TradingIncident.message -- both persisted, and the incident is
+    // also emailed/webhooked. A signed URL alone doesn't let anyone replay the exact request
+    // (the signature is single-use and time-boxed), but it's still a credential-derived secret
+    // that has no business sitting in an audit trail. The fix: sanitizedNetworkFailureReason()
+    // builds the message from only the root cause's simple class name + message (e.g.
+    // "SocketTimeoutException: Read timed out"), never the outer exception's URL-embedding
+    // text; the full original exception is still logged server-side via log.warn for real
+    // debugging. This test simulates exactly that shape of failure (a ResourceAccessException
+    // wrapping a SocketTimeoutException, with a fake-but-distinctive signature value standing
+    // in for a real HMAC) and asserts the signature/URL never reaches errorMessage(), while the
+    // cause's own message still does, so the failure is still diagnosable.
+    // ---------------------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("P2: a network-level failure's BinanceApiException/OrderResult.errorMessage() never contains the signed request URL or HMAC signature, only the sanitized root-cause reason")
+    void placeOrder_networkFailure_doesNotLeakSignedUrlOrSignatureIntoErrorMessage() throws Exception {
+        var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
+        var adapter = new BinanceBrokerAdapter(exchangeHealth);
+        var mockHttp = org.mockito.Mockito.mock(org.springframework.web.client.RestTemplate.class);
+        injectMockRestTemplate(adapter, mockHttp);
+        org.mockito.Mockito.when(mockHttp.exchange(
+                org.mockito.Mockito.contains("/api/v3/exchangeInfo"), org.mockito.Mockito.eq(org.springframework.http.HttpMethod.GET),
+                org.mockito.Mockito.any(), org.mockito.Mockito.eq(String.class)))
+            .thenReturn(org.springframework.http.ResponseEntity.ok(
+                "{\"symbols\":[{\"baseAsset\":\"BTC\",\"quoteAsset\":\"USDT\",\"filters\":["
+                    + "{\"filterType\":\"PRICE_FILTER\",\"tickSize\":\"0.01\"},"
+                    + "{\"filterType\":\"LOT_SIZE\",\"stepSize\":\"0.0001\",\"minQty\":\"0.0001\"}]}]}"));
+        org.mockito.Mockito.when(mockHttp.exchange(
+                org.mockito.Mockito.contains("/api/v3/time"), org.mockito.Mockito.eq(org.springframework.http.HttpMethod.GET),
+                org.mockito.Mockito.any(), org.mockito.Mockito.eq(String.class)))
+            .thenReturn(org.springframework.http.ResponseEntity.ok("{\"serverTime\":1}"));
+
+        String fakeSignedUrl = "https://api.binance.com/api/v3/order?symbol=BTCUSDT&timestamp=1234567890"
+            + "&signature=SUPER_SECRET_SIGNATURE_VALUE_DO_NOT_LEAK";
+        java.net.SocketTimeoutException cause = new java.net.SocketTimeoutException("Read timed out");
+        org.springframework.web.client.ResourceAccessException networkFailure =
+            new org.springframework.web.client.ResourceAccessException(
+                "I/O error on POST request for \"" + fakeSignedUrl + "\": " + cause.getMessage(), cause);
+        org.mockito.Mockito.when(mockHttp.exchange(
+                org.mockito.Mockito.contains("/api/v3/order"), org.mockito.Mockito.eq(org.springframework.http.HttpMethod.POST),
+                org.mockito.Mockito.any(), org.mockito.Mockito.eq(String.class)))
+            .thenThrow(networkFailure);
+        // The placement POST throwing triggers this class's own clientOrderId-based recovery
+        // lookup (review item #9, see tryRecoverOrderByClientId) before it reports failure --
+        // mock that GET to positively confirm the order never existed (no orderId in the
+        // response), so the method under test falls through to returning the ORIGINAL
+        // BinanceApiException's (sanitized) message, which is what this test is actually about.
+        // Otherwise an unstubbed GET returns null to Mockito's default and fails with an
+        // unrelated NPE from deep inside the recovery attempt itself.
+        org.mockito.Mockito.when(mockHttp.exchange(
+                org.mockito.Mockito.contains("/api/v3/order"), org.mockito.Mockito.eq(org.springframework.http.HttpMethod.GET),
+                org.mockito.Mockito.any(), org.mockito.Mockito.eq(String.class)))
+            .thenReturn(org.springframework.http.ResponseEntity.ok("{}"));
+
+        var result = adapter.placeOrder("key", "secret", com.tradevision.model.BrokerMode.TESTNET,
+            new com.tradevision.service.broker.dto.OrderRequest("BTCUSDT", "BUY", "MARKET", new BigDecimal("0.001"), "tv-s-test2"));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.errorMessage()).isNotNull();
+        assertThat(result.errorMessage()).doesNotContain("SUPER_SECRET_SIGNATURE_VALUE_DO_NOT_LEAK");
+        assertThat(result.errorMessage()).doesNotContain(fakeSignedUrl);
+        assertThat(result.errorMessage()).doesNotContain("signature=");
+        // Still diagnosable -- the sanitized reason keeps the root cause's own message.
+        assertThat(result.errorMessage()).contains("Read timed out");
+    }
+
     // ── P1-8: 418/429 handling honors Retry-After and opens a shared circuit, rather than a
     // blind generic-exponential-backoff retry that extends a real IP ban ────────────────────
 
@@ -419,6 +496,98 @@ class BinanceBrokerAdapterTest {
         assertThat(thrown).isNotNull();
         assertThat(thrown.getMessage()).containsIgnoringCase("ban");
         org.mockito.Mockito.verifyNoInteractions(mockHttp);
+    }
+
+    // ── P1-3: public (unsigned) market-data calls must share the SAME circuit as signed calls ──
+
+    @Test
+    @DisplayName("P1-3: a 418 ban opened by a SIGNED call also blocks a later PUBLIC market-data call with no network request at all -- before this fix, public calls bypassed the circuit entirely")
+    void call_afterBanFromSignedCall_publicCallAlsoShortCircuits() throws Exception {
+        var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
+        var adapter = new BinanceBrokerAdapter(exchangeHealth);
+        var mockHttp = org.mockito.Mockito.mock(org.springframework.web.client.RestTemplate.class);
+        injectMockRestTemplate(adapter, mockHttp);
+        org.springframework.http.HttpHeaders banHeaders = new org.springframework.http.HttpHeaders();
+        banHeaders.add("Retry-After", "120");
+        org.mockito.Mockito.when(mockHttp.exchange(
+                org.mockito.Mockito.contains("/api/v3/account"), org.mockito.Mockito.eq(org.springframework.http.HttpMethod.GET),
+                org.mockito.Mockito.any(), org.mockito.Mockito.eq(String.class)))
+            .thenThrow(org.springframework.web.client.HttpClientErrorException.create(
+                org.springframework.http.HttpStatus.I_AM_A_TEAPOT, "418", banHeaders, new byte[0], null));
+        org.mockito.Mockito.when(mockHttp.exchange(
+                org.mockito.Mockito.contains("/api/v3/time"), org.mockito.Mockito.eq(org.springframework.http.HttpMethod.GET),
+                org.mockito.Mockito.any(), org.mockito.Mockito.eq(String.class)))
+            .thenReturn(org.springframework.http.ResponseEntity.ok("{\"serverTime\":1}"));
+        // Opens the ban via a SIGNED call (getBalance).
+        assertThatThrownByRunning(() -> adapter.getBalance("key", "secret", com.tradevision.model.BrokerMode.TESTNET));
+        org.mockito.Mockito.clearInvocations(mockHttp);
+
+        // A PUBLIC, unsigned market-data call right after -- must fail immediately, without ever
+        // touching mockHttp at all, since the exact same 120-second ban is still active. Before
+        // this fix, getCurrentPrice called http.exchange(...) directly and had no idea any
+        // circuit existed, so this would have gone straight to the network.
+        Exception thrown = null;
+        try {
+            adapter.getCurrentPrice("BTCUSDT", com.tradevision.model.BrokerMode.TESTNET);
+        } catch (Exception e) {
+            thrown = e;
+        }
+        assertThat(thrown).isNotNull();
+        org.mockito.Mockito.verifyNoInteractions(mockHttp);
+    }
+
+    @Test
+    @DisplayName("P1-3: a 418 ban opened by a PUBLIC market-data call also blocks a later SIGNED call -- the circuit is genuinely shared in both directions, not just signed-to-signed")
+    void call_afterBanFromPublicCall_signedCallAlsoShortCircuits() throws Exception {
+        var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
+        var adapter = new BinanceBrokerAdapter(exchangeHealth);
+        var mockHttp = org.mockito.Mockito.mock(org.springframework.web.client.RestTemplate.class);
+        injectMockRestTemplate(adapter, mockHttp);
+        org.springframework.http.HttpHeaders banHeaders = new org.springframework.http.HttpHeaders();
+        banHeaders.add("Retry-After", "120");
+        org.mockito.Mockito.when(mockHttp.exchange(
+                org.mockito.Mockito.contains("/api/v3/ticker/price"), org.mockito.Mockito.eq(org.springframework.http.HttpMethod.GET),
+                org.mockito.Mockito.any(), org.mockito.Mockito.eq(String.class)))
+            .thenThrow(org.springframework.web.client.HttpClientErrorException.create(
+                org.springframework.http.HttpStatus.I_AM_A_TEAPOT, "418", banHeaders, new byte[0], null));
+        // Opens the ban via a PUBLIC call (getCurrentPrice) -- IllegalStateException is the
+        // friendly wrapper getCurrentPrice's own catch throws; the ban is still recorded before
+        // that wrapping happens.
+        assertThatThrownByRunning(() -> adapter.getCurrentPrice("BTCUSDT", com.tradevision.model.BrokerMode.TESTNET));
+        org.mockito.Mockito.clearInvocations(mockHttp);
+
+        // A SIGNED call right after -- must also fail immediately with no network request,
+        // proving the circuit is one shared state, not two independent ones.
+        Exception thrown = null;
+        try {
+            adapter.getBalance("key", "secret", com.tradevision.model.BrokerMode.TESTNET);
+        } catch (Exception e) {
+            thrown = e;
+        }
+        assertThat(thrown).isNotNull();
+        org.mockito.Mockito.verifyNoInteractions(mockHttp);
+    }
+
+    @Test
+    @DisplayName("P1-3: getCurrentPrice (a GET, genuinely idempotent): a 503 IS retried up to MAX_RETRIES through the shared circuit path, same as a signed call")
+    void getCurrentPrice_transientFailure_stillRetriesThroughSharedPath() throws Exception {
+        var exchangeHealth = new ExchangeHealthService(org.mockito.Mockito.mock(org.springframework.data.mongodb.core.MongoTemplate.class));
+        var adapter = new BinanceBrokerAdapter(exchangeHealth);
+        var mockHttp = org.mockito.Mockito.mock(org.springframework.web.client.RestTemplate.class);
+        injectMockRestTemplate(adapter, mockHttp);
+        org.mockito.Mockito.when(mockHttp.exchange(
+                org.mockito.Mockito.contains("/api/v3/ticker/price"), org.mockito.Mockito.eq(org.springframework.http.HttpMethod.GET),
+                org.mockito.Mockito.any(), org.mockito.Mockito.eq(String.class)))
+            .thenThrow(org.springframework.web.client.HttpServerErrorException.create(
+                org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, "503", org.springframework.http.HttpHeaders.EMPTY, new byte[0], null));
+
+        assertThatThrownByRunning(() -> adapter.getCurrentPrice("BTCUSDT", com.tradevision.model.BrokerMode.TESTNET));
+
+        // MAX_RETRIES=3 -> 4 total attempts (the original + 3 retries) -- proving publicGet
+        // genuinely retries through withCircuitBreakerAndRetry rather than making one blind call.
+        org.mockito.Mockito.verify(mockHttp, org.mockito.Mockito.times(4)).exchange(
+            org.mockito.Mockito.contains("/api/v3/ticker/price"), org.mockito.Mockito.eq(org.springframework.http.HttpMethod.GET),
+            org.mockito.Mockito.any(), org.mockito.Mockito.eq(String.class));
     }
 
     @Test

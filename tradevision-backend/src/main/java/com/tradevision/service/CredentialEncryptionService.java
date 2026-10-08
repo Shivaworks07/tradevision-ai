@@ -58,6 +58,37 @@ import java.util.Map;
  * can call this once app.encryption.key/-key-id are rotated to migrate existing rows off the
  * retired key, one credential at a time, using BrokerCredentialService's own existing decrypt/
  * re-save machinery.
+ *
+ * Audit item P2 ("CredentialEncryptionService weak AAD binding"): external review, confirmed
+ * real by direct inspection -- the AAD context above (callers pass the literal "apiKey" or
+ * "apiSecret") only binds a ciphertext to WHICH FIELD it is, not to WHICH ROW it belongs to.
+ * Every apiKey ciphertext across every BrokerCredential, for every user, is authenticated under
+ * the exact same AAD. That closes field-confusion (an apiSecret value can't be read back as an
+ * apiKey) but does nothing to stop row-substitution: if one credential's encryptedApiKey column
+ * value were ever copied into a DIFFERENT credential's row (a restore from the wrong backup, a
+ * copy/paste bug, a direct-database-access mistake or compromise), decryption would succeed
+ * silently under the old scheme -- GCM has no way to know the ciphertext "belongs" to someone
+ * else's row when both rows authenticate under the identical generic context.
+ *
+ * Fixed by having callers (BrokerCredentialService) bind the AAD context to the owning row's own
+ * id as well as the field name -- "<credentialId>:apiKey" instead of a bare "apiKey" -- for every
+ * NEW encryption. A ciphertext copied into a different row now fails decryption outright
+ * (AEADBadTagException) instead of succeeding, because the context the decrypting row supplies
+ * no longer matches the context the ciphertext was actually authenticated under.
+ *
+ * BACKWARD COMPATIBILITY: every BrokerCredential row that existed before this fix was encrypted
+ * under the OLD, generic field-only context -- there is no format marker distinguishing "old
+ * context" from "new context" the way the v1/v2 ciphertext envelope above is distinguishable, so
+ * this cannot be told apart by inspection alone, only by attempting decryption.
+ * decryptWithLegacyFallback(...) below is the actual mechanism: try the new, row-scoped context
+ * first; if that specific attempt fails GCM authentication (and only for that reason -- any other
+ * failure, like a wrong key or corrupted ciphertext, still fails loudly with no fallback), retry
+ * once under the old, generic field-only context and log a warning identifying the row as not yet
+ * migrated. This is safe specifically because GCM authentication failure is cheap, deterministic,
+ * and side-effect-free to attempt and retry -- it is not a weakening of the new binding for new
+ * ciphertext, only a one-time bridge for ciphertext this class produced before the binding
+ * existed. reencryptWithCurrentKey remains the real migration primitive to close this gap for a
+ * given row permanently, the same as it already does for key rotation.
  */
 @Service
 public class CredentialEncryptionService {
@@ -193,6 +224,37 @@ public class CredentialEncryptionService {
      */
     public String reencryptWithCurrentKey(String encoded, String context) {
         return encrypt(decrypt(encoded, context), context);
+    }
+
+    /**
+     * Audit item P2 ("weak AAD binding"), full context in this class's own header javadoc: tries
+     * the new, row-scoped AAD context first; falls back to the old, generic field-only context
+     * ONLY when the strong attempt fails GCM authentication specifically (never for any other
+     * failure -- a bad key, a malformed envelope, or genuine tampering still fails loudly with no
+     * retry). The fallback exists purely so a row encrypted before this fix shipped keeps
+     * decrypting without a forced, synchronous bulk migration; it logs a warning each time so the
+     * gap stays visible rather than silently tolerated forever.
+     */
+    public String decryptWithLegacyFallback(String encoded, String strongContext, String legacyContext) {
+        try {
+            return decrypt(encoded, strongContext);
+        } catch (IllegalStateException e) {
+            if (isAuthenticationFailure(e)) {
+                log.warn("Ciphertext did not decrypt under its row-scoped AAD context ('{}') -- falling back to the legacy, "
+                    + "field-only context ('{}'). This row predates the 'weak AAD binding' fix and has not been migrated yet "
+                    + "-- call reencryptWithCurrentKey to close the gap for it.", strongContext, legacyContext);
+                return decrypt(encoded, legacyContext);
+            }
+            throw e;
+        }
+    }
+
+    /** True only when decrypt()'s own catch-and-wrap actually hid a GCM authentication failure
+     *  (wrong AAD, wrong key, or genuine tampering) -- decrypt() always preserves the real cause
+     *  as this IllegalStateException's own getCause(), so that's checked directly rather than
+     *  guessed at from the message text. */
+    private boolean isAuthenticationFailure(IllegalStateException e) {
+        return e.getCause() instanceof javax.crypto.AEADBadTagException;
     }
 
     private SecretKeySpec resolveKeyForDecryption(String keyId) {

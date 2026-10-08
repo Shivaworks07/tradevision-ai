@@ -15,6 +15,23 @@ import java.util.concurrent.Executor;
 @Configuration
 public class AsyncConfig {
 
+    /**
+     * Audit item P1-7 ("AsyncConfig's autoTradeExecutor has no explicit rejection policy" --
+     * external review, confirmed real by direct inspection: unlike metricsExecutor and
+     * commissionBackfillExecutor below, this bean never called setRejectedExecutionHandler, so
+     * its real behavior under saturation was whatever ThreadPoolTaskExecutor's undeclared
+     * default is -- java.util.concurrent.ThreadPoolExecutor.AbortPolicy -- without that choice
+     * ever being a deliberate, documented decision the way the other two pools' DiscardPolicy
+     * is). Deliberately kept as AbortPolicy here, now explicit rather than an accidental default:
+     * unlike metrics or a commission backfill, a trading signal is NOT disposable -- silently
+     * discarding one under load (DiscardPolicy) would be strictly worse than a loud, immediate
+     * RejectedExecutionException, because the signal would vanish with no record and no retry.
+     * AbortPolicy's exception is deliberately NOT silent here, and the two call sites that
+     * submit to this pool (TradeCallService.saveCall, AutoTradeRecoveryService.recoverStuckSignals)
+     * now both catch it explicitly and rely on the existing 2-minute recovery sweep
+     * (AutoTradeRecoveryService.recoverStuckSignals) to retry the signal once the pool has
+     * capacity again, rather than losing it.
+     */
     @Bean("autoTradeExecutor")
     public Executor autoTradeExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
@@ -22,6 +39,7 @@ public class AsyncConfig {
         executor.setMaxPoolSize(16);
         executor.setQueueCapacity(200);
         executor.setThreadNamePrefix("auto-trade-");
+        executor.setRejectedExecutionHandler(new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
         executor.setWaitForTasksToCompleteOnShutdown(true);
         executor.setAwaitTerminationSeconds(30);
         executor.initialize();

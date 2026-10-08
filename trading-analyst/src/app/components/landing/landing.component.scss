@@ -61,6 +61,9 @@ h1{font-size:clamp(48px,5.8vw,76px);font-weight:900;line-height:1.04;letter-spac
   .sc-sym{.sc-name{font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:800;color:#E8EDF5;display:block;}.sc-exch{font-size:9px;color:#4A5568;}}
   .sc-live{display:flex;align-items:center;gap:5px;font-size:10px;font-weight:700;color:#00FF88;.live-dot{width:6px;height:6px;border-radius:50%;background:#00FF88;animation:pulse 2s ease-in-out infinite;}}
 }
+/* P3 audit fix ("misleading marketing claims"): small inline label distinguishing this mockup's
+   fabricated signal/score content from the genuinely live BTC price shown in the same card. */
+.sc-sample-tag{font-size:9px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:#4A5568;margin-bottom:8px;}
 .sc-price{font-family:'JetBrains Mono',monospace;font-size:22px;font-weight:900;color:#E8EDF5;margin-bottom:12px;
   .sc-chg{font-size:13px;font-weight:700;&.up{color:#00FF88;}}
 }

@@ -85,6 +85,33 @@ class TradeCallServiceTest {
         verify(autoTradeService).evaluateSignal(eq("user1"), any());
     }
 
+    /**
+     * Audit item P1-7 ("AsyncConfig's autoTradeExecutor has no explicit rejection policy, and
+     * this call site assumed it couldn't fail" -- full context in this method's own updated
+     * comment): confirms the stated invariant ("Never let auto-trade evaluation break signal
+     * saving for the caller") is now actually enforced against a RejectedExecutionException from
+     * a saturated autoTradeExecutor -- the call still returns success, since the signal itself
+     * was already saved before the dispatch was ever attempted.
+     */
+    @Test
+    @DisplayName("saveCall(userId, req, true): autoTradeExecutor rejecting the dispatch (RejectedExecutionException) does not break the save -- the signal is already persisted and the response is still success")
+    void saveCall_autoTradeExecutorRejects_doesNotBreakSave() {
+        TradeCallRequest req = new TradeCallRequest();
+        req.setSymbol("BTC/USDT"); req.setMarket("CRYPTO");
+        req.setDirection("LONG"); req.setSignal("BUY"); req.setConfidence(75);
+        req.setEntryPrice(50000); req.setStopLoss(48000);
+        req.setTarget1(52000); req.setTarget2(54000);
+        when(callRepo.save(any())).thenAnswer(i -> i.getArguments()[0]);
+        doThrow(new java.util.concurrent.RejectedExecutionException("pool saturated"))
+            .when(autoTradeService).evaluateSignal(any(), any());
+
+        var resp = callService.saveCall("user1", req, true);
+
+        assertThat(resp.isSuccess()).isTrue();
+        verify(callRepo).save(any());
+        verify(autoTradeService).evaluateSignal(eq("user1"), any());
+    }
+
     @Test @DisplayName("updateResult: calculates pnlPct correctly for LONG")
     void updateResult_longPnl() {
         TradeCallResultRequest req = new TradeCallResultRequest();

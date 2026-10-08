@@ -150,6 +150,60 @@ class CredentialEncryptionServiceTest {
             .hasMessageNotContaining("v1");
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Audit item P2 ("CredentialEncryptionService weak AAD binding"), full context in this
+    // class's own header javadoc: the old scheme bound AAD to a field name only ("apiKey"), the
+    // same for every row -- these tests prove the new row-scoped binding actually closes the
+    // row-substitution gap, and that decryptWithLegacyFallback bridges already-persisted
+    // ciphertext (old, generic context) without weakening the new binding for anything else.
+    // ---------------------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("P2 fix (weak AAD binding): a ciphertext encrypted under one row's context cannot be read back under a DIFFERENT row's context, even for the identical field name -- the actual row-substitution protection this finding asks for")
+    void decrypt_rowScopedContext_rejectsCiphertextFromADifferentRow() {
+        String credentialAApiKey = service.encrypt("real-api-key-for-credential-A", "credA:apiKey");
+
+        // Simulates exactly the bug/attack this fix defends against: credential A's own apiKey
+        // ciphertext ending up stored on, or read back as, credential B's row.
+        assertThatThrownBy(() -> service.decrypt(credentialAApiKey, "credB:apiKey"))
+            .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    @DisplayName("decryptWithLegacyFallback: when the ciphertext was encrypted under the new, row-scoped context, the strong attempt alone succeeds -- no fallback needed or attempted")
+    void decryptWithLegacyFallback_strongContextSucceeds_neverFallsBack() {
+        String encrypted = service.encrypt("value", "credA:apiKey");
+
+        String decrypted = service.decryptWithLegacyFallback(encrypted, "credA:apiKey", "apiKey");
+
+        assertThat(decrypted).isEqualTo("value");
+    }
+
+    @Test
+    @DisplayName("decryptWithLegacyFallback: a row encrypted before this fix shipped (old, generic field-only context) still decrypts via the legacy fallback, without a forced bulk migration")
+    void decryptWithLegacyFallback_legacyCiphertext_fallsBackSuccessfully() {
+        // Simulates a real, already-persisted BrokerCredential row from before the row-scoped
+        // AAD binding existed -- encrypted under the bare field name, not a row-scoped context.
+        String legacyEncrypted = service.encrypt("value-from-before-the-fix", "apiKey");
+
+        String decrypted = service.decryptWithLegacyFallback(legacyEncrypted, "credA:apiKey", "apiKey");
+
+        assertThat(decrypted).isEqualTo("value-from-before-the-fix");
+    }
+
+    @Test
+    @DisplayName("decryptWithLegacyFallback: a genuine row-substitution (ciphertext from a DIFFERENT row, also under the legacy generic context) still fails -- the legacy fallback only bridges the old-vs-new CONTEXT SHAPE, it does not reopen the row-substitution hole for rows that are already migrated")
+    void decryptWithLegacyFallback_doesNotMaskRealCrossRowSubstitution() {
+        // credential B's own ciphertext, encrypted under the NEW, row-scoped context for ITS row.
+        String credentialBApiKey = service.encrypt("credential-B-own-value", "credB:apiKey");
+
+        // credential A attempts to decrypt it as its own apiKey -- must fail under both the
+        // strong (credA) context AND the legacy fallback (bare "apiKey"), since this ciphertext
+        // was never encrypted under either of those two contexts, only credB's own.
+        assertThatThrownBy(() -> service.decryptWithLegacyFallback(credentialBApiKey, "credA:apiKey", "apiKey"))
+            .isInstanceOf(IllegalStateException.class);
+    }
+
     /** Reproduces exactly what CredentialEncryptionService.encrypt() produced before this fix, to prove the old format is still decryptable. */
     private static String encryptUsingOldFormat(String plaintext, String base64Key) throws Exception {
         byte[] iv = new byte[12];

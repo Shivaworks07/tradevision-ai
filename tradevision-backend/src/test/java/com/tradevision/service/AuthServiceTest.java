@@ -195,6 +195,111 @@ class AuthServiceTest {
         verify(userRepo, never()).save(any());
     }
 
+    // ── Audit item P1-5: step-up OTP for mid-session, high-stakes actions ───────────
+
+    @Test @DisplayName("sendStepUpOtp: sends to the user's own on-file email, never a caller-supplied destination")
+    void sendStepUpOtp_sendsToUsersOwnEmail() {
+        User user = new User(); user.setId("u1"); user.setEmail("trader@example.com");
+        when(userRepo.findById("u1")).thenReturn(Optional.of(user));
+        when(userRepo.findByMobile(any())).thenReturn(Optional.empty());
+        when(otpRepo.deleteByMobileAndPurpose(any(), any())).thenReturn(0L);
+        when(otpRepo.save(any())).thenAnswer(i -> i.getArguments()[0]);
+        when(emailService.sendOtp(eq("trader@example.com"), any())).thenReturn(true);
+
+        var resp = authService.sendStepUpOtp("u1", "LIVE_AUTOTRADE_STEPUP");
+
+        assertThat(resp.isSuccess()).isTrue();
+        verify(otpRateLimitService).checkAndRecord("trader@example.com", "LIVE_AUTOTRADE_STEPUP");
+    }
+
+    @Test @DisplayName("sendStepUpOtp: user has no email or mobile on file — refused rather than silently sending nowhere")
+    void sendStepUpOtp_noIdentifierOnFile_refused() {
+        User user = new User(); user.setId("u1");
+        when(userRepo.findById("u1")).thenReturn(Optional.of(user));
+
+        var resp = authService.sendStepUpOtp("u1", "LIVE_AUTOTRADE_STEPUP");
+
+        assertThat(resp.isSuccess()).isFalse();
+        verify(otpRepo, never()).save(any());
+    }
+
+    @Test @DisplayName("sendStepUpOtp: unknown user — refused")
+    void sendStepUpOtp_unknownUser_refused() {
+        when(userRepo.findById("ghost")).thenReturn(Optional.empty());
+
+        var resp = authService.sendStepUpOtp("ghost", "LIVE_AUTOTRADE_STEPUP");
+
+        assertThat(resp.isSuccess()).isFalse();
+    }
+
+    @Test @DisplayName("verifyStepUpOtp: correct, freshly-issued code against the user's own identifier succeeds without throwing")
+    void verifyStepUpOtp_correctCode_succeeds() {
+        User user = new User(); user.setId("u1"); user.setEmail("trader@example.com");
+        when(userRepo.findById("u1")).thenReturn(Optional.of(user));
+        String storedHash = otpUtil.hashOtp("777888", "trader@example.com", "LIVE_AUTOTRADE_STEPUP");
+        OtpRecord otp = new OtpRecord("trader@example.com", storedHash, "LIVE_AUTOTRADE_STEPUP");
+        when(otpRepo.findByMobileAndPurposeOrderByCreatedAtDesc("trader@example.com", "LIVE_AUTOTRADE_STEPUP"))
+            .thenReturn(List.of(otp));
+
+        assertThatCode(() -> authService.verifyStepUpOtp("u1", "LIVE_AUTOTRADE_STEPUP", "777888"))
+            .doesNotThrowAnyException();
+    }
+
+    @Test @DisplayName("verifyStepUpOtp: wrong code throws, naming the problem, and never consumes the OTP record")
+    void verifyStepUpOtp_wrongCode_throws() {
+        User user = new User(); user.setId("u1"); user.setEmail("trader@example.com");
+        when(userRepo.findById("u1")).thenReturn(Optional.of(user));
+        String storedHash = otpUtil.hashOtp("777888", "trader@example.com", "LIVE_AUTOTRADE_STEPUP");
+        OtpRecord otp = new OtpRecord("trader@example.com", storedHash, "LIVE_AUTOTRADE_STEPUP");
+        when(otpRepo.findByMobileAndPurposeOrderByCreatedAtDesc("trader@example.com", "LIVE_AUTOTRADE_STEPUP"))
+            .thenReturn(List.of(otp));
+
+        assertThatThrownBy(() -> authService.verifyStepUpOtp("u1", "LIVE_AUTOTRADE_STEPUP", "000000"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("Invalid");
+        verify(mongoTemplate, never()).remove(any(), eq(OtpRecord.class));
+    }
+
+    @Test @DisplayName("verifyStepUpOtp: no code was requested at all (nothing on record for this purpose) throws a clear, distinct error")
+    void verifyStepUpOtp_noOtpRequested_throws() {
+        User user = new User(); user.setId("u1"); user.setEmail("trader@example.com");
+        when(userRepo.findById("u1")).thenReturn(Optional.of(user));
+        when(otpRepo.findByMobileAndPurposeOrderByCreatedAtDesc("trader@example.com", "LIVE_AUTOTRADE_STEPUP"))
+            .thenReturn(List.of());
+
+        assertThatThrownBy(() -> authService.verifyStepUpOtp("u1", "LIVE_AUTOTRADE_STEPUP", "123456"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("No OTP found");
+    }
+
+    @Test @DisplayName("verifyStepUpOtp: blank/missing code throws immediately, without even querying for an OTP record")
+    void verifyStepUpOtp_blankCode_throwsWithoutQuery() {
+        User user = new User(); user.setId("u1"); user.setEmail("trader@example.com");
+        when(userRepo.findById("u1")).thenReturn(Optional.of(user));
+
+        assertThatThrownBy(() -> authService.verifyStepUpOtp("u1", "LIVE_AUTOTRADE_STEPUP", null))
+            .isInstanceOf(IllegalArgumentException.class);
+        verify(otpRepo, never()).findByMobileAndPurposeOrderByCreatedAtDesc(any(), any());
+    }
+
+    @Test @DisplayName("verifyStepUpOtp: a LOGIN-purpose OTP cannot be replayed as a step-up code -- distinct purposes stay fully separate")
+    void verifyStepUpOtp_loginOtpCannotBeReplayedAsStepUp() {
+        User user = new User(); user.setId("u1"); user.setEmail("trader@example.com");
+        when(userRepo.findById("u1")).thenReturn(Optional.of(user));
+        // A real, valid LOGIN OTP exists for this identifier...
+        String loginHash = otpUtil.hashOtp("999111", "trader@example.com", "LOGIN");
+        OtpRecord loginOtp = new OtpRecord("trader@example.com", loginHash, "LOGIN");
+        when(otpRepo.findByMobileAndPurposeOrderByCreatedAtDesc("trader@example.com", "LOGIN"))
+            .thenReturn(List.of(loginOtp));
+        // ...but nothing has ever been requested under the step-up purpose.
+        when(otpRepo.findByMobileAndPurposeOrderByCreatedAtDesc("trader@example.com", "LIVE_AUTOTRADE_STEPUP"))
+            .thenReturn(List.of());
+
+        assertThatThrownBy(() -> authService.verifyStepUpOtp("u1", "LIVE_AUTOTRADE_STEPUP", "999111"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("No OTP found");
+    }
+
     @Test @DisplayName("checkMobile: returns registered status")
     void checkMobile_registered() {
         when(userRepo.existsByMobile("9000000002")).thenReturn(true);

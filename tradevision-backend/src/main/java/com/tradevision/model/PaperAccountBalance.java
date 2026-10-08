@@ -27,5 +27,16 @@ public class PaperAccountBalance {
     @Id
     private String credentialId;
     private BigDecimal balanceUsdt;
+    /**
+     * Audit finding (P1-4 -- "Improve PaperBrokerAdapter realism... per-asset balances,
+     * oversell rejection" -- full context in PaperBrokerAdapter.placeOrder's own updated
+     * comment): before this fix, this class tracked ONLY the running USDT cash balance --
+     * nothing recorded how much of any given base asset (BTC, ETH, ...) a PAPER credential
+     * actually held, so a SELL order was simulated as filling regardless of whether this
+     * credential had ever actually bought that asset at all. Keyed by base asset symbol
+     * (uppercase, e.g. "BTC"), persisted alongside the USDT balance so holdings survive a
+     * restart exactly like the cash balance already does.
+     */
+    private java.util.Map<String, BigDecimal> assetBalances = new java.util.HashMap<>();
     private LocalDateTime updatedAt = LocalDateTime.now();
 }

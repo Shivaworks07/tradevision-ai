@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.core.env.Environment;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -30,12 +31,13 @@ class DevSecretStartupGuardTest {
     private static final String REAL_SECRET = "a-genuinely-unique-production-secret-value-not-in-any-repo";
 
     @Mock BrokerCredentialRepository credentialRepo;
+    @Mock Environment environment;
 
     private DevSecretStartupGuard guard;
 
     @BeforeEach
     void setup() {
-        guard = new DevSecretStartupGuard(credentialRepo);
+        guard = new DevSecretStartupGuard(environment, credentialRepo);
         // Real, non-dev secrets by default -- every test overrides only the field(s) it cares about.
         ReflectionTestUtils.setField(guard, "jwtSecret", REAL_SECRET);
         ReflectionTestUtils.setField(guard, "encryptionKey", REAL_SECRET);
@@ -52,9 +54,10 @@ class DevSecretStartupGuardTest {
     }
 
     @Test
-    @DisplayName("a known dev secret (e.g. app.jwt.secret) is active, but zero LIVE credentials exist -- logs the risk but does NOT refuse to start")
+    @DisplayName("a known dev secret (e.g. app.jwt.secret) is active under a non-prod profile, but zero LIVE credentials exist -- logs the risk but does NOT refuse to start")
     void knownDevSecret_noLiveCredentials_doesNotThrow() {
         ReflectionTestUtils.setField(guard, "jwtSecret", KNOWN_DEV_JWT_SECRET);
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"local"});
         when(credentialRepo.countByMode(BrokerMode.LIVE)).thenReturn(0L);
 
         // Must not throw -- a fresh install/genuine local dev environment with no LIVE
@@ -65,9 +68,10 @@ class DevSecretStartupGuardTest {
     }
 
     @Test
-    @DisplayName("a known dev secret is active AND at least one LIVE credential already exists -- REFUSES TO START (throws)")
+    @DisplayName("a known dev secret is active under a non-prod profile AND at least one LIVE credential already exists -- REFUSES TO START (throws)")
     void knownDevSecret_withLiveCredentials_refusesToStart() {
         ReflectionTestUtils.setField(guard, "encryptionKey", KNOWN_DEV_ENCRYPTION_KEY);
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"local"});
         when(credentialRepo.countByMode(BrokerMode.LIVE)).thenReturn(2L);
 
         assertThatThrownBy(() -> guard.checkForDevSecretsAgainstLiveCredentials())
@@ -77,14 +81,40 @@ class DevSecretStartupGuardTest {
     }
 
     @Test
-    @DisplayName("every one of the four secret fields is independently checked -- a known dev value in ANY of them, with a LIVE credential present, refuses to start")
+    @DisplayName("every one of the four secret fields is independently checked -- a known dev value in ANY of them, with a LIVE credential present under a non-prod profile, refuses to start")
     void anyOfTheFourFields_withLiveCredentials_refusesToStart() {
         // admin-bootstrap-secret specifically, none of the others.
         ReflectionTestUtils.setField(guard, "adminBootstrapSecret", "ev0/Nk5FhRBgIx5cNEfDq1iQU+dEcZTIet58FsxJWME=");
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"local"});
         when(credentialRepo.countByMode(BrokerMode.LIVE)).thenReturn(1L);
 
         assertThatThrownBy(() -> guard.checkForDevSecretsAgainstLiveCredentials())
             .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    @DisplayName("audit fix: a known dev secret is active under the \"prod\" profile -- REFUSES TO START immediately, without ever checking for a LIVE credential")
+    void knownDevSecret_prodProfileActive_refusesToStart_regardlessOfLiveCredentials() {
+        ReflectionTestUtils.setField(guard, "jwtSecret", KNOWN_DEV_JWT_SECRET);
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"prod"});
+
+        assertThatThrownBy(() -> guard.checkForDevSecretsAgainstLiveCredentials())
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("REFUSING TO START")
+            .hasMessageContaining("prod");
+
+        // The whole point of the fix: this must not depend on (or even check) LIVE-credential
+        // state when the profile itself is "prod".
+        verify(credentialRepo, never()).countByMode(any());
+    }
+
+    @Test
+    @DisplayName("audit fix: the \"prod\" profile check never even runs when no known dev secret is active at all -- real secrets short-circuit before the profile is ever consulted")
+    void realSecrets_prodProfileActive_doesNotThrow() {
+        guard.checkForDevSecretsAgainstLiveCredentials();
+
+        verify(environment, never()).getActiveProfiles();
+        verify(credentialRepo, never()).countByMode(any());
     }
 
     @Test

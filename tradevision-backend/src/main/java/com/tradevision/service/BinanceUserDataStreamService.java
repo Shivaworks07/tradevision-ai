@@ -129,6 +129,28 @@ public class BinanceUserDataStreamService {
      * a genuinely silent Binance response is caught well within one reconcileConnections sweep.
      */
     private static final long SUBSCRIBE_TIMEOUT_MS = 10_000L;
+    /**
+     * Audit item P1-8 ("No watchdog detects a connection that hangs without ever firing
+     * onClose/onError, leaving a credential silently un-updated for an extended period" --
+     * external review, confirmed real by direct inspection: ConnectionState's own class javadoc
+     * above already explains why a message-staleness watchdog (lastEventTimeMs) was deliberately
+     * NOT built -- a quiet account with no trades legitimately has no messages, and this
+     * codebase declined to build the activity-correlation logic needed to tell "quiet" apart
+     * from "dead" without real production traffic to validate it against. That reasoning does
+     * NOT apply here: verifySubscriptionHealth's own session.status probe is an ACTIVE
+     * request/response check, not a passive message count -- Binance answers it regardless of
+     * whether the account has traded, so "this connection never responds to an explicit health
+     * probe, repeatedly" is unambiguous dead-connection evidence with no quiet-account false-
+     * positive risk, unlike a staleness timer would have). If the PREVIOUS session.status
+     * request for a connection is still unanswered (pendingSessionStatusId still set) when the
+     * NEXT scheduled check runs, that's one full 5-minute cycle of total silence to an active
+     * probe -- this many consecutive misses (2 -> ~10 minutes) is treated as a hung connection
+     * that onClose/onError will never fire for on its own, and is force-closed so the existing
+     * reconcileConnections sweep reopens it through the same backoff-governed path already used
+     * for onClose/onError/subscribe-timeout -- no new reconnection mechanism, just a new trigger
+     * into the one that already exists.
+     */
+    private static final int MAX_CONSECUTIVE_MISSED_SESSION_STATUS = 2;
 
     private final BrokerCredentialRepository credentialRepo;
     private final RiskProfileRepository riskProfileRepo;
@@ -363,6 +385,27 @@ public class BinanceUserDataStreamService {
             String credentialId = entry.getKey();
             ManagedConnection conn = entry.getValue();
             if (conn.listener().state != ConnectionState.SUBSCRIBED) continue; // nothing meaningful to verify yet
+
+            // Audit item P1-8, full context in MAX_CONSECUTIVE_MISSED_SESSION_STATUS's own
+            // javadoc: the PREVIOUS probe sent from this same method, one cycle ago, never got
+            // ANY response at all (onText's own match above would have cleared this otherwise).
+            if (conn.listener().pendingSessionStatusId != null) {
+                int missed = ++conn.listener().consecutiveMissedSessionStatus;
+                if (missed >= MAX_CONSECUTIVE_MISSED_SESSION_STATUS) {
+                    log.warn("User-data-stream for credential {} has not answered {} consecutive session.status health probes "
+                            + "({} minutes of total silence to an active probe, not merely a quiet account) -- treating this as a "
+                            + "hung connection onClose/onError will never fire for on its own. Force-closing so the next "
+                            + "reconcileConnections sweep reopens it.",
+                        credentialId, missed, (missed * 300_000L) / 60_000L);
+                    exchangeHealthService.recordWsError(credentialId,
+                        missed + " consecutive session.status health probes went unanswered -- connection force-closed as hung.");
+                    recordConnectFailure(credentialId);
+                    conn.listener().state = ConnectionState.CLOSED;
+                    closeConnection(credentialId, "hung connection -- " + missed + " consecutive session.status probes unanswered");
+                    continue; // don't send a new probe to a connection we just closed
+                }
+            }
+
             String requestId = UUID.randomUUID().toString();
             conn.listener().pendingSessionStatusId = requestId;
             String message = "{\"id\":\"" + requestId + "\",\"method\":\"session.status\"}";
@@ -643,6 +686,15 @@ public class BinanceUserDataStreamService {
          * false sense of security that suppresses a real one.
          */
         private volatile String pendingSessionStatusId;
+        /**
+         * Audit item P1-8, full context in MAX_CONSECUTIVE_MISSED_SESSION_STATUS's own javadoc:
+         * counts consecutive verifySubscriptionHealth cycles where the PREVIOUS session.status
+         * probe never got any response at all (not a mismatch -- a genuine non-response).
+         * Reset to 0 whenever a response of any kind arrives (onText's own pendingSessionStatusId
+         * match below), so only sustained silence to repeated active probes accumulates this,
+         * never a single slow round-trip.
+         */
+        private volatile int consecutiveMissedSessionStatus = 0;
 
         Listener(String credentialId) {
             this.credentialId = credentialId;
@@ -709,6 +761,10 @@ public class BinanceUserDataStreamService {
                 // acted on automatically.
                 if (responseId != null && responseId.equals(pendingSessionStatusId)) {
                     pendingSessionStatusId = null;
+                    // Audit item P1-8: a response of ANY kind (even an error response) proves
+                    // this connection is still genuinely alive and answering probes -- resets
+                    // the hung-connection counter, which only accumulates on total non-response.
+                    consecutiveMissedSessionStatus = 0;
                     if (root.has("error")) {
                         log.warn("session.status request failed for credential {}: {}", credentialId, root.path("error").toString());
                     } else {

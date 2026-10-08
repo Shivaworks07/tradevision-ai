@@ -276,6 +276,76 @@ class PositionSafetyServiceTest {
         assertThat(profile.isTradingHalted()).isTrue();
     }
 
+    /**
+     * Audit fix (P0-2, "Failed emergency flatten leaves a naked position with no automatic
+     * retry" -- full context in attemptFlatten's own updated comment just above its new retry
+     * branch). The outright failure above (orderFailsOutright_persistsRealQuantityAtomically)
+     * already exercises this retry implicitly (placeOrder is stubbed to fail every time, so the
+     * retry fires and also fails) -- these two tests isolate the NEW behavior specifically:
+     * attempt 0 failing outright now retries once, and a retry that SUCCEEDS actually saves the
+     * naked position rather than halting it.
+     */
+    @Test
+    @DisplayName("attemptFlatten: an outright failure on the first attempt is retried once with a fresh clientOrderId — and a retry that succeeds closes the position instead of halting it")
+    void orderFailsOutrightThenRetrySucceeds_closesPositionWithoutHalting() {
+        Position position = openPosition(1.0, 100, 10.0);
+        when(adapter.placeOrder(any(), any(), any(), any())).thenReturn(
+            new OrderResult(false, null, "c1", "REJECTED", null, null, "{}", "insufficient balance", List.of()),
+            fullSuccess(1.0, 105, List.of()));
+
+        service.emergencyFlatten(credential, adapter, "key", "secret", position, "test reason");
+
+        verify(adapter, times(2)).placeOrder(any(), any(), any(), any());
+        ArgumentCaptor<OrderRequest> orderCaptor = ArgumentCaptor.forClass(OrderRequest.class);
+        verify(adapter, times(2)).placeOrder(any(), any(), any(), orderCaptor.capture());
+        assertThat(orderCaptor.getAllValues().get(0).clientOrderId())
+            .isNotEqualTo(orderCaptor.getAllValues().get(1).clientOrderId()); // attempt 0 vs attempt 1 — genuinely different ids, not a resubmitted duplicate
+        verify(credentialService).audit(any(), any(), any(), eq("EMERGENCY_FLATTEN_RETRYING"), any());
+        // emergencyFlatten()'s own 6-arg overload always passes haltOnSuccess=true (an emergency
+        // flatten is only ever triggered after a genuine protection failure, regardless of
+        // whether this specific attempt — or its retry — ultimately succeeds; see this class's
+        // own P1-2 javadoc on the haltOnSuccess parameter), so the position closing via the
+        // retry does not itself mean the profile stays untouched.
+        assertThat(position.getStatus()).isEqualTo("NAKED_FLATTENED"); // the retry's own success closed it, not an open/unprotected halt
+        assertThat(profile.isTradingHalted()).isTrue();
+    }
+
+    @Test
+    @DisplayName("attemptFlatten: the retry itself also fails outright — now escalates (halted, critical audit), with the retry reflected in the audit message")
+    void orderFailsOutrightTwice_retriesOnceThenHalts() {
+        Position position = openPosition(1.0, 100, 10.0);
+        when(adapter.placeOrder(any(), any(), any(), any()))
+            .thenReturn(new OrderResult(false, null, "c1", "REJECTED", null, null, "{}", "insufficient balance", List.of()));
+
+        service.emergencyFlatten(credential, adapter, "key", "secret", position, "test reason");
+
+        verify(adapter, times(2)).placeOrder(any(), any(), any(), any()); // exactly one retry, not an unbounded loop
+        assertThat(position.getStatus()).isEqualTo("FLATTENING");
+        assertThat(profile.isTradingHalted()).isTrue();
+        verify(credentialService).audit(any(), any(), any(), eq("EMERGENCY_FLATTEN_RETRYING"), any());
+        verify(credentialService).audit(any(), any(), any(), eq("EMERGENCY_FLATTEN_FAILED"), contains("retry also failed"));
+    }
+
+    @Test
+    @DisplayName("attemptFlatten: an outright failure on the first attempt, but the retry's own lock renewal is lost — stops before retrying rather than risking a concurrent double-submit, and does NOT fall through to the generic halt path")
+    void orderFailsOutright_retryLockRenewalLost_stopsWithoutDoubleSubmitting() {
+        Position position = openPosition(1.0, 100, 10.0);
+        when(adapter.placeOrder(any(), any(), any(), any()))
+            .thenReturn(new OrderResult(false, null, "c1", "REJECTED", null, null, "{}", "insufficient balance", List.of()));
+        // Renew is called twice before the first placeOrder ever fires (once in
+        // emergencyFlattenLocked before calling attemptFlatten, once more in attemptFlatten
+        // immediately before the real market sell — see emergencyFlatten_renewsLockBeforeExchangeFacingSell
+        // above, which proves that exact count for one attempt). The THIRD call is this fix's
+        // own, right before the retry — that is the one that fails here.
+        when(distributedLockService.renew(any(), any(), anyLong(), any())).thenReturn(true, true, false);
+
+        service.emergencyFlatten(credential, adapter, "key", "secret", position, "test reason");
+
+        verify(adapter, times(1)).placeOrder(any(), any(), any(), any()); // retry never actually fired
+        verify(credentialService).audit(any(), any(), any(), eq("FLATTEN_LOCK_LOST"), any());
+        verify(credentialService, never()).audit(any(), any(), any(), eq("EMERGENCY_FLATTEN_FAILED"), any());
+    }
+
     @Test
     @DisplayName("Test 1: full flatten in one shot — position closed, slot released, P&L includes both fees")
     void fullFlatten_closesAndReleasesSlot() {

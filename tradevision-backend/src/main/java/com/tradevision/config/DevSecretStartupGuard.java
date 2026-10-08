@@ -6,9 +6,11 @@ import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
 import jakarta.annotation.PostConstruct;
+import java.util.Arrays;
 import java.util.Set;
 
 /**
@@ -25,15 +27,34 @@ import java.util.Set;
  *
  * The check itself is narrow and specific on purpose: it does NOT refuse to start merely because
  * a known dev secret is active (that would make ordinary local development, which legitimately
- * uses these exact values every single day, impossible) -- it refuses to start ONLY when a known
- * dev secret is active AND at least one LIVE-mode broker credential already exists in this
- * deployment's own database. That combination is never legitimate: a LIVE credential represents
- * real money at a real broker, and running with a publicly-known encryption key/JWT secret/admin
- * bootstrap secret/OTP HMAC key while real credentials exist means anyone who has ever seen this
- * repository can decrypt those credentials, forge admin JWTs, or bypass the admin bootstrap
- * ceremony entirely. TESTNET/PAPER-only deployments are left alone (loud logging only, not a
- * hard failure) -- there is no real money at stake for those yet, and this deliberately doesn't
- * block a fresh install that hasn't connected a real broker credential yet.
+ * uses these exact values every single day, impossible) -- it refuses to start when EITHER of
+ * two conditions holds:
+ * <ul>
+ *   <li>the active Spring profile is "prod" -- a production deployment running with a
+ *       publicly-committed dev secret is never legitimate, full stop, independent of whether a
+ *       LIVE broker credential happens to exist in the database yet. This closes the gap the
+ *       audit identified in the original version of this guard: application-prod.properties'
+ *       own placeholders (e.g. {@code app.jwt.secret=${JWT_SECRET}}, no default) already make it
+ *       hard to reach this class with a known dev secret under "prod" by *omission* (Spring
+ *       itself throws on the unresolved placeholder first) -- but nothing previously stopped
+ *       someone from reaching it by *commission*: explicitly setting JWT_SECRET/APP_ENCRYPTION_
+ *       KEY/ADMIN_BOOTSTRAP_SECRET/OTP_HMAC_SECRET to one of these exact, publicly-known values
+ *       (they sit in this repo's own git history in plain text), which satisfied the placeholder
+ *       and let a "prod"-profile deployment start normally as long as no LIVE credential had
+ *       been connected yet. That window is now closed: "prod" + a known dev secret refuses to
+ *       start regardless of LIVE-credential state.</li>
+ *   <li>(local/other non-"prod" profiles only) a known dev secret is active AND at least one
+ *       LIVE-mode broker credential already exists in this deployment's own database. That
+ *       combination is never legitimate: a LIVE credential represents real money at a real
+ *       broker, and running with a publicly-known encryption key/JWT secret/admin bootstrap
+ *       secret/OTP HMAC key while real credentials exist means anyone who has ever seen this
+ *       repository can decrypt those credentials, forge admin JWTs, or bypass the admin
+ *       bootstrap ceremony entirely.</li>
+ * </ul>
+ * Outside both of those, TESTNET/PAPER-only deployments on a known dev secret under a non-"prod"
+ * profile are left alone (loud logging only, not a hard failure) -- there is no real money at
+ * stake for those yet, and this deliberately doesn't block a fresh local install that hasn't
+ * connected a real broker credential yet.
  *
  * @PostConstruct (not an ApplicationReadyEvent listener, unlike IndexInitializer/
  * PositionMonitorService's own startup hooks) is deliberate: this runs during bean
@@ -68,6 +89,7 @@ public class DevSecretStartupGuard {
     @Value("${app.otp.hmac-secret:}")
     private String otpHmacSecret;
 
+    private final Environment environment;
     private final BrokerCredentialRepository credentialRepo;
 
     @PostConstruct
@@ -75,6 +97,21 @@ public class DevSecretStartupGuard {
         boolean usingKnownDevSecret = KNOWN_DEV_SECRETS.contains(jwtSecret) || KNOWN_DEV_SECRETS.contains(encryptionKey)
             || KNOWN_DEV_SECRETS.contains(adminBootstrapSecret) || KNOWN_DEV_SECRETS.contains(otpHmacSecret);
         if (!usingKnownDevSecret) return;
+
+        // Audit fix ("DevSecretStartupGuard only refuses them when LIVE credentials exist; make
+        // it refuse in the prod profile" -- confirmed real, see this class's own updated javadoc
+        // for the full "by omission vs by commission" reasoning): a "prod" deployment refuses to
+        // start the moment a known dev secret is detected, independent of whether a LIVE broker
+        // credential already exists.
+        if (Arrays.asList(environment.getActiveProfiles()).contains("prod")) {
+            throw new IllegalStateException("REFUSING TO START: this deployment is running with the \"prod\" Spring profile active "
+                + "AND at least one publicly-committed, known development secret (see application-local.properties) for "
+                + "app.jwt.secret, app.encryption.key, app.admin.bootstrap-secret, and/or app.otp.hmac-secret. A production "
+                + "deployment must never run with a secret value that is sitting in this repository's own public git history in "
+                + "plain text, regardless of whether a LIVE broker credential has been connected yet. Set real, unique values via "
+                + "the JWT_SECRET, APP_ENCRYPTION_KEY, ADMIN_BOOTSTRAP_SECRET, and OTP_HMAC_SECRET environment variables (see "
+                + "application-prod.properties and SETUP.md) before starting this application again.");
+        }
 
         long liveCredentialCount = credentialRepo.countByMode(BrokerMode.LIVE);
         if (liveCredentialCount > 0) {

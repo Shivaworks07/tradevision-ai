@@ -109,8 +109,16 @@ public class OrderService {
         Map.entry(OrderStatus.SUBMITTING, EnumSet.of(OrderStatus.ACKNOWLEDGED, OrderStatus.PARTIALLY_FILLED,
             OrderStatus.FILLED, OrderStatus.REJECTED, OrderStatus.SUBMISSION_FAILED, OrderStatus.UNKNOWN,
             OrderStatus.EXPIRED)),
+        // Audit finding (P1-2 -- "partial fills on CANCELED/EXPIRED being dropped as REJECTED" --
+        // full context in attemptBrokerVerification's own updated comment): OrderStatus.EXPIRED
+        // added here as a direct legal target from UNKNOWN, for exactly the same reason P1-14
+        // already added it from SUBMITTING above -- a stuck order recovered via broker
+        // verification can genuinely turn out to be EXPIRED/EXPIRED_IN_MATCH (with or without a
+        // partial fill beforehand), and before this fix recordBrokerResult's own dedicated,
+        // fill-preserving EXPIRED branch was legally unreachable from UNKNOWN, so attempting it
+        // threw and silently left the order (and any real fill on it) stuck at UNKNOWN forever.
         Map.entry(OrderStatus.UNKNOWN, EnumSet.of(OrderStatus.ACKNOWLEDGED, OrderStatus.PARTIALLY_FILLED,
-            OrderStatus.FILLED, OrderStatus.REJECTED, OrderStatus.RECONCILIATION_REQUIRED)),
+            OrderStatus.FILLED, OrderStatus.REJECTED, OrderStatus.RECONCILIATION_REQUIRED, OrderStatus.EXPIRED)),
         Map.entry(OrderStatus.ACKNOWLEDGED, EnumSet.of(OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED,
             OrderStatus.CANCEL_PENDING, OrderStatus.UNKNOWN, OrderStatus.EXPIRED)),
         Map.entry(OrderStatus.PARTIALLY_FILLED, EnumSet.of(OrderStatus.FILLED, OrderStatus.CANCEL_PENDING,
@@ -978,8 +986,35 @@ public class OrderService {
                     order.getSymbol(), order.getClientOrderId());
                 verificationSucceeded = true;
                 BigDecimal executedQty = status.executedQty() != null ? status.executedQty() : BigDecimal.ZERO;
-                boolean success = !"REJECTED".equalsIgnoreCase(status.status()) && !"EXPIRED".equalsIgnoreCase(status.status())
-                    && !"CANCELED".equalsIgnoreCase(status.status()) && !"EXPIRED_IN_MATCH".equalsIgnoreCase(status.status());
+                // Audit finding (P1-2 -- "partial fills on CANCELED/EXPIRED being dropped as
+                // REJECTED"): confirmed real by direct inspection -- this used to compute
+                // `success` from the raw terminal-status string alone, false for ANY of
+                // REJECTED/EXPIRED/CANCELED/EXPIRED_IN_MATCH regardless of executedQty. That
+                // sent every one of those results straight into recordBrokerResult's own
+                // `!result.success()` branch -- which sets OrderStatus.REJECTED and never reads
+                // or records executedQty at all -- even when the broker's own response showed a
+                // real, non-zero fill. A limit order that partially filled before being canceled
+                // (or a MARKET order Binance reports EXPIRED/EXPIRED_IN_MATCH after a partial
+                // fill, see recordBrokerResult's own "P1-14" fix) would end up permanently marked
+                // REJECTED here, with the fill silently discarded: real coins already bought on
+                // the exchange, with no Order record pointing at them and no Position ever
+                // created, since reconcileEntryOrders' own late-fill-discovery queries never look
+                // at REJECTED orders.
+                //
+                // REJECTED alone still always means success=false -- a genuinely broker-rejected
+                // order has never filled anything, by definition, so that case is unchanged.
+                // EXPIRED/CANCELED/EXPIRED_IN_MATCH are only treated as a failure when executedQty
+                // is genuinely zero (the common, safe case: nothing ever filled, nothing to lose
+                // by classifying it the same way as before this fix). The moment any of those
+                // three terminal statuses comes back with a confirmed executedQty > 0, this is
+                // now treated as a successful result instead, so recordBrokerResult can classify
+                // it by the real quantity (PARTIALLY_FILLED/FILLED, or its own dedicated
+                // fill-preserving EXPIRED branch -- now legal from UNKNOWN, see this class's own
+                // updated LEGAL_TRANSITIONS comment) rather than discarding it.
+                boolean genuinelyRejected = "REJECTED".equalsIgnoreCase(status.status());
+                boolean terminalNoFillStatus = "EXPIRED".equalsIgnoreCase(status.status())
+                    || "CANCELED".equalsIgnoreCase(status.status()) || "EXPIRED_IN_MATCH".equalsIgnoreCase(status.status());
+                boolean success = executedQty.signum() > 0 ? true : !(genuinelyRejected || terminalNoFillStatus);
                 // brokerOrderId itself isn't a separate field on OrderStatusInfo -- extracted
                 // from its own rawResponse, the same raw JSON this adapter call already parsed
                 // its other fields from.

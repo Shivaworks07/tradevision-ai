@@ -207,6 +207,27 @@ class AuthControllerTest {
     }
 
     /**
+     * Audit item P1-6 ("Shared-IP users can be locked out of login/OTP by other users' activity
+     * on the same IP" -- full context in AuthController.maxOtpRequestsPerIpPerWindow's own
+     * updated field javadoc): confirms the per-IP thresholds are now real @Value-injected,
+     * per-deployment-configurable fields (not hardcoded constants) with substantially raised
+     * defaults, so an operator behind a known large shared-IP population can tune them without a
+     * code change, and normal shared-IP traffic volumes don't collaterally trip the old 20/hour
+     * and 30/hour hardcoded limits.
+     */
+    @Test
+    @DisplayName("P1-6: per-IP OTP and account-check thresholds are @Value-injected fields (configurable per deployment), with raised defaults -- not the old hardcoded 20/hour and 30/hour constants")
+    void perIpThresholds_areConfigurableFieldsWithRaisedDefaults() throws Exception {
+        Field otpField = AuthController.class.getDeclaredField("maxOtpRequestsPerIpPerWindow");
+        assertThat(otpField.getAnnotation(org.springframework.beans.factory.annotation.Value.class).value())
+            .isEqualTo("${app.auth.otp-requests-per-ip-per-hour:150}");
+
+        Field accountCheckField = AuthController.class.getDeclaredField("maxAccountCheckRequestsPerIpPerWindow");
+        assertThat(accountCheckField.getAnnotation(org.springframework.beans.factory.annotation.Value.class).value())
+            .isEqualTo("${app.auth.account-checks-per-ip-per-hour:200}");
+    }
+
+    /**
      * Review finding ("Authentication endpoints need stronger abuse controls -- IP-level rate
      * limiting" -- external review, twenty-third pass, P2, full context in
      * distributedRateLimitService's own updated field javadoc): the actual tests for the new

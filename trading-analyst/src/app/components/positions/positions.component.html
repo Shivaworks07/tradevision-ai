@@ -1,5 +1,11 @@
 <div class="bs-wrap">
   <div class="bs-header">
+    <button class="bs-back" (click)="goBack()" title="Back">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+        <path d="M15 18l-6-6 6-6"/>
+      </svg>
+      Back
+    </button>
     <h2>Positions</h2>
     <p>Every position this bot currently holds or has held for the selected credential — you should never have to check Binance directly to answer "does my bot own something right now?"</p>
     @if (criticalIncidentCount > 0) {

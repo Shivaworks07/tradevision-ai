@@ -55,6 +55,15 @@ public class PositionMonitorService {
      * javadoc): the per-cycle cap for recoverStuckProtectionAttempts and recoverOrphanedOcos.
      */
     private static final int RECOVERY_BATCH_SIZE = 200;
+    // Audit fix (P0-3 follow-up, full context in AutoTradeService.stopLossLimitGapPercent's own
+    // field javadoc): the same configurable stop-limit gap used when AutoTradeService first
+    // places an exit OCO, reused here (resize, late-fill-discovery, and entry-order-remainder
+    // OCO placement all independently recompute this same stopLimit price from the order's own
+    // stopLossTriggerPrice) so widening the gap via application.properties takes effect
+    // consistently everywhere this codebase ever derives a stop-limit price, not just at initial
+    // placement.
+    @org.springframework.beans.factory.annotation.Value("${app.trading.stop-loss-limit-gap-percent:0.005}")
+    private BigDecimal stopLossLimitGapPercent;
 
     private final BrokerCredentialRepository credentialRepo;
     // Review finding ("OMS/ExecutedOrder full unification" -- P1, full context in
@@ -2306,7 +2315,7 @@ public class PositionMonitorService {
             return;
         }
 
-        BigDecimal stopLimit = order.getStopLossTriggerPrice().multiply(new BigDecimal("0.995"));
+        BigDecimal stopLimit = order.getStopLossTriggerPrice().multiply(BigDecimal.ONE.subtract(stopLossLimitGapPercent));
         // Review finding ("OCO client IDs are STILL TOO LONG" -- P0, full context in
         // AutoTradeService's own identical fix): confirmed real and fixed. Kept the timestamp
         // in the basis string (unlike the entry OCO's own deterministic fix) -- a resize can
@@ -2794,7 +2803,7 @@ public class PositionMonitorService {
             return;
         }
 
-        BigDecimal stopLimit = order.getStopLossTriggerPrice().multiply(new BigDecimal("0.995"));
+        BigDecimal stopLimit = order.getStopLossTriggerPrice().multiply(BigDecimal.ONE.subtract(stopLossLimitGapPercent));
         // Review finding ("OCO client IDs are STILL TOO LONG" -- P0, full context in
         // AutoTradeService's own identical fix): confirmed real and fixed. Timestamp kept in
         // the basis for the same reason as the resize site's own fix -- a retry of this method
@@ -2988,7 +2997,8 @@ public class PositionMonitorService {
      * nothing to do. This only takes action for the one specific abnormal case: the STOP_LOSS_LIMIT
      * leg has genuinely triggered (current market price is at or below the recorded stop trigger)
      * but the leg itself is still sitting NEW/PARTIALLY_FILLED, never FILLED -- meaning the resting
-     * SELL LIMIT (placed at stopTrigger x 0.995, see AutoTradeService.placeExitOcoOrEmergencyFlatten)
+     * SELL LIMIT (placed at stopTrigger x (1 - the configurable stopLossLimitGapPercent gap, 0.5%
+     * by default -- see AutoTradeService.placeExitOcoOrEmergencyFlatten)
      * is above a market that kept moving down through it and simply isn't filling. Binance's OCO
      * leg status has no separate "triggered" state to read directly (a triggered stop-limit still
      * reports NEW, same as before it triggered) -- comparing live price against the recorded
@@ -3576,7 +3586,7 @@ public class PositionMonitorService {
             return;
         }
         Order entryOrder = entryOrderOpt.get();
-        BigDecimal stopLimit = entryOrder.getStopLossTriggerPrice().multiply(new BigDecimal("0.995"));
+        BigDecimal stopLimit = entryOrder.getStopLossTriggerPrice().multiply(BigDecimal.ONE.subtract(stopLossLimitGapPercent));
         // Review finding ("OCO client IDs are STILL TOO LONG" -- P0, full context in
         // AutoTradeService's own identical fix): confirmed real and fixed. Timestamp kept for
         // the same reason as the resize site's own fix -- re-protecting the remainder can

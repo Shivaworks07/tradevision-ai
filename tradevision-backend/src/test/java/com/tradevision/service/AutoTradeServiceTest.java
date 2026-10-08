@@ -334,6 +334,11 @@ class AutoTradeServiceTest {
         // unstubbed method returning an object type would NPE on .success().
         when(adapter.placeExitOco(any(), any(), any(), any(), any(), any(), any(), any(), any()))
             .thenReturn(new OcoOrderResult(true, "oco-1", "{}", null));
+        // Audit fix (P0-3 follow-up, full context in AutoTradeService's own
+        // stopLossLimitGapPercent field javadoc): @Value fields aren't populated by @InjectMocks,
+        // so this must be set explicitly or every OCO-placement test NPEs on
+        // BigDecimal.ONE.subtract(null). Matches this project's own established default (0.5%).
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "stopLossLimitGapPercent", new java.math.BigDecimal("0.005"));
     }
 
     /**

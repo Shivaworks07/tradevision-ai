@@ -414,8 +414,8 @@
            and tooltip make explicit what this panel always actually was -- a manual what-if
            sizing calculator, never the account's real, server-enforced auto-trade risk limits
            (those live entirely server-side in RiskProfile/RiskEngineService.java and are
-           configured under Settings → Broker & Auto-Trade). -->
-      <span class="rp-title" title="Manual position-sizing estimate only — does not reflect or affect your real auto-trade risk limits, which are configured separately under Settings → Broker & Auto-Trade.">💰 Risk Calculator (estimate)</span>
+           configured under Bot Connection). -->
+      <span class="rp-title" title="Manual position-sizing estimate only — does not reflect or affect your real auto-trade risk limits, which are configured separately under Bot Connection.">💰 Risk Calculator (estimate)</span>
       <span class="rp-rating" [style.color]="tradeRisk.riskColor">{{tradeRisk.riskRating}}</span>
       <span class="rp-account">
         Account: $<input type="number" class="rp-account-input" min="1" step="100"
@@ -465,11 +465,11 @@
 
   <!-- Execution: the old client-side Binance signing panel (app-execution) was removed —
        it held API secrets in the browser and signed orders client-side, which is exactly what
-       the backend BrokerAdapter/AutoTradeService architecture (Settings → Broker & Auto-Trade)
+       the backend BrokerAdapter/AutoTradeService architecture (Bot Connection)
        exists to avoid. Real order execution now only happens server-side. -->
   <div class="exec-section" *ngIf="!loading">
     <div class="exec-redirect-note">
-      Live order execution has moved to <a routerLink="/app/broker">Broker &amp; Auto-Trade settings</a> —
+      Live order execution has moved to <a routerLink="/app/broker">Bot Connection</a> —
       connect a broker there and place trades through the backend, not the browser.
     </div>
   </div>

@@ -52,14 +52,29 @@
 
 .tb-nav {
   display:flex; align-items:center; gap:2px; flex:1; justify-content:center;
+  min-width:0; overflow-x:auto; scrollbar-width:none;
+  &::-webkit-scrollbar { display:none; }
   @media(max-width:900px) { display:none; }
   .tb-link {
     display:flex; align-items:center; gap:6px; padding:6px 12px; border-radius:8px;
     border:none; background:transparent; color:#8895B3;
     font-family:'Space Grotesk',sans-serif; font-size:12px; font-weight:600;
-    cursor:pointer; transition:all 0.15s; white-space:nowrap;
+    cursor:pointer; transition:all 0.15s; white-space:nowrap; flex-shrink:0;
     &:hover { background:rgba(255,255,255,0.05); color:#E8EDF5; }
     &.active { background:rgba(0,212,255,0.1); color:#00D4FF; }
+  }
+
+  /* Intermediate breakpoint: between the 900px hamburger cutover and the
+     width 12 full-label nav items actually need (~1600-1800px). Most
+     laptop screens at 100% zoom land in this gap — without it, items got
+     visually clipped because body{overflow-x:hidden} hid any overflow. */
+  @media(max-width:1700px) {
+    gap:0;
+    .tb-link { padding:6px 9px; gap:4px; font-size:11px; }
+  }
+  @media(max-width:1500px) {
+    .tb-link span { display:none; }
+    .tb-link { padding:8px; }
   }
 }
 

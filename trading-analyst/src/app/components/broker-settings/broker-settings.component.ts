@@ -1,7 +1,7 @@
-import { Component, inject, OnInit, signal } from '@angular/core';
+import { Component, computed, inject, OnInit, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { RouterLink } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { BrokerService, BrokerCredentialResponse, AssetBalance, RiskProfile, ExecutedOrder } from '../../services/broker.service';
 
 /**
@@ -18,6 +18,11 @@ import { BrokerService, BrokerCredentialResponse, AssetBalance, RiskProfile, Exe
 })
 export class BrokerSettingsComponent implements OnInit {
   broker = inject(BrokerService);
+  private router = inject(Router);
+
+  goBack(): void {
+    this.router.navigate(['/app/crypto']);
+  }
 
   credentials = signal<BrokerCredentialResponse[]>([]);
   selected = signal<BrokerCredentialResponse | null>(null);
@@ -27,6 +32,32 @@ export class BrokerSettingsComponent implements OnInit {
 
   loading = signal(false);
   message = signal<{ type: 'ok' | 'error'; text: string } | null>(null);
+
+  // Pagination: the credential list and order history used to render fully expanded, pushing
+  // the manual-order/auto-trade sections below a long scroll once more than a couple of
+  // credentials or orders existed. Paged client-side (both endpoints return the full list in
+  // one call today) so the page stays a fixed, short height no matter how many accumulate.
+  readonly credPageSize = 5;
+  readonly ordPageSize = 8;
+  credPage = signal(0);
+  ordPage = signal(0);
+
+  credTotalPages = computed(() => Math.max(1, Math.ceil(this.credentials().length / this.credPageSize)));
+  pagedCredentials = computed(() => {
+    const start = this.credPage() * this.credPageSize;
+    return this.credentials().slice(start, start + this.credPageSize);
+  });
+
+  ordTotalPages = computed(() => Math.max(1, Math.ceil(this.orders().length / this.ordPageSize)));
+  pagedOrders = computed(() => {
+    const start = this.ordPage() * this.ordPageSize;
+    return this.orders().slice(start, start + this.ordPageSize);
+  });
+
+  credPrevPage() { this.credPage.set(Math.max(0, this.credPage() - 1)); }
+  credNextPage() { this.credPage.set(Math.min(this.credTotalPages() - 1, this.credPage() + 1)); }
+  ordPrevPage() { this.ordPage.set(Math.max(0, this.ordPage() - 1)); }
+  ordNextPage() { this.ordPage.set(Math.min(this.ordTotalPages() - 1, this.ordPage() + 1)); }
 
   // Connect form
   connectApiKey = '';
@@ -106,6 +137,7 @@ export class BrokerSettingsComponent implements OnInit {
     this.broker.list().subscribe({
       next: (r: any) => {
         this.credentials.set(r.data || []);
+        this.credPage.set(0);
         if (!this.selected() && r.data?.length) this.select(r.data[0]);
       },
       error: () => this.show('error', 'Could not load broker credentials.')
@@ -185,7 +217,7 @@ export class BrokerSettingsComponent implements OnInit {
   }
 
   loadHistory() {
-    this.broker.history().subscribe({ next: (r: any) => this.orders.set(r.data || []) });
+    this.broker.history().subscribe({ next: (r: any) => { this.orders.set(r.data || []); this.ordPage.set(0); } });
   }
 
   placeTestOrder() {

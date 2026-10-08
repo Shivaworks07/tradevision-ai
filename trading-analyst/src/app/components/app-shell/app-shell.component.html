@@ -16,6 +16,7 @@
       @for (item of navItems; track item) {
         <button
           class="tb-link" [class.active]="isActive(item.route)"
+          [title]="item.label"
           (click)="navigate(item.route)">
           <tv-icon [name]="item.icon" [size]="15"></tv-icon>
           <span>{{item.label}}</span>

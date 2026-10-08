@@ -823,13 +823,53 @@ public class PositionSafetyService {
             return;
         }
 
-        // Either the order failed outright, or "succeeded" with no confirmed fill quantity —
+        // Audit fix (P0-2, "Failed emergency flatten leaves a naked position with no automatic
+        // retry" -- confirmed real by direct inspection: an OUTRIGHT failure here previously
+        // went straight to the halt+incident path below with zero retries, unlike the
+        // partial-fill branch above which already retries once at attempt==1). This one extra
+        // retry is deliberately narrow and safe to add, unlike a blind N-times-with-backoff
+        // loop would be: !flatten.success() here is NOT an ambiguous "we don't know" state --
+        // BinanceBrokerAdapter.placeOrder already calls tryRecoverOrderByClientId on exactly
+        // this path (a BinanceApiException, e.g. a timeout) BEFORE ever returning
+        // success=false, independently re-querying the exchange by this exact attempt's own
+        // clientOrderId to confirm the order genuinely never went live. So a confirmed
+        // success=false here is a verified non-placement, not the genuinely unresolved state
+        // recoverStuckFlattening's own javadoc (and this class's "succeeded with no confirmed
+        // fill quantity" branch just below, left deliberately un-retried) is about -- retrying
+        // a confirmed non-placement with a fresh, attempt-specific clientOrderId (the same
+        // generateClientOrderId(..., attempt) scheme already used for the partial-fill retry)
+        // cannot double-sell, because nothing was ever placed the first time.
+        if (attempt == 0 && !flatten.success()) {
+            if (!distributedLockService.renew("flatten:" + position.getId(), instanceId, lockGeneration, java.time.Duration.ofSeconds(60))) {
+                log.error("Could not renew the flatten lock for position {} before retrying an outright-failed emergency sell -- another "
+                    + "instance may now own this exact flatten. Stopping before retrying, rather than risk two instances independently "
+                    + "retrying the same sell concurrently.", position.getId());
+                credentialService.audit(position.getUserId(), credential.getId(), credential.getBroker(), "FLATTEN_LOCK_LOST",
+                    "Lost the flatten lock for " + position.getSymbol() + " (position " + position.getId() + ") after an outright-failed "
+                        + "emergency sell (" + flatten.errorMessage() + ") but before retrying -- another instance may already own this "
+                        + "exact flatten. Stopped rather than risk a concurrent retry; the next reconciliation pass or trigger will pick "
+                        + "this up.");
+                return;
+            }
+            credentialService.audit(position.getUserId(), credential.getId(), credential.getBroker(), "EMERGENCY_FLATTEN_RETRYING",
+                "Emergency flatten on " + position.getSymbol() + " failed outright (" + flatten.errorMessage() + ") -- confirmed by the "
+                    + "broker adapter's own clientOrderId verification that nothing was placed, so retrying once with a fresh order id "
+                    + "before escalating. Original issue: " + failureReason + ".");
+            attemptFlatten(credential, adapter, apiKey, apiSecret, position, profile, failureReason, 1, lockGeneration, haltOnSuccess);
+            return;
+        }
+
+        // Either the retry above also failed outright, or the order "succeeded" with no
+        // confirmed fill quantity (a genuinely ambiguous exchange-side state, e.g. a live but
+        // unconfirmed NEW/PENDING order -- never safe to retry blindly, since a second sell on
+        // top of a still-live first one is a real double-sell risk, not a hypothetical one) --
         // in both cases, don't assume anything closed. Same "don't fabricate a confirmed state"
         // rule as everywhere else in this file.
         credentialService.audit(position.getUserId(), credential.getId(), credential.getBroker(), "EMERGENCY_FLATTEN_FAILED",
             "CRITICAL: naked position on " + position.getSymbol() + " could NOT be emergency-closed: "
                 + (flatten.errorMessage() != null ? flatten.errorMessage() : "no confirmed executed quantity")
-                + " (original issue: " + failureReason + ") — MANUAL INTERVENTION REQUIRED.");
+                + " (original issue: " + failureReason + ")" + (attempt > 0 ? " -- retry also failed." : "")
+                + " MANUAL INTERVENTION REQUIRED.");
         // Review finding ("Position close has atomic protection; not every position mutation
         // does" -- P1, full context in PositionMonitorService's own identical comment on the
         // partial-exit conversion): continuing this session's own established, deliberate

@@ -846,7 +846,7 @@ public class PositionSafetyService {
             // to the naked halt below, exactly as if no re-protect were possible.
             if (reprotectAttempted) {
                 credentialService.audit(position.getUserId(), credential.getId(), credential.getBroker(), "EMERGENCY_FLATTEN_FAILED",
-                    "CRITICAL: " + remaining + " of " + position.getSymbol() + " could NOT be flattened after the through-stop escalation "
+                    "CRITICAL: " + remaining + " of " + position.getSymbol() + " could NOT be flattened after the re-protect escalation "
                         + "retry (original issue: " + failureReason + ") — MANUAL INTERVENTION REQUIRED, position remains OPEN and unprotected.");
                 haltProfile(profile, position);
                 return;
@@ -931,7 +931,7 @@ public class PositionSafetyService {
             "CRITICAL: " + (reprotected ? "position" : "naked position") + " on " + position.getSymbol() + " could NOT be emergency-closed: "
                 + (flatten.errorMessage() != null ? flatten.errorMessage() : "no confirmed executed quantity")
                 + " (original issue: " + failureReason + ")"
-                + (reprotectAttempted ? " -- the through-stop escalation retry also failed." : attempt > 0 ? " -- retry also failed." : "")
+                + (reprotectAttempted ? " -- the re-protect escalation retry also failed." : attempt > 0 ? " -- retry also failed." : "")
                 + (reprotected ? " -- position was successfully RE-PROTECTED with a new OCO at its prior TP/SL levels."
                     : "") + " MANUAL INTERVENTION REQUIRED.");
         // Review finding ("Position close has atomic protection; not every position mutation
@@ -1077,14 +1077,35 @@ public class PositionSafetyService {
             return ReprotectOutcome.ESCALATED;
         }
 
-        // Same TP > current price check placeExitOcoOrEmergencyFlatten already performs before
-        // any real OCO placement — price at/above the old take-profit level is NOT the urgent
-        // downside case above (it means price moved favorably), but the old OCO is still stale
-        // and unsafe to re-place as-is, so this remains a plain failure rather than an escalation.
+        // Audit fix (P0-2 follow-up #3 -- user-flagged, confirmed real: "if the price is above
+        // the old take-profit when re-protection runs, it returns FAILED and the position stays
+        // unprotected. That means the position is in profit, so a plain market sell is the
+        // right move"). Same TP > current price check placeExitOcoOrEmergencyFlatten already
+        // performs before any real OCO placement — price at/above the old take-profit level is
+        // NOT the urgent downside case above, it means price has already moved FAVORABLY past
+        // where this position was planning to take profit. Re-placing the old, now-stale OCO is
+        // still unsafe (a TP leg already past its own trigger), but "can't re-protect" and
+        // "leave it naked" are not the same thing here either -- there is real profit sitting on
+        // the table and no reason to wait for it to retrace. Escalates to the same plain
+        // market-sell attempt the through-stop case uses, just without that case's own backoff
+        // sleep (that delay exists to give a thin/volatile book a moment after an adverse move;
+        // there is no equivalent reason to wait when the move was favorable).
         if (takeProfit.compareTo(freshPrice) <= 0) {
-            log.warn("Could not re-protect position {} ({}) after a failed flatten -- its old TP {} / SL {} levels no longer bracket "
-                + "the current price {}.", position.getId(), position.getSymbol(), takeProfit, stopTrigger, freshPrice);
-            return ReprotectOutcome.FAILED;
+            log.warn("Position {} ({}) cannot be re-protected with its old OCO -- current price {} has already moved past its old "
+                + "take-profit {}. Escalating to a market sell to lock in the gain instead of leaving it naked.",
+                position.getId(), position.getSymbol(), freshPrice, takeProfit);
+            credentialService.audit(position.getUserId(), credential.getId(), credential.getBroker(), "EMERGENCY_FLATTEN_THROUGH_TAKEPROFIT_ESCALATING",
+                "Emergency flatten on " + position.getSymbol() + " (position " + position.getId() + ") exhausted its normal retry with "
+                    + "price " + freshPrice + " already past the old take-profit " + takeProfit + " -- re-protecting with a new OCO at "
+                    + "that stale level is not safe (it would submit already past its own trigger), so escalating to a market sell to "
+                    + "lock in the gain rather than leaving the position naked.");
+            if (!distributedLockService.renew("flatten:" + position.getId(), instanceId, lockGeneration, java.time.Duration.ofSeconds(60))) {
+                log.warn("Could not renew the flatten lock for position {} immediately before the through-take-profit escalation sell "
+                    + "-- another instance may now own this lock. Not attempting it.", position.getId());
+                return ReprotectOutcome.FAILED;
+            }
+            attemptFlatten(credential, adapter, apiKey, apiSecret, position, profile, failureReason, 2, lockGeneration, haltOnSuccess, true);
+            return ReprotectOutcome.ESCALATED;
         }
         if (!distributedLockService.renew("flatten:" + position.getId(), instanceId, lockGeneration, java.time.Duration.ofSeconds(60))) {
             log.warn("Could not renew the flatten lock for position {} immediately before a re-protect attempt -- another instance "

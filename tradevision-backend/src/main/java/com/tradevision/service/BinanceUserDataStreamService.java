@@ -488,9 +488,38 @@ public class BinanceUserDataStreamService {
         try {
             if ("CANCELED".equals(orderStatus)) {
                 orderService.markCancelled(order);
-            } else if ("REJECTED".equals(orderStatus) || "EXPIRED".equals(orderStatus)) {
+            } else if ("REJECTED".equals(orderStatus)) {
+                // A genuine REJECTED can never carry a prior fill (the exchange refused the
+                // order before any matching could happen at all) -- success=false here is
+                // correct and loses nothing, matching OrderService.recordBrokerResult's own
+                // "the broker call itself failed" interpretation of success=false.
                 var result = new com.tradevision.service.broker.dto.OrderResult(false, brokerOrderId, clientOrderId, orderStatus,
                     null, null, event.toString(), "Binance executionReport reports orderStatus=" + orderStatus);
+                orderService.recordBrokerResult(order, result);
+            } else if ("EXPIRED".equals(orderStatus) || "EXPIRED_IN_MATCH".equals(orderStatus)) {
+                // Audit fix (P1-2 follow-up -- external review, second pass: "Add the partial-
+                // fill-then-EXPIRED websocket test" -- confirmed real by direct inspection: this
+                // used to go through the exact same success=false/executedQty=null branch as
+                // REJECTED above, which OrderService.recordBrokerResult treats as "the broker
+                // call itself failed" and maps unconditionally to OrderStatus.REJECTED --
+                // discarding any quantity that genuinely DID fill before this order expired
+                // (e.g. IOC/FOK/self-trade-prevention: a resting order fills 0.4 of 1.0, then
+                // the unfilled 0.6 remainder expires). Unlike REJECTED, EXPIRED is a real,
+                // definitive terminal status FROM the exchange, not a failed API call -- the
+                // same z/Z cumulative-fill fields the TRADE branch below already reads apply
+                // here too (Binance populates them on every executionReport, including the
+                // final EXPIRED one), so this reads them the same way and reports success=true
+                // with the real executed quantity/price, letting
+                // OrderService.recordBrokerResult's own dedicated EXPIRED/EXPIRED_IN_MATCH
+                // handling (see that method's own "P1-14" comment) record the correct terminal
+                // state WITH whatever quantity actually filled, instead of silently discarding
+                // it as a rejection.
+                java.math.BigDecimal cumQty = new java.math.BigDecimal(event.path("z").asText("0"));
+                java.math.BigDecimal cumQuote = new java.math.BigDecimal(event.path("Z").asText("0"));
+                java.math.BigDecimal avgPrice = cumQty.signum() > 0
+                    ? cumQuote.divide(cumQty, 8, java.math.RoundingMode.HALF_UP) : java.math.BigDecimal.ZERO;
+                var result = new com.tradevision.service.broker.dto.OrderResult(true, brokerOrderId, clientOrderId, orderStatus,
+                    cumQty, avgPrice, event.toString(), null);
                 orderService.recordBrokerResult(order, result);
             } else if ("TRADE".equals(executionType)) {
                 // z = cumulative filled quantity, Z = cumulative quote asset transacted quantity

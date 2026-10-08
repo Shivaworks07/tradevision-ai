@@ -658,6 +658,36 @@ class BinanceUserDataStreamServiceTest {
         verify(orderService).recordBrokerResult(eq(order), argThat(r -> !r.success()));
     }
 
+    /**
+     * Audit fix (P1-2 follow-up -- external review, second pass: "Add the partial-fill-then-
+     * EXPIRED websocket test" -- full context in applyExecutionReportFastPath's own updated
+     * EXPIRED-branch comment). Before this fix, this exact scenario (orderStatus=EXPIRED, but z
+     * shows some quantity genuinely filled first) went through the same success=false branch as
+     * a genuine REJECTED, silently discarding the filled quantity. It must now report
+     * success=true with the real cumulative quantity/price so OrderService.recordBrokerResult's
+     * own EXPIRED-specific handling records the correct terminal state WITH the fill, not a
+     * REJECTED with the fill lost.
+     */
+    @Test
+    @DisplayName("applyExecutionReportFastPath: orderStatus=EXPIRED with a prior partial fill (z > 0) calls recordBrokerResult with success=true and the real filled quantity/price, not a discarded failure")
+    void partialFillThenExpired_callsRecordBrokerResultWithFillPreserved() throws Exception {
+        var order = new com.tradevision.model.Order();
+        order.setId("order1");
+        order.setStatus(com.tradevision.model.OrderStatus.ACKNOWLEDGED);
+        when(orderRepo.findByClientOrderId("client-1")).thenReturn(java.util.Optional.of(order));
+        // Filled 0.4 of a 1.0 order (at a cumulative quote of 40.0, i.e. avg price 100) before
+        // the unfilled remainder expired -- e.g. an IOC/FOK leg, or self-trade prevention.
+        String json = "{\"c\":\"client-1\",\"i\":12345,\"x\":\"TRADE\",\"X\":\"EXPIRED\",\"z\":\"0.4\",\"Z\":\"40.0\"}";
+
+        invokeFastPath(json);
+
+        verify(orderService).recordBrokerResult(eq(order), argThat(r ->
+            r.success() // NOT treated as a failed broker call -- this is a real, definitive terminal status
+                && "EXPIRED".equals(r.status())
+                && r.executedQty().compareTo(java.math.BigDecimal.valueOf(0.4)) == 0
+                && r.fillPrice().compareTo(java.math.BigDecimal.valueOf(100)) == 0));
+    }
+
     @Test
     @DisplayName("applyExecutionReportFastPath: orderStatus=CANCELED calls markCancelled, not recordBrokerResult")
     void canceledOrderStatus_callsMarkCancelled() throws Exception {

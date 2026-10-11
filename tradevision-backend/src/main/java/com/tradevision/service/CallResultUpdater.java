@@ -128,7 +128,15 @@ public class CallResultUpdater {
             long elapsedHours = elapsedMs / 3_600_000L;
 
             if ("CRYPTO".equals(call.getMarket())) {
-                String sym = call.getSymbol().replace("/USDT", "").replace("/", "") + "USDT";
+                // Handles both symbol formats this class actually sees: the manual trade-call
+                // UI's display style ("BTC/USDT") and the autonomous scanner's raw exchange
+                // format ("BTCUSDT", confirmed by AutonomousScannerService's own log lines --
+                // e.g. "skipping BTCUSDT"). The old unconditional "+ USDT" assumed every symbol
+                // arrived without the quote asset already attached, so a scanner-sourced call
+                // got turned into "BTCUSDTUSDT" here and Binance rejected it with "Invalid
+                // symbol" on every single range check for that call.
+                String raw = call.getSymbol().replace("/", "");
+                String sym = raw.toUpperCase().endsWith("USDT") ? raw : raw + "USDT";
                 // Chosen so the full elapsed window fits comfortably under Binance's own 1000-
                 // candle-per-request ceiling: 288 5m candles/day, 168 1h candles/week, 180 4h
                 // candles for the full 30-day expiry window this class already enforces above.

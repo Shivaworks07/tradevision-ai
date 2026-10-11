@@ -49,13 +49,8 @@
 
   </div>
   <app-root></app-root>
-  <script>
-    document.addEventListener('DOMContentLoaded', function() {
-      setTimeout(function() {
-        var l = document.getElementById('app-loader');
-        if (l) { l.classList.add('fade-out'); setTimeout(function(){l.style.display='none';},600); }
-      }, 2000);
-    });
-  </script>
+  <!-- External file, not inline -- the backend's CSP has no 'unsafe-inline' on script-src, so
+       an inline <script> here would be silently blocked and the loader would never fade out. -->
+  <script src="assets/app-loader.js"></script>
 </body>
 </html>

@@ -43,6 +43,15 @@ public class CallResultUpdater {
     private final RestTemplate restTemplate = new RestTemplate();
     private final ObjectMapper mapper = new ObjectMapper();
 
+    // Spaces out this method's own outbound requests to each market data provider (Binance
+    // klines, Yahoo chart) so a post-restart backlog of up to 50 PENDING calls can't fire that
+    // many blocking REST calls back-to-back in a few hundred milliseconds. 50 calls * 250ms is
+    // still well inside this scheduled task's own 5-minute period, and spreads the burst out
+    // instead of risking a provider-side weight/rate-limit ban (observed in production as a
+    // Binance 418 "Way too much request weight used" response) on the very first run after a
+    // deploy, when the backlog is largest.
+    private static final long PROVIDER_REQUEST_THROTTLE_MS = 250;
+
     @Scheduled(fixedDelay = 300000, scheduler = "maintenanceScheduler")
     public void updatePendingCalls() {
         if (shutdownState.isShuttingDown()) return;
@@ -90,6 +99,16 @@ public class CallResultUpdater {
                     continue;
                 }
                 PriceRange range = fetchPriceRange(call);
+                // Throttle AFTER the real network call, not before -- a call resolved by one of
+                // the continue branches above (already order-backed, or EXPIRED) never touches
+                // the network at all and shouldn't be slowed down waiting on this provider's own
+                // rate limit.
+                try {
+                    Thread.sleep(PROVIDER_REQUEST_THROTTLE_MS);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return; // shutting down or interrupted -- don't keep firing requests
+                }
                 if (range == null) continue;
                 updateResultFromRange(call, range.high(), range.low());
             } catch (Exception e) {

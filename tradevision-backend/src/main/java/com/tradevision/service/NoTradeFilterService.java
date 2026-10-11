@@ -58,11 +58,32 @@ public class NoTradeFilterService {
     private static final double MIN_SL_ATR_RATIO = 0.3;
     private static final double MAX_SL_ATR_RATIO = 6.0;
 
+    // Covers the manual trade-call UI's display-style timeframe strings ("15M", "1H", "Daily
+    // (D1)", ...). StrategyPlan.timeframe -- what the autonomous scanner actually dispatches
+    // here -- is a lowercase Binance kline interval string ("15m", "1h", "4h", ...) by its own
+    // field contract, which never matched any key in this map: every single autonomous-scanner
+    // signal failed this lookup and was refused here, regardless of signal quality. See
+    // resolveInterval() below, which now also accepts that format directly.
     private static final Map<String, String> TIMEFRAME_TO_INTERVAL = Map.ofEntries(
         Map.entry("1M", "1m"), Map.entry("5M", "5m"), Map.entry("15M", "15m"), Map.entry("30M", "30m"),
         Map.entry("1H", "1h"), Map.entry("4H", "4h"), Map.entry("1D", "1d"), Map.entry("D1", "1d"),
         Map.entry("Daily (D1)", "1d"), Map.entry("1W", "1w")
     );
+
+    // Every Binance kline interval this app actually uses anywhere (strategy-plans.component.ts's
+    // timeframe picker, plus the wider set StrategyPlan/ScannerService could see).
+    private static final java.util.Set<String> VALID_BINANCE_INTERVALS = java.util.Set.of(
+        "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"
+    );
+
+    /** Resolves a signal's timeframe to a Binance kline interval, accepting either the manual
+     *  trade-call UI's display format ("15M", "1H", ...) or an already-valid lowercase Binance
+     *  interval string ("15m", "1h", ...) as produced by StrategyPlan/the autonomous scanner. */
+    private static String resolveInterval(String timeframe) {
+        if (timeframe == null) return null;
+        if (VALID_BINANCE_INTERVALS.contains(timeframe)) return timeframe;
+        return TIMEFRAME_TO_INTERVAL.get(timeframe);
+    }
 
     private final PositionRepository positionRepo;
     private final ExchangeHealthService exchangeHealth;
@@ -174,7 +195,7 @@ public class NoTradeFilterService {
     }
 
     private FilterResult checkIndicatorDivergence(TradeCallRecord signal, BrokerAdapter adapter, BrokerMode mode) {
-        String interval = TIMEFRAME_TO_INTERVAL.get(signal.getTimeframe());
+        String interval = resolveInterval(signal.getTimeframe());
         if (interval == null) {
             // Without a server-computed signal, there's nothing to size the trade off other
             // than the client's numbers, which defeats the point of independent verification —

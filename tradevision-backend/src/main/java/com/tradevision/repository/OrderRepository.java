@@ -49,6 +49,18 @@ public interface OrderRepository extends MongoRepository<Order, String> {
     // broker status string. Sorted by createdAt, since Order has no separate placedAt field.
     List<Order> findByCredentialIdAndStatusInOrderByCreatedAtAsc(String credentialId, List<OrderStatus> statuses);
     /**
+     * Time-bounded equivalent of the above, for the same reason the FILLED query just below is
+     * bounded: without a cutoff, an order that gets permanently stuck at ACKNOWLEDGED/
+     * PARTIALLY_FILLED -- for example one whose OMS status update lost a race against the
+     * user-data-stream path and never got the broker's final FILLED confirmation -- is retried
+     * by reconcileEntryOrders on every single reconciliation pass, forever, even once the broker
+     * itself reports "Order does not exist" (Binance -2013, typically a testnet order aged out
+     * of the exchange's own history). An order still stuck after this window needs a human, not
+     * an indefinite hot-path retry hammering the broker's API every cycle.
+     */
+    List<Order> findByCredentialIdAndStatusInAndCreatedAtAfterOrderByCreatedAtAsc(
+        String credentialId, List<OrderStatus> statuses, java.time.LocalDateTime cutoff);
+    /**
      * Finds recently-FILLED orders for a credential, bounded by createdAt so reconciliation
      * never re-scans the credential's entire order history on every pass. This catches
      * orders that fill synchronously at placement — the normal case for a market order,

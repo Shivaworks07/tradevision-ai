@@ -1669,8 +1669,15 @@ public class PositionMonitorService {
         // (recordOcoFillResult/recordOcoCancelResult, driven off Position's own ocoOrderListId
         // and the user-data-stream/reconcileOpenPositions paths) — they are never polled by this
         // method.
-        List<Order> pendingEntries = omsOrderRepo.findByCredentialIdAndStatusInOrderByCreatedAtAsc(
-                credential.getId(), List.of(OrderStatus.ACKNOWLEDGED, OrderStatus.PARTIALLY_FILLED)).stream()
+        // Bounded the same way the FILLED query below already is -- an order that never gets a
+        // final broker-confirmed status (e.g. it lost a race against the user-data-stream path
+        // and the broker later reports "Order does not exist" for it, typically a testnet order
+        // aged out of Binance's own history) must stop being retried eventually rather than
+        // hammering the broker's API on every reconciliation pass indefinitely. See this query's
+        // own javadoc in OrderRepository for the full reasoning.
+        List<Order> pendingEntries = omsOrderRepo.findByCredentialIdAndStatusInAndCreatedAtAfterOrderByCreatedAtAsc(
+                credential.getId(), List.of(OrderStatus.ACKNOWLEDGED, OrderStatus.PARTIALLY_FILLED),
+                LocalDateTime.now().minusHours(2)).stream()
             .filter(o -> o.getBrokerOrderId() != null)
             .filter(o -> !"OCO_EXIT".equals(o.getOrderRole()))
             .collect(java.util.stream.Collectors.toCollection(java.util.ArrayList::new));

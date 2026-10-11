@@ -489,7 +489,7 @@ class PositionMonitorServiceTest {
         // right now". Everything downstream of this (reconcileOpenPositions, checkDrawdown) is
         // deliberately left unstubbed — Mockito's defaults (empty list / Optional.empty()) make
         // both return immediately without any further setup needed.
-        when(omsOrderRepo.findByCredentialIdAndStatusInOrderByCreatedAtAsc(any(), any())).thenAnswer(invocation -> {
+        when(omsOrderRepo.findByCredentialIdAndStatusInAndCreatedAtAfterOrderByCreatedAtAsc(any(), any(), any())).thenAnswer(invocation -> {
             enteredCriticalSection.countDown();
             assertThat(releaseFirstThread.await(5, TimeUnit.SECONDS)).isTrue();
             return List.<Order>of();
@@ -513,7 +513,7 @@ class PositionMonitorServiceTest {
 
             // Confirms the second call was genuinely skipped, not merely "also ran but harmlessly" --
             // the guarded work happened exactly once, from thread A alone.
-            verify(omsOrderRepo, times(1)).findByCredentialIdAndStatusInOrderByCreatedAtAsc(any(), any());
+            verify(omsOrderRepo, times(1)).findByCredentialIdAndStatusInAndCreatedAtAfterOrderByCreatedAtAsc(any(), any(), any());
 
             releaseFirstThread.countDown();
             firstCall.get(5, TimeUnit.SECONDS); // propagates any exception thread A hit, fails the test if so
@@ -523,7 +523,7 @@ class PositionMonitorServiceTest {
     }
 
     /**
-     * findByCredentialIdAndStatusInOrderByCreatedAtAsc's query has no role filter, and an
+     * findByCredentialIdAndStatusInAndCreatedAtAfterOrderByCreatedAtAsc's query has no role filter, and an
      * OCO_EXIT order's OMS record stores the broker's orderListId in the same brokerOrderId
      * field once recordOcoPlacementResult() acknowledges it (see that method's own javadoc), so
      * reconcileEntryOrders must filter by role rather than polling it alongside real ENTRY
@@ -557,7 +557,7 @@ class PositionMonitorServiceTest {
         ocoExitOrder.setStatus(OrderStatus.ACKNOWLEDGED);
         ocoExitOrder.setOrderRole("OCO_EXIT");
 
-        when(omsOrderRepo.findByCredentialIdAndStatusInOrderByCreatedAtAsc(any(), any()))
+        when(omsOrderRepo.findByCredentialIdAndStatusInAndCreatedAtAfterOrderByCreatedAtAsc(any(), any(), any()))
             .thenReturn(List.of(entryOrder, ocoExitOrder));
         when(adapter.getOrderStatus(any(), any(), any(), any(), eq("real-entry-order-id"))).thenReturn(
             new com.tradevision.service.broker.dto.OrderStatusInfo("NEW", BigDecimal.ZERO, null, "{}"));
@@ -597,7 +597,7 @@ class PositionMonitorServiceTest {
         org.springframework.test.util.ReflectionTestUtils.setField(service, "adapters", List.of(adapter));
         // Forces an exception inside reconcileCredentialLocked's try block, caught by its own
         // catch — this is exactly what increments the failure counter reconcileOnStartup reads.
-        when(omsOrderRepo.findByCredentialIdAndStatusInOrderByCreatedAtAsc(any(), any()))
+        when(omsOrderRepo.findByCredentialIdAndStatusInAndCreatedAtAfterOrderByCreatedAtAsc(any(), any(), any()))
             .thenThrow(new RuntimeException("simulated broker connectivity failure"));
 
         service.reconcileOnStartup();
@@ -625,7 +625,7 @@ class PositionMonitorServiceTest {
         // The real, observable proof reconciliation actually ran for this credential: its own
         // first mutation-capable step was reached (same fingerprint the existing
         // reconcileOnStartup_credentialReconciliationFails_marksFailed test above uses).
-        verify(omsOrderRepo).findByCredentialIdAndStatusInOrderByCreatedAtAsc(eq("cred1"), any());
+        verify(omsOrderRepo).findByCredentialIdAndStatusInAndCreatedAtAfterOrderByCreatedAtAsc(eq("cred1"), any(), any());
     }
 
     @Test
@@ -638,7 +638,7 @@ class PositionMonitorServiceTest {
 
         service.reconcileOnStartup();
 
-        verify(omsOrderRepo, org.mockito.Mockito.never()).findByCredentialIdAndStatusInOrderByCreatedAtAsc(any(), any());
+        verify(omsOrderRepo, org.mockito.Mockito.never()).findByCredentialIdAndStatusInAndCreatedAtAfterOrderByCreatedAtAsc(any(), any(), any());
         // Zero credentials genuinely needed reconciling -- still a clean, healthy startup pass.
         verify(startupState).markComplete(true);
     }
@@ -1382,7 +1382,7 @@ class PositionMonitorServiceTest {
     @DisplayName("reconcileCredential: a lost lock-renewal mid-pass STOPS the pass rather than continuing to mutate shared state, since continuing risks a second instance that now believes it owns the lock concurrently mutating the same positions")
     void reconcileCredential_lostRenewal_stopsPassRatherThanContinuing() {
         when(positionRepo.findByCredentialIdAndStatus(any(), any())).thenReturn(List.of());
-        when(omsOrderRepo.findByCredentialIdAndStatusInOrderByCreatedAtAsc(any(), any())).thenReturn(List.of());
+        when(omsOrderRepo.findByCredentialIdAndStatusInAndCreatedAtAfterOrderByCreatedAtAsc(any(), any(), any())).thenReturn(List.of());
         // tryAcquire succeeds (this instance genuinely starts the pass), but the first renewal
         // check mid-pass fails -- simulating a lease that was lost to another instance.
         when(distributedLockService.renew(any(), any(), anyLong(), any())).thenReturn(false);
@@ -2690,7 +2690,7 @@ class PositionMonitorServiceTest {
     void reconcileCredential_flattenSellNeverRediscoveredAsEntry_repeatedPasses() {
         when(adapter.getType()).thenReturn(BrokerType.BINANCE);
         org.springframework.test.util.ReflectionTestUtils.setField(service, "adapters", List.of(adapter));
-        when(omsOrderRepo.findByCredentialIdAndStatusInOrderByCreatedAtAsc(any(), any())).thenReturn(List.of());
+        when(omsOrderRepo.findByCredentialIdAndStatusInAndCreatedAtAfterOrderByCreatedAtAsc(any(), any(), any())).thenReturn(List.of());
         // This query REQUIRES side == "BUY" at the database level. A real SELL order (the
         // flatten's own exit) would never be matched by it -- modeled here by simply never
         // stubbing it to return anything for this credential, exactly as the real query would
@@ -2719,7 +2719,7 @@ class PositionMonitorServiceTest {
     void reconcileCredential_buyAndSellBothExist_onlyBuyIsEligible() {
         when(adapter.getType()).thenReturn(BrokerType.BINANCE);
         org.springframework.test.util.ReflectionTestUtils.setField(service, "adapters", List.of(adapter));
-        when(omsOrderRepo.findByCredentialIdAndStatusInOrderByCreatedAtAsc(any(), any())).thenReturn(List.of());
+        when(omsOrderRepo.findByCredentialIdAndStatusInAndCreatedAtAfterOrderByCreatedAtAsc(any(), any(), any())).thenReturn(List.of());
 
         var buyOrder = new Order();
         buyOrder.setUserId("user1");
@@ -2762,7 +2762,7 @@ class PositionMonitorServiceTest {
     void reconcileCredential_manualTestOrder_isNeverAdoptedAsLateDiscoveredPosition() {
         when(adapter.getType()).thenReturn(BrokerType.BINANCE);
         org.springframework.test.util.ReflectionTestUtils.setField(service, "adapters", List.of(adapter));
-        when(omsOrderRepo.findByCredentialIdAndStatusInOrderByCreatedAtAsc(any(), any())).thenReturn(List.of());
+        when(omsOrderRepo.findByCredentialIdAndStatusInAndCreatedAtAfterOrderByCreatedAtAsc(any(), any(), any())).thenReturn(List.of());
 
         var manualOrder = new Order();
         manualOrder.setUserId("user1");
@@ -2794,7 +2794,7 @@ class PositionMonitorServiceTest {
     void reconcileCredential_botEntryOrder_stillRecovered() {
         when(adapter.getType()).thenReturn(BrokerType.BINANCE);
         org.springframework.test.util.ReflectionTestUtils.setField(service, "adapters", List.of(adapter));
-        when(omsOrderRepo.findByCredentialIdAndStatusInOrderByCreatedAtAsc(any(), any())).thenReturn(List.of());
+        when(omsOrderRepo.findByCredentialIdAndStatusInAndCreatedAtAfterOrderByCreatedAtAsc(any(), any(), any())).thenReturn(List.of());
 
         var botOrder = new Order();
         botOrder.setUserId("user1");
@@ -2873,7 +2873,7 @@ class PositionMonitorServiceTest {
     void productionReproduction_buyThenFlattenSell_neverCreatesPositionB() {
         when(adapter.getType()).thenReturn(BrokerType.BINANCE);
         org.springframework.test.util.ReflectionTestUtils.setField(service, "adapters", List.of(adapter));
-        when(omsOrderRepo.findByCredentialIdAndStatusInOrderByCreatedAtAsc(any(), any())).thenReturn(List.of());
+        when(omsOrderRepo.findByCredentialIdAndStatusInAndCreatedAtAfterOrderByCreatedAtAsc(any(), any(), any())).thenReturn(List.of());
 
         // Position A already exists and is CLOSED -- exactly the real-world state right after
         // an emergency-flatten completes (a "NAKED_FLATTENED" position). Its own entry order id

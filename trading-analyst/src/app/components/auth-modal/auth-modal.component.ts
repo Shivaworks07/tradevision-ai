@@ -135,7 +135,7 @@ export class AuthModalComponent implements OnDestroy {
     if (this.otp.length < 6) return;
     this.loading = true; this.error = '';
     const obs = this.mode === 'register'
-      ? this.auth.verifyRegister(this.email.trim().toLowerCase(), this.otp)
+      ? this.auth.verifyRegister(this.email.trim().toLowerCase(), this.otp, this.firstName.trim(), this.lastName.trim())
       : this.auth.verifyLogin(this.email.trim().toLowerCase(), this.otp);
     obs.subscribe({
       next:  () => { this.loading = false; this.loggedIn.emit(); this.reset(); },
@@ -150,10 +150,17 @@ export class AuthModalComponent implements OnDestroy {
 
   resend() {
     if (this.resendCooldown > 0) return;
-    this.loading = true;
+    this.loading = true; this.error = '';
     this.auth.resendOtp(this.email, this.mode === 'register' ? 'REGISTER' : 'LOGIN').subscribe({
-      next:  () => { this.loading = false; this.otpDigits = []; this.startCooldown(); },
-      error: () => { this.loading = false; }
+      next:  r => {
+        this.loading = false;
+        if (r.success) { this.otpDigits = []; this.startCooldown(); }
+        else { this.error = r.message || 'Could not resend the code. Please try again.'; }
+      },
+      error: e => {
+        this.loading = false;
+        this.error = e.status === 0 ? 'Service temporarily unavailable. Please try again later.' : (e.error?.message || 'Could not resend the code. Please try again.');
+      }
     });
   }
 

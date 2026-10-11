@@ -41,7 +41,12 @@
       span:nth-child(2) { opacity: 0; transform: scaleX(0); }
       span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); background: #00D4FF; }
     }
-    @media(max-width: 900px) { display: flex !important; }
+    // Matches .tb-nav's own cutover below -- the hamburger/drawer takes over
+    // wherever the full nav would otherwise have to squeeze, rather than
+    // leaving a wide middle zone where neither is in a good state (icon-only
+    // labels can get squeezed down to nothing on in-between widths, like a
+    // laptop screen with devtools open).
+    @media(max-width: 1300px) { display: flex !important; }
   }
   .brand { display:flex; align-items:center; gap:8px; cursor:pointer; flex-shrink:0;
     span { font-family:'Space Grotesk',sans-serif; font-size:15px; font-weight:600; color:#E8EDF5;
@@ -54,7 +59,7 @@
   display:flex; align-items:center; gap:2px; flex:1; justify-content:center;
   min-width:0; overflow-x:auto; scrollbar-width:none;
   &::-webkit-scrollbar { display:none; }
-  @media(max-width:900px) { display:none; }
+  @media(max-width:1300px) { display:none; }
   .tb-link {
     display:flex; align-items:center; gap:6px; padding:6px 12px; border-radius:8px;
     border:none; background:transparent; color:#8895B3;
@@ -64,17 +69,13 @@
     &.active { background:rgba(0,212,255,0.1); color:#00D4FF; }
   }
 
-  /* Intermediate breakpoint: between the 900px hamburger cutover and the
-     width 12 full-label nav items actually need (~1600-1800px). Most
-     laptop screens at 100% zoom land in this gap — without it, items got
-     visually clipped because body{overflow-x:hidden} hid any overflow. */
+  /* Above the 1300px hamburger cutover, the full-label nav still needs
+     ~1600-1800px to fit comfortably, so compact it in this upper range
+     rather than letting it clip. Below 1300px the hamburger/drawer is in
+     charge instead -- this never needs to go as far as hiding labels. */
   @media(max-width:1700px) {
     gap:0;
     .tb-link { padding:6px 9px; gap:4px; font-size:11px; }
-  }
-  @media(max-width:1500px) {
-    .tb-link span { display:none; }
-    .tb-link { padding:8px; }
   }
 }
 

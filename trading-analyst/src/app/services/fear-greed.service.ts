@@ -110,7 +110,10 @@ export class FearGreedService {
     if (val <= 20)  return '#FF3B5C';
     if (val <= 40)  return '#FF6B35';
     if (val <= 60)  return '#FFB800';
-    if (val <= 80)  return '#00D4FF';
+    // Greed (61-80) sits between the Neutral yellow and Extreme Greed green on the
+    // fear->greed spectrum -- this used to return '#00D4FF', the app's unrelated cyan
+    // brand accent, which read as a totally different (and misleading) color here.
+    if (val <= 80)  return '#AEEA00';
     return '#00FF88';
   }
 

@@ -616,7 +616,7 @@ public class PositionSafetyService {
             // specific flatten attempt -- manual exchange activity, another order, an asset
             // transfer, unrelated application activity). See
             // PositionMonitorService.recoverStuckFlattening.
-            flattenOmsOrder.setOrderRole("FLATTEN");
+            orderService.recordOrderRole(flattenOmsOrder, "FLATTEN");
             orderService.markRiskAccepted(flattenOmsOrder);
             orderService.markSubmitting(flattenOmsOrder);
         } catch (Exception e) {
@@ -986,7 +986,7 @@ public class PositionSafetyService {
         try {
             reprotectOmsOrder = orderService.create(position.getUserId(), position.getCredentialId(), position.getId(),
                 position.getSignalId(), position.getSymbol(), "SELL", "OCO", position.getQuantity(), takeProfit, listClientOrderId);
-            reprotectOmsOrder.setOrderRole("OCO_EXIT");
+            orderService.recordOrderRole(reprotectOmsOrder, "OCO_EXIT");
             reprotectOmsOrder.setTakeProfitPrice(takeProfit);
             reprotectOmsOrder.setStopLossTriggerPrice(stopTrigger);
             reprotectOmsOrder.setStopLossLimitPrice(stopLimit);

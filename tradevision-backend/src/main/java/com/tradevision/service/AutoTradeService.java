@@ -840,8 +840,10 @@ public class AutoTradeService {
             // real profile in hand.
             omsOrder.setRiskProfileVersion(String.valueOf(profile.getVersion()));
             // The entry side of orderRole -- distinguishes this record's purpose from the OCO
-            // exit records placeExitOcoOrEmergencyFlatten stamps.
-            omsOrder.setOrderRole("ENTRY");
+            // exit records placeExitOcoOrEmergencyFlatten stamps. Persisted via recordOrderRole,
+            // not a bare setter -- see that method's own javadoc for why a bare setter here was
+            // silently lost and never reached MongoDB.
+            orderService.recordOrderRole(omsOrder, "ENTRY");
             orderService.markRiskAccepted(omsOrder);
             orderService.markSubmitting(omsOrder);
             orderService.recordVolatility(omsOrder, serverSignal.atrPercent());
@@ -1138,7 +1140,7 @@ public class AutoTradeService {
             try {
                 omsOrder = orderService.create(profile.getUserId(), credential.getId(), null, signal.getId(),
                     orderReq.symbol(), "BUY", "MARKET", quantity, BigDecimal.valueOf(serverSignal.entry()), clientOrderId);
-                omsOrder.setOrderRole("ENTRY");
+                orderService.recordOrderRole(omsOrder, "ENTRY");
                 omsOrder.setPlanId(signal.getPlanId());
             } catch (Exception e) {
                 log.error("Fallback Order creation ALSO failed after the earlier OMS setup already failed for {} (clientOrderId={}) -- "
@@ -1834,7 +1836,7 @@ public class AutoTradeService {
             ocoOmsOrder = orderService.create(profile.getUserId(), profile.getCredentialId(),
                 position.getId(), position.getSignalId(), position.getSymbol(), "SELL", "OCO",
                 position.getQuantity(), takeProfit, listClientOrderId);
-            ocoOmsOrder.setOrderRole("OCO_EXIT");
+            orderService.recordOrderRole(ocoOmsOrder, "OCO_EXIT");
             ocoOmsOrder.setTakeProfitPrice(takeProfit);
             ocoOmsOrder.setStopLossTriggerPrice(stopTrigger);
             ocoOmsOrder.setStopLossLimitPrice(stopLimit);

@@ -488,6 +488,35 @@ public class OrderService {
     }
 
     /**
+     * Persists orderRole ("ENTRY", "OCO_EXIT", "FLATTEN", ...) as its own purely additive field
+     * update. Every call site historically called order.setOrderRole(...) directly on the
+     * in-memory object right after create() and assumed that was enough -- it never was:
+     * create() itself already called orderRepo.save() before orderRole was set in-memory, and
+     * every subsequent lifecycle method (markRiskAccepted, markSubmitting,
+     * recordOcoPlacementResult, ...) persists via a field-scoped atomic $set that was never told
+     * about orderRole. The in-memory mutation alone was silently lost on every single order ever
+     * created, which meant orderRole was always null in MongoDB -- not just for "pre-existing
+     * records written before this field existed" as this field's own comment describes, but for
+     * every record, including brand new ones. That broke three real lookups: this class's own
+     * reconcileEntryOrders-feeding query (PositionMonitorService) couldn't actually exclude
+     * OCO_EXIT orders from entry-order reconciliation (it matched every order regardless of
+     * role, since null always satisfied "not OCO_EXIT"), causing OCO/exit orders -- whose
+     * brokerOrderId is the broker's orderListId, not a real order id -- to be polled via
+     * getOrderStatus forever, which Binance correctly answers with -2013 "Order does not exist"
+     * since an orderListId was never a valid order id to query. It also broke
+     * findByPositionIdAndOrderRoleOrderByCreatedAtDesc(positionId, "OCO_EXIT"/"FLATTEN")
+     * (PositionMonitorService's unverified-close P&L fallback and flatten-order lookup,
+     * PositionSafetyService's re-protect-after-failed-flatten recovery path), which always
+     * returned empty since no document ever genuinely had orderRole="OCO_EXIT" or "FLATTEN" in
+     * the database to match.
+     */
+    public Order recordOrderRole(Order order, String orderRole) {
+        order.setOrderRole(orderRole);
+        fieldUpdate(order, u -> u.set("orderRole", orderRole));
+        return order;
+    }
+
+    /**
      * Stamps when protection (OCO) was placed for this order. This is a pure timestamp, not a
      * status transition — protection is tracked on Position, not as an Order status, so this
      * only records when it happened, for latency reporting, without the OMS owning that

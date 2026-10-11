@@ -1928,7 +1928,7 @@ public class PositionMonitorService {
                 order.getTakeProfitPrice(), newListClientOrderId);
             // Stamps the OMS record with the real TP/SL prices and role, consistent with every
             // other OCO placement site.
-            resizeOmsOrder.setOrderRole("OCO_EXIT");
+            orderService.recordOrderRole(resizeOmsOrder, "OCO_EXIT");
             resizeOmsOrder.setTakeProfitPrice(order.getTakeProfitPrice());
             resizeOmsOrder.setStopLossTriggerPrice(order.getStopLossTriggerPrice());
             resizeOmsOrder.setStopLossLimitPrice(stopLimit);
@@ -2335,7 +2335,7 @@ public class PositionMonitorService {
                 position.getSignalId(), position.getSymbol(), "SELL", "OCO", position.getQuantity(),
                 order.getTakeProfitPrice(), listClientOrderId);
             // Same TP/SL/role stamping as every other OCO placement site.
-            lateFillOmsOrder.setOrderRole("OCO_EXIT");
+            orderService.recordOrderRole(lateFillOmsOrder, "OCO_EXIT");
             lateFillOmsOrder.setTakeProfitPrice(order.getTakeProfitPrice());
             lateFillOmsOrder.setStopLossTriggerPrice(order.getStopLossTriggerPrice());
             lateFillOmsOrder.setStopLossLimitPrice(stopLimit);
@@ -3012,7 +3012,7 @@ public class PositionMonitorService {
                 position.getSignalId(), position.getSymbol(), "SELL", "OCO", position.getQuantity(),
                 entryOrder.getTakeProfitPrice(), listClientOrderId);
             // Same TP/SL/role stamping as every other OCO placement site.
-            remainderOmsOrder.setOrderRole("OCO_EXIT");
+            orderService.recordOrderRole(remainderOmsOrder, "OCO_EXIT");
             remainderOmsOrder.setTakeProfitPrice(entryOrder.getTakeProfitPrice());
             remainderOmsOrder.setStopLossTriggerPrice(entryOrder.getStopLossTriggerPrice());
             remainderOmsOrder.setStopLossLimitPrice(stopLimit);

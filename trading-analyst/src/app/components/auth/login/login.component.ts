@@ -61,8 +61,13 @@ export class LoginComponent {
   }
 
   resend() {
+    this.error = '';
     this.auth.resendOtp(this.mobile, 'LOGIN').subscribe({
-      next: r => { if (r.success) { this.otp = ''; this.error = ''; this.startResendTimer(); } }
+      next: r => {
+        if (r.success) { this.otp = ''; this.error = ''; this.startResendTimer(); }
+        else { this.error = r.message || 'Could not resend the code. Please try again.'; }
+      },
+      error: e => { this.error = e.status === 0 ? 'Service temporarily unavailable. Please try again later.' : (e.error?.message || 'Could not resend the code. Please try again.'); }
     });
   }
 

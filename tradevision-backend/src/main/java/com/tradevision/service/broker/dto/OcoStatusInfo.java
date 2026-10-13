@@ -16,6 +16,24 @@ public record OcoStatusInfo(String orderListId, String listStatus, List<Leg> leg
      * base-asset fees, step-size rounding, or exchange quantity normalization -- distinct from
      * executedQty (how much of that has filled so far). Recovery auto-attach needs origQty, not
      * Position.quantity, to know how much this leg actually protects.
+     *
+     * Also carries symbol -- this leg's own exchange-confirmed trading pair, read directly from
+     * the per-leg order-detail response (not merely assumed from the query parameter used to
+     * fetch it). Orphaned-OCO auto-attach (PositionMonitorService.recoverOrphanedOcos) needs this
+     * to verify the OCO it's about to durably bind to a position actually protects that position's
+     * own symbol, rather than trusting an identity match that was never actually checked.
      */
-    public record Leg(String orderId, String side, String type, String status, BigDecimal price, BigDecimal executedQty, BigDecimal origQty) {}
+    public record Leg(String orderId, String side, String type, String status, BigDecimal price, BigDecimal executedQty, BigDecimal origQty, String symbol) {
+        /**
+         * Backward-compatible 7-arg constructor for every call site built before this leg carried
+         * its own symbol (PaperBrokerAdapter's legacy construction sites, and the full existing
+         * test suite) -- defaults symbol to null, which auto-attach verification correctly treats
+         * as "incomplete leg data" and refuses to trust, exactly like a genuinely missing field in
+         * a real exchange response. Same pattern as ServerSignalEngine.Signal's own convenience
+         * constructor for an identical reason.
+         */
+        public Leg(String orderId, String side, String type, String status, BigDecimal price, BigDecimal executedQty, BigDecimal origQty) {
+            this(orderId, side, type, status, price, executedQty, origQty, null);
+        }
+    }
 }

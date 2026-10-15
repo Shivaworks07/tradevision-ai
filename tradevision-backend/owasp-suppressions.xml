@@ -127,6 +127,40 @@
 
   <suppress>
     <notes><![CDATA[
+      hibernate-validator-9.1.3.Final.jar flagged for CVE-2026-93879 (CWE-400, CVSS 8.7):
+      user-supplied data can be re-evaluated as Expression Language during constraint-violation
+      message interpolation, causing excessive resource consumption / denial of service. Unlike
+      every other suppression in this file, this one is NOT a CPE false-positive or an
+      out-of-range-version false match -- it is a genuine, real finding against the exact version
+      this project ships (confirmed via OpenCVE/NVD: affected from Hibernate Validator 5.4.1
+      onward, no upper bound given).
+
+      First checked whether a real fix exists to upgrade into instead of suppressing, per this
+      file's own stated policy of never suppressing a real, unaddressed finding. It does not: the
+      CVE record itself states no fixed version is identified and lists the fix state as "under
+      investigation" with no mitigation available (confirmed via OpenCVE's own CVE-2026-93879
+      page). Maven Central's two newer patch releases available at the time of this suppression
+      (9.1.4.Final, 9.1.5.Final) were tried first and directly confirmed NOT to resolve it -- a
+      real CI run against 9.1.5.Final still reports the exact same CVE-2026-93879 at the same
+      8.7 score, so the affected range genuinely has no upper bound yet, not merely an NVD
+      CPE-matching lag.
+
+      Suppressing on exploitability grounds instead: the vulnerable path requires user/
+      request-supplied data to reach Hibernate Validator's EL message-interpolation step, which
+      happens only via ConstraintValidatorContext.buildConstraintViolationWithTemplate or a
+      custom MessageInterpolator building a message from untrusted input. Neither exists
+      anywhere in this codebase (confirmed by direct search) -- every @NotNull/@Pattern/etc.
+      message used in this project is a static, developer-authored annotation string, never
+      built from request data at runtime. The vulnerable code path exists on the classpath but is
+      never reachable by anything this application does. Revisit this suppression if a real fix
+      version is published, or if any future code adds dynamic/custom message interpolation.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.hibernate\.validator/hibernate-validator@.*$</packageUrl>
+    <cve>CVE-2026-93879</cve>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
       spring-security-web-7.1.1.jar flagged for CVE-2026-47838 ("SubjectDnX509PrincipalExtractor
       fails to properly handle malformed X.509 certificate Common Name values, enabling user
       impersonation via crafted client certificates"). Confirmed via the official GitHub Security

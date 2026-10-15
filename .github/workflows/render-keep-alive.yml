@@ -1,0 +1,35 @@
+name: Render keep-alive ping
+
+# Render's free tier spins a web service down after ~15 minutes of inactivity. For most apps
+# that's just a cold-start delay on the next visit -- but this app runs @Scheduled background
+# jobs (PositionMonitorService's reconciliation passes: OCO/stop-loss monitoring, stuck-order
+# recovery, orphaned-OCO auto-attach) that stop entirely while the instance is asleep. An open,
+# live position gets zero automated protection monitoring during that window.
+#
+# This is a stopgap, not a fix: it only works as long as this workflow itself runs reliably, and
+# GitHub's own scheduler can occasionally delay a cron trigger by several minutes, especially
+# around the top of the hour. The real fix is moving off Render's free tier (no spin-down) once
+# the bot is verified correct for live trading -- see the repo's own notes on this tradeoff.
+#
+# Scheduled every 5 minutes (not 10) specifically to leave margin against both Render's 15-minute
+# idle window and GitHub Actions' own scheduling jitter.
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping health endpoint
+        run: |
+          set -e
+          url="https://tradevision-ai-v1zq.onrender.com/actuator/health"
+          echo "Pinging $url"
+          status=$(curl -s -o /tmp/health_response.json -w "%{http_code}" --max-time 25 "$url" || echo "000")
+          echo "HTTP status: $status"
+          cat /tmp/health_response.json 2>/dev/null || true
+          if [ "$status" != "200" ]; then
+            echo "::warning::Health check did not return 200 (got $status). The instance may be cold-starting or down."
+          fi

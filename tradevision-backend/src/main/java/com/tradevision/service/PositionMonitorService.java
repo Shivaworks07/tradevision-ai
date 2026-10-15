@@ -1343,27 +1343,54 @@ public class PositionMonitorService {
                 var ocoStatus = adapter.getOcoStatus(apiKey, apiSecret, credential.getMode(), orphan.getOcoOrderListId());
                 if (position != null && "OPEN".equals(position.getStatus()) && position.getOcoOrderListId() == null) {
                     java.util.List<String> verificationFailures = new java.util.ArrayList<>();
-                    if ("ALL_DONE".equalsIgnoreCase(ocoStatus.listStatus())) {
-                        verificationFailures.add("OCO is no longer active on the exchange (listStatus=" + ocoStatus.listStatus() + ")");
+                    // Fail closed on status: only a known, explicitly-accepted active status is
+                    // trusted enough to auto-attach real protection to a position. Rejecting just
+                    // "ALL_DONE" and silently trusting everything else would also trust "REJECT",
+                    // a malformed/unexpected status string, or "UNKNOWN" (the adapter's own
+                    // fallback when the exchange response itself didn't carry the field) -- none
+                    // of which mean "genuinely active" either.
+                    if (!"EXECUTING".equalsIgnoreCase(ocoStatus.listStatus())) {
+                        verificationFailures.add("OCO is not in a known, explicitly-accepted active status (listStatus="
+                            + ocoStatus.listStatus() + ", expected EXECUTING)");
                     }
-                    boolean anyLegMatchesSymbol = ocoStatus.legs().isEmpty(); // an empty leg list can't be checked either way -- don't block on a symbol this application has no leg data for
-                    boolean allLegsAreSell = true;
-                    java.math.BigDecimal maxLegQuantity = java.math.BigDecimal.ZERO;
-                    for (var leg : ocoStatus.legs()) {
-                        if (!"SELL".equalsIgnoreCase(leg.side())) allLegsAreSell = false;
-                        if (leg.origQty() != null && leg.origQty().compareTo(maxLegQuantity) > 0) maxLegQuantity = leg.origQty();
-                    }
-                    if (!ocoStatus.legs().isEmpty() && !allLegsAreSell) {
-                        verificationFailures.add("at least one OCO leg is not SELL -- this OCO cannot be a valid exit protection for a long position");
-                    }
-                    if (position.getQuantity() != null && maxLegQuantity.signum() > 0
-                        && maxLegQuantity.compareTo(position.getQuantity().multiply(BigDecimal.valueOf(1.02))) > 0) {
-                        // Allow a small (2%) tolerance for legitimate step-size/normalization
-                        // differences (see OcoStatusInfo.Leg.origQty's own field javadoc) -- only
-                        // a genuinely larger mismatch (this OCO protects meaningfully MORE than
-                        // this position actually holds) is treated as a real identity concern.
-                        verificationFailures.add("OCO quantity (" + maxLegQuantity + ") exceeds the position's own actual quantity ("
-                            + position.getQuantity() + ") by more than a reasonable tolerance");
+                    if (ocoStatus.legs().isEmpty()) {
+                        // No leg data at all means symbol, side, and quantity can't be verified --
+                        // previously this was waved through as "nothing to check", which is
+                        // exactly backwards: no data to verify is a reason to refuse, not a reason
+                        // to skip the checks.
+                        verificationFailures.add("OCO has no leg data at all -- cannot verify symbol, side, or quantity");
+                    } else {
+                        boolean allLegsMatchSymbol = true;
+                        boolean allLegsAreSell = true;
+                        boolean anyLegIncomplete = false;
+                        java.math.BigDecimal maxLegQuantity = java.math.BigDecimal.ZERO;
+                        for (var leg : ocoStatus.legs()) {
+                            if (leg.symbol() == null || leg.side() == null || leg.origQty() == null) {
+                                anyLegIncomplete = true;
+                                continue;
+                            }
+                            if (!leg.symbol().equalsIgnoreCase(position.getSymbol())) allLegsMatchSymbol = false;
+                            if (!"SELL".equalsIgnoreCase(leg.side())) allLegsAreSell = false;
+                            if (leg.origQty().compareTo(maxLegQuantity) > 0) maxLegQuantity = leg.origQty();
+                        }
+                        if (anyLegIncomplete) {
+                            verificationFailures.add("at least one OCO leg is missing symbol, side, or quantity data -- cannot verify its identity");
+                        }
+                        if (!allLegsMatchSymbol) {
+                            verificationFailures.add("at least one OCO leg's symbol does not match this position's own symbol (" + position.getSymbol() + ")");
+                        }
+                        if (!allLegsAreSell) {
+                            verificationFailures.add("at least one OCO leg is not SELL -- this OCO cannot be a valid exit protection for a long position");
+                        }
+                        if (position.getQuantity() != null && maxLegQuantity.signum() > 0
+                            && maxLegQuantity.compareTo(position.getQuantity().multiply(BigDecimal.valueOf(1.02))) > 0) {
+                            // Allow a small (2%) tolerance for legitimate step-size/normalization
+                            // differences (see OcoStatusInfo.Leg.origQty's own field javadoc) --
+                            // only a genuinely larger mismatch (this OCO protects meaningfully
+                            // MORE than this position actually holds) is a real identity concern.
+                            verificationFailures.add("OCO quantity (" + maxLegQuantity + ") exceeds the position's own actual quantity ("
+                                + position.getQuantity() + ") by more than a reasonable tolerance");
+                        }
                     }
                     if (!verificationFailures.isEmpty()) {
                         log.error("Orphaned OCO {} (position {}, {}): auto-attach verification failed -- {}. NOT auto-attaching; "

@@ -689,7 +689,10 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
                 legs.add(parseOcoLeg(legOrderId, legResp));
             } catch (Exception e) {
                 log.warn("Could not resolve OCO leg {} for orderList {}: {}", legOrderId, queryedBy, e.getMessage());
-                legs.add(new OcoStatusInfo.Leg(legOrderId, "UNKNOWN", "UNKNOWN", "UNKNOWN", BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO));
+                // symbol deliberately left null (not the query symbol) -- this leg's own identity
+                // was never actually confirmed by the exchange, so auto-attach verification must
+                // treat it as incomplete data, not silently assume it matches.
+                legs.add(new OcoStatusInfo.Leg(legOrderId, "UNKNOWN", "UNKNOWN", "UNKNOWN", BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, null));
             }
         }
         return new OcoStatusInfo(resp.path("orderListId").asText(null), resp.path("listOrderStatus").asText("UNKNOWN"), legs, resp.toString());
@@ -710,6 +713,10 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
         // origQty is present in this response (GET /api/v3/order) and is needed to verify the
         // leg's quantity when auto-attaching a recovered OCO to a position.
         BigDecimal origQty = new BigDecimal(legResp.path("origQty").asText("0"));
+        // symbol is read from this leg's own order-detail response, not merely assumed from the
+        // query parameter used to fetch it -- this is the exchange's own confirmation of which
+        // symbol this specific leg actually belongs to, which auto-attach verification needs.
+        String legSymbol = legResp.path("symbol").asText(null);
         return new OcoStatusInfo.Leg(
             legOrderId,
             legResp.path("side").asText("UNKNOWN"),
@@ -717,7 +724,8 @@ public class BinanceBrokerAdapter implements BrokerAdapter {
             legResp.path("status").asText("UNKNOWN"),
             avgPrice,
             executedQty,
-            origQty
+            origQty,
+            legSymbol
         );
     }
 

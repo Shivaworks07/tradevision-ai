@@ -1694,8 +1694,8 @@ class PositionMonitorServiceTest {
         // quantity matching the position).
         when(adapter.getOcoStatus(any(), any(), any(), eq("oco-999"))).thenReturn(
             new com.tradevision.service.broker.dto.OcoStatusInfo("oco-999", "EXECUTING", List.of(
-                new com.tradevision.service.broker.dto.OcoStatusInfo.Leg("leg1", "SELL", "LIMIT_MAKER", "NEW", BigDecimal.valueOf(70000), BigDecimal.ZERO, BigDecimal.valueOf(1.0)),
-                new com.tradevision.service.broker.dto.OcoStatusInfo.Leg("leg2", "SELL", "STOP_LOSS_LIMIT", "NEW", BigDecimal.valueOf(65000), BigDecimal.ZERO, BigDecimal.valueOf(1.0))
+                new com.tradevision.service.broker.dto.OcoStatusInfo.Leg("leg1", "SELL", "LIMIT_MAKER", "NEW", BigDecimal.valueOf(70000), BigDecimal.ZERO, BigDecimal.valueOf(1.0), "BTCUSDT"),
+                new com.tradevision.service.broker.dto.OcoStatusInfo.Leg("leg2", "SELL", "STOP_LOSS_LIMIT", "NEW", BigDecimal.valueOf(65000), BigDecimal.ZERO, BigDecimal.valueOf(1.0), "BTCUSDT")
             ), "{}"));
 
         service.reconcileCredential(credential);
@@ -1737,8 +1737,8 @@ class PositionMonitorServiceTest {
         when(positionRepo.findByCredentialIdAndStatus("cred1", "OPEN")).thenReturn(List.of());
         when(adapter.getOcoStatus(any(), any(), any(), eq("oco-999"))).thenReturn(
             new com.tradevision.service.broker.dto.OcoStatusInfo("oco-999", "EXECUTING", List.of(
-                new com.tradevision.service.broker.dto.OcoStatusInfo.Leg("leg1", "SELL", "LIMIT_MAKER", "NEW", BigDecimal.valueOf(70000), BigDecimal.ZERO, BigDecimal.valueOf(1.0)),
-                new com.tradevision.service.broker.dto.OcoStatusInfo.Leg("leg2", "SELL", "STOP_LOSS_LIMIT", "NEW", BigDecimal.valueOf(65000), BigDecimal.ZERO, BigDecimal.valueOf(1.0))
+                new com.tradevision.service.broker.dto.OcoStatusInfo.Leg("leg1", "SELL", "LIMIT_MAKER", "NEW", BigDecimal.valueOf(70000), BigDecimal.ZERO, BigDecimal.valueOf(1.0), "BTCUSDT"),
+                new com.tradevision.service.broker.dto.OcoStatusInfo.Leg("leg2", "SELL", "STOP_LOSS_LIMIT", "NEW", BigDecimal.valueOf(65000), BigDecimal.ZERO, BigDecimal.valueOf(1.0), "BTCUSDT")
             ), "{}"));
         // Simulates a concurrent close: the position closed between the read and the update, so
         // the real update inside atomicSetOcoPlaced matches zero documents.

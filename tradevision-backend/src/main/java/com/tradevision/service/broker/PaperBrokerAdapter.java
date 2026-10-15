@@ -485,16 +485,16 @@ public class PaperBrokerAdapter implements BrokerAdapter {
         BigDecimal slFillPrice = slFilled && oco.getResolvedPrice() != null ? oco.getResolvedPrice() : oco.getStopLossPrice();
         var legs = List.of(
             new OcoStatusInfo.Leg(oco.getId() + "-TP", "SELL", "LIMIT_MAKER", tpFilled ? "FILLED" : "NEW",
-                tpFillPrice, tpFilled ? oco.getQuantity() : BigDecimal.ZERO, oco.getQuantity()),
+                tpFillPrice, tpFilled ? oco.getQuantity() : BigDecimal.ZERO, oco.getQuantity(), oco.getSymbol()),
             // Leg status stays "NEW" (never "FILLED") for SL_TRIGGERED_UNFILLED -- see this
             // method's own updated comment above for why that distinction matters.
             new OcoStatusInfo.Leg(oco.getId() + "-SL", "SELL", "STOP_LOSS", slFilled ? "FILLED" : "NEW",
-                slFillPrice, slFilled ? oco.getQuantity() : BigDecimal.ZERO, oco.getQuantity()));
+                slFillPrice, slFilled ? oco.getQuantity() : BigDecimal.ZERO, oco.getQuantity(), oco.getSymbol()));
         return new OcoStatusInfo(oco.getId(), listStatus, legs, "{}");
     }
 
     private OcoStatusInfo.Leg activeLeg(PaperOco oco) {
-        return new OcoStatusInfo.Leg(oco.getId() + "-TP", "SELL", "LIMIT_MAKER", "NEW", oco.getTakeProfitPrice(), BigDecimal.ZERO, oco.getQuantity());
+        return new OcoStatusInfo.Leg(oco.getId() + "-TP", "SELL", "LIMIT_MAKER", "NEW", oco.getTakeProfitPrice(), BigDecimal.ZERO, oco.getQuantity(), oco.getSymbol());
     }
 
     @Override

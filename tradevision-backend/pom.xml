@@ -112,6 +112,20 @@
          MongoDB's connection/data property prefixes, so checked directly rather than assumed. -->
     <jackson-2-bom.version>2.21.6</jackson-2-bom.version>
     <jackson-bom.version>3.1.6</jackson-bom.version>
+    <!-- OWASP follow-up: hibernate-validator 9.1.3.Final (Boot 4.1.1's own BOM-managed version)
+         has CVE-2026-93879 (CWE-400, CVSS 8.7) - user-supplied data re-evaluated as Expression
+         Language inside constraint-violation message interpolation, causing excessive resource
+         consumption. Confirmed real, not a CPE-coincidence false positive, and confirmed that
+         this app's own code never triggers the actual vector: no ConstraintValidatorContext.
+         buildConstraintViolationWithTemplate or custom MessageInterpolator anywhere in this
+         codebase, so every validation message interpolated here is a static, developer-authored
+         annotation string, never built from request/user-supplied data. Fixed upstream in
+         9.1.4.Final (released on Central 2 days before this fix, confirmed directly) - went one
+         further to 9.1.5.Final, the latest stable (non-Beta) patch release, rather than stopping
+         at the minimum confirmed-fixed version, same approach as the tomcat/mongodb/jackson
+         overrides above. Property name confirmed directly against spring-boot-dependencies
+         4.1.1's own published BOM pom. -->
+    <hibernate-validator.version>9.1.5.Final</hibernate-validator.version>
   </properties>
 
   <dependencyManagement>

@@ -53,6 +53,18 @@ interface AdminDashboard {
   generatedAt:  string;
 }
 
+interface RecoveryHealth {
+  protectionAttempts: { unresolvedCount: number; oldestUnresolvedAgeSeconds: number };
+  orphanedOcos: { unresolvedCount: number; oldestUnresolvedAgeSeconds: number; escalatedCount: number; manualEscalationRate: number };
+  criticalIncidentsLast24h: { total: number; unresolved: number; notificationDeliveryExhausted: number };
+}
+
+interface ReconciliationReport {
+  lastReconciliationCompletedAt: string;
+  orphanedOco: { found: number; resolved: number; stillOpen: number };
+  reconciliationIncidents: { total: number; stillUnresolved: number; byType: Record<string, number> };
+}
+
 @Component({
     selector: 'app-admin',
     imports: [CommonModule, RouterModule],
@@ -98,9 +110,70 @@ export class AdminComponent implements OnInit, OnDestroy {
       },
       error: () => {}   // catchError above handles all errors
     });
+    this.loadOpsHealth();
   }
 
-  ngOnDestroy() { this.sub?.unsubscribe(); }
+  ngOnDestroy() { this.sub?.unsubscribe(); this.opsSub?.unsubscribe(); }
+
+  // ── Operational health (recovery-health + reconciliation-report) ──
+  recoveryHealth:       RecoveryHealth | null       = null;
+  reconciliationReport: ReconciliationReport | null = null;
+  opsHealthError        = '';
+  loadingOpsHealth      = true;
+  private opsSub?: Subscription;
+
+  private loadOpsHealth() {
+    this.opsSub = interval(60000).pipe(
+      startWith(0),
+      switchMap(() =>
+        this.http.get<any>(`${this.API}/recovery-health`).pipe(
+          switchMap(recoveryRes =>
+            this.http.get<any>(`${this.API}/reconciliation-report?lookbackDays=7`).pipe(
+              switchMap(reconRes => of({ recoveryRes, reconRes }))
+            )
+          ),
+          retry({ count: 2, delay: (_, attempt) => timer(Math.pow(2, attempt) * 1000) }),
+          catchError(e => of({ _error: e }))
+        )
+      )
+    ).subscribe({
+      next: r => {
+        if ((r as any)?._error) {
+          this.opsHealthError = 'Operational health unavailable — retrying next cycle.';
+          this.loadingOpsHealth = false;
+          return;
+        }
+        const { recoveryRes, reconRes } = r as any;
+        this.recoveryHealth       = recoveryRes?.data ?? null;
+        this.reconciliationReport = reconRes?.data ?? null;
+        this.opsHealthError       = '';
+        this.loadingOpsHealth     = false;
+      },
+      error: () => {} // catchError above handles all errors
+    });
+  }
+
+  // Human-readable age, e.g. 125 -> "2m 5s", 9000 -> "2h 30m"
+  fmtAge(seconds: number): string {
+    if (!seconds || seconds <= 0) return '—';
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    if (h > 0) return `${h}h ${m}m`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+  }
+
+  // Age-based severity color: fine under 5 min, warning under 30 min, critical beyond that.
+  ageColor(seconds: number): string {
+    if (!seconds) return '#4A5568';
+    return seconds < 300 ? '#00FF88' : seconds < 1800 ? '#FFB800' : '#FF3B5C';
+  }
+
+  get reconciliationIncidentTypes(): { type: string; count: number }[] {
+    const byType = this.reconciliationReport?.reconciliationIncidents?.byType || {};
+    return Object.entries(byType).map(([type, count]) => ({ type, count: count as number }));
+  }
 
   // ── Computed getters ──────────────────────────────────────
   get users():     UserStats    { return this.dashboard?.users   || { total:0, activeToday:0, activeWeek:0, newThisMonth:0, admins:0 }; }

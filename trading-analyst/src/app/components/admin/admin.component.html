@@ -80,6 +80,70 @@
           <div class="kpi-sub">{{apiMetrics.errors24h}} errors / {{apiMetrics.requests24h}} req</div>
         </div>
       </div>
+      <!-- ROW 1.5: Operational health (recovery + reconciliation) -->
+      <div class="dash-card ops-panel">
+        <div class="dc-title">Bot Operational Health</div>
+        @if (loadingOpsHealth && !recoveryHealth) {
+          <div class="fb-loading"><div class="ld-spin"></div> Loading…</div>
+        }
+        @if (opsHealthError) {
+          <div class="ops-error">{{opsHealthError}}</div>
+        }
+        @if (recoveryHealth && reconciliationReport) {
+          <div class="ops-grid">
+            <!-- Protection attempts -->
+            <div class="ops-card">
+              <div class="ops-card-title">Stuck Protection Attempts</div>
+              <div class="ops-card-val" [style.color]="ageColor(recoveryHealth.protectionAttempts.oldestUnresolvedAgeSeconds)">
+                {{recoveryHealth.protectionAttempts.unresolvedCount}}
+              </div>
+              <div class="ops-card-sub">
+                oldest unresolved: {{fmtAge(recoveryHealth.protectionAttempts.oldestUnresolvedAgeSeconds)}}
+              </div>
+            </div>
+            <!-- Orphaned OCOs -->
+            <div class="ops-card">
+              <div class="ops-card-title">Unresolved Orphaned OCOs</div>
+              <div class="ops-card-val" [style.color]="ageColor(recoveryHealth.orphanedOcos.oldestUnresolvedAgeSeconds)">
+                {{recoveryHealth.orphanedOcos.unresolvedCount}}
+              </div>
+              <div class="ops-card-sub">
+                oldest: {{fmtAge(recoveryHealth.orphanedOcos.oldestUnresolvedAgeSeconds)}} ·
+                escalated: {{recoveryHealth.orphanedOcos.escalatedCount}}
+                ({{(recoveryHealth.orphanedOcos.manualEscalationRate * 100) | number:'1.0-0'}}%)
+              </div>
+            </div>
+            <!-- Critical incidents -->
+            <div class="ops-card">
+              <div class="ops-card-title">Critical Incidents (24h)</div>
+              <div class="ops-card-val" [style.color]="recoveryHealth.criticalIncidentsLast24h.unresolved > 0 ? '#FF3B5C' : '#00FF88'">
+                {{recoveryHealth.criticalIncidentsLast24h.total}}
+              </div>
+              <div class="ops-card-sub">
+                unresolved: {{recoveryHealth.criticalIncidentsLast24h.unresolved}} ·
+                delivery exhausted: {{recoveryHealth.criticalIncidentsLast24h.notificationDeliveryExhausted}}
+              </div>
+            </div>
+            <!-- Last reconciliation cycle -->
+            <div class="ops-card">
+              <div class="ops-card-title">Last Reconciliation Cycle</div>
+              <div class="ops-card-val ops-card-val-sm">{{reconciliationReport.lastReconciliationCompletedAt | date:'dd MMM, HH:mm:ss'}}</div>
+              <div class="ops-card-sub">
+                orphans (7d): {{reconciliationReport.orphanedOco.found}} found ·
+                {{reconciliationReport.orphanedOco.resolved}} resolved ·
+                {{reconciliationReport.orphanedOco.stillOpen}} open
+              </div>
+            </div>
+          </div>
+          @if (reconciliationIncidentTypes.length > 0) {
+            <div class="ops-incident-types">
+              @for (t of reconciliationIncidentTypes; track t.type) {
+                <span class="ops-incident-pill">{{t.type.replaceAll('_',' ')}}: {{t.count}}</span>
+              }
+            </div>
+          }
+        }
+      </div>
       <!-- ROW 2: Accuracy by Market + Top Symbols -->
       <div class="mid-grid">
         <!-- Accuracy by market -->
